@@ -7,6 +7,8 @@ using Sandbox.Engine.Physics;
 using Sandbox.Game.Entities;
 using VRageMath;
 using VRageRender;
+using VRage.Game.Entity;
+
 
 namespace Sandbox.Game.Weapons.Guns
 {
@@ -16,11 +18,21 @@ namespace Sandbox.Game.Weapons.Guns
         {
             public readonly MyEntity Entity;
             public readonly Vector3D DetectionPoint;
+            //GK: Added this to keep track of Enviroment Sector Items (e.g. Trees)
+            public readonly int ItemId;
 
             public DetectionInfo(MyEntity entity, Vector3D detectionPoint)
             {
                 Entity = entity;
                 DetectionPoint = detectionPoint;
+                ItemId = 0;
+            }
+
+            public DetectionInfo(MyEntity entity, Vector3D detectionPoint, int itemid)
+            {
+                Entity = entity;
+                DetectionPoint = detectionPoint;
+                ItemId = itemid;
             }
         }
 

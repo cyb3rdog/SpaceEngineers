@@ -2,33 +2,31 @@
 using Sandbox.Engine.Utils;
 using Sandbox.Game.Entities;
 using Sandbox.Game.Entities.Character;
-using Sandbox.Game.GameSystems.Electricity;
 using Sandbox.Game.Gui;
 using Sandbox.Game.GUI;
 using Sandbox.Game.SessionComponents;
 using Sandbox.Game.World;
 using System.Collections.Generic;
 using System.Linq;
-
+using Sandbox.Game.EntityComponents;
+using VRage.Audio;
+using VRage.Game;
+using VRage.Game.Components;
 using VRage.Input;
 using VRage.Utils;
+using VRage.Game.Entity;
+using VRage.Game.ModAPI.Interfaces;
 
 namespace Sandbox.Game.GameSystems
 {
-    class MyGridCameraSystem
+    public class MyGridCameraSystem
     {
         private MyCubeGrid m_grid;
-        private List<MyCameraBlock> m_cameras;
-        private List<MyCameraBlock> m_relayedCameras;
+        private readonly List<MyCameraBlock> m_cameras;
+        private readonly List<MyCameraBlock> m_relayedCameras;
         private MyCameraBlock m_currentCamera;
 
         private bool m_ignoreNextInput = false;
-
-        public MyPowerReceiver PowerReceiver
-        {
-            get;
-            private set;
-        }
 
         public int CameraCount
         {
@@ -39,6 +37,8 @@ namespace Sandbox.Game.GameSystems
         {
             get { return m_currentCamera; }
         }
+
+        public static IMyCameraController PreviousNonCameraBlockController { get; set; }
 
         private static MyHudCameraOverlay m_cameraOverlay;
         static MyGridCameraSystem()
@@ -105,7 +105,12 @@ namespace Sandbox.Game.GameSystems
                 MyHudCameraOverlay.Enabled = false;
             }
 
-            string shipName = MyAntennaSystem.GetLogicalGroupRepresentative(m_grid).DisplayName ?? "";
+            //By Gregory: Temporary fix cause Session component for antenna system hasn't been called yet and Static isn't assigned yet at game load(see BeforeStart function).
+            string shipName = "";
+            if (MyAntennaSystem.Static != null)
+            {
+                shipName = MyAntennaSystem.Static.GetLogicalGroupRepresentative(m_grid).DisplayName ?? "";
+            }
             string cameraName = newCamera.DisplayNameText;
             
             MyHud.CameraInfo.Enable(shipName, cameraName);
@@ -113,16 +118,12 @@ namespace Sandbox.Game.GameSystems
             m_ignoreNextInput = true;
 
             MySessionComponentVoxelHand.Static.Enabled = false;
-            MyCubeBuilder.Static.Deactivate();
+            MySession.Static.GameFocusManager.Clear();
+            //MyCubeBuilder.Static.Deactivate();
         }
 
         public void UpdateBeforeSimulation()
         {
-            if (!MyFakes.ENABLE_CAMERA_BLOCK)
-            {
-                return;
-            }
-
             if (m_currentCamera == null)
             {
                 return;
@@ -145,12 +146,12 @@ namespace Sandbox.Game.GameSystems
                 return;
             }
 
-            if (MyInput.Static.IsNewGameControlPressed(MyControlsSpace.SWITCH_LEFT))
+            if (MyInput.Static.IsNewGameControlPressed(MyControlsSpace.SWITCH_LEFT) && MyGuiScreenChat.Static == null) //GK: Make sure we are not in chat screen
             {
                 MyGuiAudio.PlaySound(MyGuiSounds.HudClick);
                 SetPrev();
             }
-            if (MyInput.Static.IsNewGameControlPressed(MyControlsSpace.SWITCH_RIGHT))
+            if (MyInput.Static.IsNewGameControlPressed(MyControlsSpace.SWITCH_RIGHT) && MyGuiScreenChat.Static == null) //GK: Make sure we are not in chat screen
             {
                 MyGuiAudio.PlaySound(MyGuiSounds.HudClick);
                 SetNext();
@@ -164,10 +165,6 @@ namespace Sandbox.Game.GameSystems
 
         public void UpdateBeforeSimulation10()
         {
-            if (!MyFakes.ENABLE_CAMERA_BLOCK)
-            {
-                return;
-            }
             if (m_currentCamera != null)
             {
                 if (!CameraIsInRangeAndPlayerHasAccess(m_currentCamera))
@@ -179,24 +176,24 @@ namespace Sandbox.Game.GameSystems
 
         public static bool CameraIsInRangeAndPlayerHasAccess(MyCameraBlock camera)
         {
-            if (MySession.ControlledEntity != null)
+            if (MySession.Static.ControlledEntity != null)
             {
                 MyIDModule module;
                 if ((camera as IMyComponentOwner<MyIDModule>).GetComponent(out module))
                 {
-                    if (!(camera.HasPlayerAccess(MySession.LocalPlayerId) || module.Owner == 0))
+                    if (!(camera.HasPlayerAccess(MySession.Static.LocalPlayerId) || module.Owner == 0))
                     {
                         return false;
                     }
                 }
 
-                if (MySession.ControlledEntity is MyCharacter)
+                if (MySession.Static.ControlledEntity is MyCharacter)
                 {
-                    return MyAntennaSystem.CheckConnection(MySession.LocalCharacter, camera.CubeGrid, MySession.LocalHumanPlayer);
+                    return MyAntennaSystem.Static.CheckConnection(MySession.Static.LocalCharacter, camera.CubeGrid, MySession.Static.LocalHumanPlayer);
                 }
-                else if (MySession.ControlledEntity is MyShipController)
+                else if (MySession.Static.ControlledEntity is MyShipController)
                 {
-                    return MyAntennaSystem.CheckConnection((MySession.ControlledEntity as MyShipController).CubeGrid, camera.CubeGrid, MySession.LocalHumanPlayer);
+                    return MyAntennaSystem.Static.CheckConnection((MySession.Static.ControlledEntity as MyShipController).CubeGrid, camera.CubeGrid, MySession.Static.LocalHumanPlayer);
                 }
             }
 
@@ -207,9 +204,21 @@ namespace Sandbox.Game.GameSystems
         {
             ResetCurrentCamera();
             //Can be null when closing the game
-            if (MySession.LocalCharacter != null)
+            bool switched = false;
+            if (PreviousNonCameraBlockController != null)
             {
-                MySession.SetCameraController(MyCameraControllerEnum.Entity, MySession.LocalCharacter as MyEntity);
+                MyEntity entity = PreviousNonCameraBlockController as MyEntity;
+                if (entity != null && !entity.Closed)
+                {
+                    MySession.Static.SetCameraController(MyCameraControllerEnum.Entity, entity);
+                    PreviousNonCameraBlockController = null;
+                    switched = true;
+                }
+            }
+
+            if (!switched && MySession.Static.LocalCharacter != null)
+            {
+                MySession.Static.SetCameraController(MyCameraControllerEnum.Entity, MySession.Static.LocalCharacter);
             }
             DisableCameraEffects();
         }
@@ -224,9 +233,11 @@ namespace Sandbox.Game.GameSystems
 
         private void ResetCurrentCamera()
         {
-            m_currentCamera.OnExitView();
-            
-            m_currentCamera = null;
+            if (m_currentCamera != null)
+            {
+                m_currentCamera.OnExitView();
+                m_currentCamera = null;
+            }
         }
 
         private void SetNext()
@@ -272,7 +283,7 @@ namespace Sandbox.Game.GameSystems
 
         private void UpdateRelayedCameras()
         {
-            var mutualGridsInfo = MyAntennaSystem.GetMutuallyConnectedGrids(m_grid).ToList();
+            var mutualGridsInfo = MyAntennaSystem.Static.GetMutuallyConnectedGrids(m_grid).ToList();
 
             
             //We need to sort to make sure that the list of relayed cameras is always the same, regardles of which grid system computes it.
@@ -363,11 +374,6 @@ namespace Sandbox.Game.GameSystems
 
         public void PrepareForDraw()
         {
-            if (!MyFakes.ENABLE_CAMERA_BLOCK)
-            {
-                return;
-            }
-
             if (m_currentCamera == null)
             {
                 return;

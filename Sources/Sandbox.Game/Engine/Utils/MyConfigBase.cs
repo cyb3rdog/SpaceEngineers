@@ -3,24 +3,13 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Xml;
-
-
-using Sandbox.Engine.Platform.VideoMode;
-using VRage.Utils;
-
-
-using Sandbox;
-using VRageMath;
-using Sandbox.Common;
 using System.Xml.Serialization;
 using VRage;
-
-using VRage.Serialization;
-using Sandbox.Graphics.Render;
-using Sandbox.Graphics;
-using VRage;
-using VRage.Library.Utils;
 using VRage.FileSystem;
+using VRage.Profiler;
+using VRage.Serialization;
+using VRage.Utils;
+using VRageMath;
 
 //  This class encapsulated read/write access to our config file - xxx.cfg - stored in user's local files
 //  It assumes that config file may be non existing, or that some values may be missing or in wrong format - this class can handle it
@@ -68,6 +57,20 @@ namespace Sandbox.Engine.Utils
             }
             else
                 outValue = (SerializableDictionary<string, object>)outObject;
+
+            return outValue;
+        }
+
+        protected T GetParameterValueT<T>(string parameterName)
+        {
+            object outObject;
+            T outValue;
+            if (m_values.Dictionary.TryGetValue(parameterName, out outObject) == false)
+            {
+                outValue = default(T);
+            }
+            else
+                outValue = (T)outObject;
 
             return outValue;
         }
@@ -190,7 +193,7 @@ namespace Sandbox.Engine.Utils
 
                         using (XmlWriter xmlWriter = XmlWriter.Create(stream, settings))
                         {
-                            XmlSerializer xmlSerializer = new XmlSerializer(m_values.GetType(), new Type[] { typeof(SerializableDictionary<string, string>) } );
+                            XmlSerializer xmlSerializer = new XmlSerializer(m_values.GetType(), new Type[] { typeof(SerializableDictionary<string, string>), typeof(List<string>), typeof(SerializableDictionary<string, MyConfig.MyDebugInputData>), typeof(MyConfig.MyDebugInputData) });
                             xmlSerializer.Serialize(xmlWriter, m_values);
                         }
                     }
@@ -233,7 +236,8 @@ namespace Sandbox.Engine.Utils
                         using (var stream = MyFileSystem.OpenRead(m_path))
                         using (XmlReader xmlReader = XmlReader.Create(stream))
                         {
-                            XmlSerializer xmlSerializer = new XmlSerializer(m_values.GetType(), new Type[] { typeof(SerializableDictionary<string, string>) });
+                            XmlSerializer xmlSerializer = new XmlSerializer(m_values.GetType(), new Type[] { typeof(SerializableDictionary<string, string>), typeof(List<string>), typeof(SerializableDictionary<string, MyConfig.MyDebugInputData>), typeof(MyConfig.MyDebugInputData) });
+
                             SerializableDictionary<string, object> newValues = (SerializableDictionary<string, object>)xmlSerializer.Deserialize(xmlReader);
 
                             m_values.Dictionary = newValues.Dictionary;

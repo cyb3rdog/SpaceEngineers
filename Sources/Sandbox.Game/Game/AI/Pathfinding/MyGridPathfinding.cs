@@ -4,14 +4,19 @@ using Sandbox.Engine.Utils;
 using Sandbox.Game.Entities;
 using Sandbox.Game.Entities.Cube;
 using Sandbox.Game.Gui;
+using Sandbox.Game.World;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Text;
 using VRage;
+using VRage.Game;
+using VRage.Game.Entity;
+using VRage.Profiler;
 using VRage.Utils;
 using VRageMath;
+using VRageRender.Utils;
 
 namespace Sandbox.Game.AI.Pathfinding
 {
@@ -48,8 +53,6 @@ namespace Sandbox.Game.AI.Pathfinding
 
         public MyGridPathfinding(MyNavmeshCoordinator coordinator)
         {
-            MyEntities.OnEntityAdd += MyEntities_OnEntityAdd;
-
             m_navigationMeshes = new Dictionary<MyCubeGrid, MyGridNavigationMesh>();
             m_coordinator = coordinator;
             m_coordinator.SetGridPathfinding(this);
@@ -57,16 +60,13 @@ namespace Sandbox.Game.AI.Pathfinding
             m_highLevelNavigationDirty = false;
         }
 
-        private void MyEntities_OnEntityAdd(MyEntity entity)
+        public void GridAdded(MyCubeGrid grid)
         {
-            var grid = entity as MyCubeGrid;
-            if (grid == null) return;
-
             // CH: TODO: Don't add all grids immediately. E.g. copy-paste preview grids don't need to be added
 
             if (!GridCanHaveNavmesh(grid)) return;
 
-            m_navigationMeshes.Add(grid, new MyGridNavigationMesh(grid, m_coordinator, 32, MyAIComponent.Static.Pathfinding.NextTimestampFunction));
+            m_navigationMeshes.Add(grid, new MyGridNavigationMesh(grid, m_coordinator, 32, MyCestmirPathfindingShorts.Pathfinding.NextTimestampFunction));
             RegisterGridEvents(grid);
         }
 
@@ -77,7 +77,8 @@ namespace Sandbox.Game.AI.Pathfinding
 
         public static bool GridCanHaveNavmesh(MyCubeGrid grid)
         {
-            return grid.GridSizeEnum == MyCubeSize.Large;
+            // CH: TODO: Disabling grid navmeshes in SE for now
+            return MyPerGameSettings.Game == GameEnum.ME_GAME && grid.GridSizeEnum == MyCubeSize.Large;
         }
 
         void grid_OnClose(MyEntity entity)
@@ -89,11 +90,6 @@ namespace Sandbox.Game.AI.Pathfinding
 
             m_coordinator.RemoveGridNavmeshLinks(grid);
             m_navigationMeshes.Remove(grid);
-        }
-
-        public void UnloadData()
-        {
-            MyEntities.OnEntityAdd -= MyEntities_OnEntityAdd;
         }
 
         public void Update()
@@ -185,7 +181,7 @@ namespace Sandbox.Game.AI.Pathfinding
         [Conditional("DEBUG")]
         public void DebugDraw()
         {
-            if (MyDebugDrawSettings.ENABLE_DEBUG_DRAW == false) return;
+            if (MyDebugDrawSettings.ENABLE_DEBUG_DRAW == false || MyDebugDrawSettings.DEBUG_DRAW_NAVMESHES == MyWEMDebugDrawMode.NONE) return;
 
             foreach (var entry in m_navigationMeshes)
             {

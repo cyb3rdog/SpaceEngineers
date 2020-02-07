@@ -10,6 +10,7 @@ using System.Diagnostics;
 using System.Linq;
 using System.Text;
 using VRage;
+using VRage.Game;
 using VRage.Generics;
 using VRage.Input;
 using VRage.Library.Utils;
@@ -32,8 +33,8 @@ namespace Sandbox.Game.Gui
         InventoryFull,
         MissingComponent,
         ScreenHint,
-        SlotEquipHint,
-        HudHideHint,
+        //SlotEquipHint,
+        //HudHideHint,
         WorldLoaded,
         RespawnShipWarning,
         ClientCannotSave,
@@ -45,6 +46,30 @@ namespace Sandbox.Game.Gui
         CopyPasteAsteoridObstructed,
         TextPanelReadOnly,
         GameplayOptions,
+        IncompleteGrid,
+        AdminMenuNotAvailable,
+        BuildingModeOn,
+        BuildingModeOff,
+        PasteFailed,
+        ManipulatingDoorFailed,
+        
+        // Piston notifications
+        HeadNotPlaced,
+        HeadAlreadyExists,
+
+        ShipOverLimits,
+
+        PlayerDemotedNone,
+        PlayerDemotedScripter,
+        PlayerDemotedModerator,
+        PlayerDemotedSpaceMaster,
+
+        PlayerPromotedScripter,
+        PlayerPromotedModerator,
+        PlayerPromotedSpaceMaster,
+        PlayerPromotedAdmin,
+
+        BlueprintScriptsRemoved,
     }
 
     public class MyHudNotifications
@@ -72,6 +97,8 @@ namespace Sandbox.Game.Gui
         private List<StringBuilder> m_texts;
         private List<Vector2> m_textSizes;
         private MyObjectsPool<StringBuilder> m_textsPool;
+
+        private object m_lockObject = new object();
         #endregion
 
         #region Singleton notifications
@@ -108,48 +135,75 @@ namespace Sandbox.Game.Gui
 
             m_singletons = new MyHudNotificationBase[Enum.GetValues(typeof(MyNotificationSingletons)).Length];
 
-            Register(MyNotificationSingletons.GameOverload,                  new MyHudNotification(font: MyFontEnum.Red, priority: 2, text: MySpaceTexts.NotificationMemoryOverload));
+            Register(MyNotificationSingletons.GameOverload,                  new MyHudNotification(font: MyFontEnum.Red, priority: 2, text: MyCommonTexts.NotificationMemoryOverload));
             Register(MyNotificationSingletons.SuitEnergyLow,                 new MyHudNotification(font: MyFontEnum.Red, priority: 2, text: MySpaceTexts.NotificationSuitEnergyLow));
             Register(MyNotificationSingletons.SuitEnergyCritical,            new MyHudNotification(font: MyFontEnum.Red, priority: 2, text: MySpaceTexts.NotificationSuitEnergyCritical));
-            Register(MyNotificationSingletons.InventoryFull,                 new MyHudNotification(font: MyFontEnum.Red, priority: 2, text: MySpaceTexts.NotificationInventoryFull));
+            Register(MyNotificationSingletons.InventoryFull,                 new MyHudNotification(font: MyFontEnum.Red, priority: 2, text: MyCommonTexts.NotificationInventoryFull));
+            Register(MyNotificationSingletons.IncompleteGrid,                new MyHudNotification(font: MyFontEnum.Red, priority: 2, text: MyCommonTexts.NotificationIncompleteGrid));
 
-            Register(MyNotificationSingletons.DisabledWeaponsAndTools,       new MyHudNotification(font: MyFontEnum.Red, text: MySpaceTexts.NotificationToolDisabled, disappearTimeMs: 0));
-            Register(MyNotificationSingletons.WeaponDisabledInWorldSettings, new MyHudNotification(font: MyFontEnum.Red, text: MySpaceTexts.NotificationWeaponDisabledInSettings));
-            Register(MyNotificationSingletons.MultiplayerDisabled,           new MyHudNotification(font: MyFontEnum.Red, text: MySpaceTexts.NotificationMultiplayerDisabled, priority: MAX_PRIORITY));
-            Register(MyNotificationSingletons.MissingComponent,              new MyHudMissingComponentNotification(MySpaceTexts.NotificationMissingComponentToPlaceBlockFormat, priority: 1));
-            Register(MyNotificationSingletons.WorldLoaded,                   new MyHudNotification(text: MySpaceTexts.WorldLoaded));
+            Register(MyNotificationSingletons.DisabledWeaponsAndTools,       new MyHudNotification(font: MyFontEnum.Red, text: MyCommonTexts.NotificationToolDisabled, disappearTimeMs: 0));
+            Register(MyNotificationSingletons.WeaponDisabledInWorldSettings, new MyHudNotification(font: MyFontEnum.Red, text: MyCommonTexts.NotificationWeaponDisabledInSettings));
+            Register(MyNotificationSingletons.MultiplayerDisabled,           new MyHudNotification(font: MyFontEnum.Red, text: MyCommonTexts.NotificationMultiplayerDisabled, priority: MAX_PRIORITY));
+            Register(MyNotificationSingletons.MissingComponent,              new MyHudMissingComponentNotification(MyCommonTexts.NotificationMissingComponentToPlaceBlockFormat, priority: 1));
+            Register(MyNotificationSingletons.WorldLoaded,                   new MyHudNotification(text: MyCommonTexts.WorldLoaded));
             Register(MyNotificationSingletons.ObstructingBlockDuringMerge,   new MyHudNotification(font: MyFontEnum.Red, text: MySpaceTexts.NotificationObstructingBlockDuringMerge));
 
-            Register(MyNotificationSingletons.HideHints,                new MyHudNotification(disappearTimeMs: 0, level: MyNotificationLevel.Control, text: MySpaceTexts.NotificationHideHintsInGameOptions, priority: 2));
-            Register(MyNotificationSingletons.HelpHint,                 new MyHudNotification(disappearTimeMs: 0, level: MyNotificationLevel.Control, text: MySpaceTexts.NotificationNeedShowHelpScreen, priority: 1));
-            Register(MyNotificationSingletons.ScreenHint,               new MyHudNotification(disappearTimeMs: 0, level: MyNotificationLevel.Control, text: MySpaceTexts.NotificationScreenFormat));
-            Register(MyNotificationSingletons.SlotEquipHint,            new MyHudNotification(disappearTimeMs: 0, level: MyNotificationLevel.Control, text: MySpaceTexts.NotificationSlotEquipFormat));
-            Register(MyNotificationSingletons.HudHideHint,              new MyHudNotification(disappearTimeMs: 0, level: MyNotificationLevel.Control, text: MySpaceTexts.NotificationHudHideFormat));
+            Register(MyNotificationSingletons.HideHints,                    new MyHudNotification(disappearTimeMs: 0, level: MyNotificationLevel.Control, text: MyCommonTexts.NotificationHideHintsInGameOptions, priority: 2));
+            Register(MyNotificationSingletons.HelpHint,                     new MyHudNotification(disappearTimeMs: 0, level: MyNotificationLevel.Control, text: MyCommonTexts.NotificationNeedShowHelpScreen, priority: 1));
+            Register(MyNotificationSingletons.ScreenHint,                   new MyHudNotification(disappearTimeMs: 0, level: MyNotificationLevel.Control, text: MyCommonTexts.NotificationScreenFormat));
+            //Register(MyNotificationSingletons.SlotEquipHint,                new MyHudNotification(disappearTimeMs: 0, level: MyNotificationLevel.Control, text: MyCommonTexts.NotificationSlotEquipFormat));
+            //Register(MyNotificationSingletons.HudHideHint,                  new MyHudNotification(disappearTimeMs: 0, level: MyNotificationLevel.Control, text: MyCommonTexts.NotificationHudHideFormat));
 
             Register(MyNotificationSingletons.RespawnShipWarning,       new MyHudNotification(disappearTimeMs: 10000, level: MyNotificationLevel.Important, text: MySpaceTexts.NotificationRespawnShipDelete, font: MyFontEnum.Red));
 
-            Register(MyNotificationSingletons.ClientCannotSave, new MyHudNotification(font: MyFontEnum.Red, text: MySpaceTexts.NotificationClientCannotSave));
+            Register(MyNotificationSingletons.PlayerDemotedNone, new MyHudNotification(disappearTimeMs: 10000, level: MyNotificationLevel.Important, text: MySpaceTexts.NotificationPlayerDemoted_None, font: MyFontEnum.Red));
+            Register(MyNotificationSingletons.PlayerDemotedScripter, new MyHudNotification(disappearTimeMs: 10000, level: MyNotificationLevel.Important, text: MySpaceTexts.NotificationPlayerDemoted_Scripter, font: MyFontEnum.Red));
+            Register(MyNotificationSingletons.PlayerDemotedModerator, new MyHudNotification(disappearTimeMs: 10000, level: MyNotificationLevel.Important, text: MySpaceTexts.NotificationPlayerDemoted_Moderator, font: MyFontEnum.Red));
+            Register(MyNotificationSingletons.PlayerDemotedSpaceMaster, new MyHudNotification(disappearTimeMs: 10000, level: MyNotificationLevel.Important, text: MySpaceTexts.NotificationPlayerDemoted_SpaceMaster, font: MyFontEnum.Red));
+
+            Register(MyNotificationSingletons.PlayerPromotedScripter, new MyHudNotification(disappearTimeMs: 10000, level: MyNotificationLevel.Important, text: MySpaceTexts.NotificationPlayerPromoted_Scripter, font: MyFontEnum.Blue));
+            Register(MyNotificationSingletons.PlayerPromotedModerator, new MyHudNotification(disappearTimeMs: 10000, level: MyNotificationLevel.Important, text: MySpaceTexts.NotificationPlayerPromoted_Moderator, font: MyFontEnum.Blue));
+            Register(MyNotificationSingletons.PlayerPromotedSpaceMaster, new MyHudNotification(disappearTimeMs: 10000, level: MyNotificationLevel.Important, text: MySpaceTexts.NotificationPlayerPromoted_SpaceMaster, font: MyFontEnum.Blue));
+            Register(MyNotificationSingletons.PlayerPromotedAdmin, new MyHudNotification(disappearTimeMs: 10000, level: MyNotificationLevel.Important, text: MySpaceTexts.NotificationPlayerPromoted_Admin, font: MyFontEnum.Blue));
+
+            Register(MyNotificationSingletons.PasteFailed, new MyHudNotification(disappearTimeMs: 1300, level: MyNotificationLevel.Important, text: MyCommonTexts.NotificationPasteFailed, font: MyFontEnum.Red));
+
+            Register(MyNotificationSingletons.ClientCannotSave, new MyHudNotification(font: MyFontEnum.Red, text: MyCommonTexts.NotificationClientCannotSave));
             Register(MyNotificationSingletons.WheelNotPlaced, new MyHudNotification(font: MyFontEnum.Red, text: MySpaceTexts.NotificationWheelNotPlaced));
-            Register(MyNotificationSingletons.CopyPasteBlockNotAvailable, new MyHudNotification(font: MyFontEnum.Red, text: MySpaceTexts.NotificationCopyPasteBlockNotAvailable));
-            Register(MyNotificationSingletons.CopyPasteFloatingObjectNotAvailable, new MyHudNotification(font: MyFontEnum.Red, text: MySpaceTexts.NotificationCopyPasteFloatingObjectNotAvailable));
+            Register(MyNotificationSingletons.CopyPasteBlockNotAvailable, new MyHudNotification(font: MyFontEnum.Red, text: MyCommonTexts.NotificationCopyPasteBlockNotAvailable));
+            Register(MyNotificationSingletons.CopyPasteFloatingObjectNotAvailable, new MyHudNotification(font: MyFontEnum.Red, text: MyCommonTexts.NotificationCopyPasteFloatingObjectNotAvailable));
 
             Register(MyNotificationSingletons.CopyPasteAsteoridObstructed, new MyHudNotification(font: MyFontEnum.Red, text: MySpaceTexts.NotificationCopyPasteAsteroidObstructed));
 
-            Register(MyNotificationSingletons.TextPanelReadOnly, new MyHudNotification(font: MyFontEnum.Red, text: MySpaceTexts.NotificationTextPanelReadOnly));
+            Register(MyNotificationSingletons.TextPanelReadOnly, new MyHudNotification(font: MyFontEnum.Red, text: MyCommonTexts.NotificationTextPanelReadOnly));
 
-            Register(MyNotificationSingletons.AccessDenied, new MyHudNotification(MySpaceTexts.AccessDenied, 2500, Sandbox.Common.MyFontEnum.Red));
+            Register(MyNotificationSingletons.AccessDenied, new MyHudNotification(MyCommonTexts.AccessDenied, 2500, MyFontEnum.Red));
+            Register(MyNotificationSingletons.AdminMenuNotAvailable, new MyHudNotification(disappearTimeMs: 10000, level: MyNotificationLevel.Important, font: MyFontEnum.Red, priority: 2, text: MySpaceTexts.AdminMenuNotAvailable));
+
+            Register(MyNotificationSingletons.BuildingModeOn, new MyHudNotification(MySpaceTexts.BuilderModeOn, 2500, MyFontEnum.White));
+            Register(MyNotificationSingletons.BuildingModeOff, new MyHudNotification(MySpaceTexts.BuilderModeOff, 2500, MyFontEnum.White));
+
+            // Piston notifications
+            Register(MyNotificationSingletons.HeadNotPlaced, new MyHudNotification(font: MyFontEnum.Red, text: MySpaceTexts.Notification_PistonHeadNotPlaced));
+            Register(MyNotificationSingletons.HeadAlreadyExists, new MyHudNotification(font: MyFontEnum.Red, text: MySpaceTexts.Notification_PistonHeadAlreadyExists));
+
+            Register(MyNotificationSingletons.ShipOverLimits, new MyHudNotification(font: MyFontEnum.Red, text: MySpaceTexts.NotificationShipOverLimits));
 
             if (MyPerGameSettings.Game == GameEnum.ME_GAME)
             {
-                Register(MyNotificationSingletons.GameplayOptions, new MyHudNotification(MySpaceTexts.Notification_GameplayOptions, 0, level: MyNotificationLevel.Control));
+                Register(MyNotificationSingletons.GameplayOptions, new MyHudNotification(MyCommonTexts.Notification_GameplayOptions, 0, level: MyNotificationLevel.Control));
                 Add(MyNotificationSingletons.GameplayOptions);
             }
+
+            Register(MyNotificationSingletons.ManipulatingDoorFailed, new MyHudNotification(disappearTimeMs: 2500, level: MyNotificationLevel.Important, text: MyCommonTexts.Notification_CannotManipulateDoor, font: MyFontEnum.Red));
+
+            Register(MyNotificationSingletons.BlueprintScriptsRemoved, new MyHudNotification(MySpaceTexts.Notification_BlueprintScriptRemoved, 2500, MyFontEnum.Red));
 
             Add(MyNotificationSingletons.HelpHint);
             Add(MyNotificationSingletons.HideHints);
             Add(MyNotificationSingletons.ScreenHint);
-            Add(MyNotificationSingletons.SlotEquipHint);
-            Add(MyNotificationSingletons.HudHideHint);
+            //Add(MyNotificationSingletons.SlotEquipHint);
+            //Add(MyNotificationSingletons.HudHideHint);
 
             FormatNotifications(MyInput.Static.IsJoystickConnected() && MyFakes.ENABLE_CONTROLLER_HINTS);
             MyInput.Static.JoystickConnected += Static_JoystickConnected;
@@ -162,16 +216,20 @@ namespace Sandbox.Game.Gui
 
         public void Add(MyHudNotificationBase notification)
         {
+
             Debug.Assert(notification != null);
             Debug.Assert(notification.Priority <= MAX_PRIORITY);
             Debug.Assert(notification.Priority >= 0);
-            var group = GetNotificationGroup(notification.Priority);
-            if (!group.Contains(notification))
+            lock (m_lockObject)
             {
-                notification.BeforeAdd();
-                group.Add(notification);
+                var group = GetNotificationGroup(notification.Priority);
+                if (!group.Contains(notification))
+                {
+                    notification.BeforeAdd();
+                    group.Add(notification);
+                }
+                notification.ResetAliveTime();
             }
-            notification.ResetAliveTime();
         }
 
         public void Remove(MyHudNotificationBase notification)
@@ -179,16 +237,22 @@ namespace Sandbox.Game.Gui
             if (notification == null)
                 return;
 
-            var group = GetNotificationGroup(notification.Priority);
-            //Debug.Assert(group.Contains(notification));
-            group.Remove(notification);
+            lock (m_lockObject)
+            {
+                var group = GetNotificationGroup(notification.Priority);
+                //Debug.Assert(group.Contains(notification));
+                group.Remove(notification);
+            }
         }
 
         public void Clear()
         {
             MyInput.Static.JoystickConnected -= Static_JoystickConnected;
-            foreach (var entry in m_notificationsByPriority)
-                entry.Value.Clear();
+            lock (m_lockObject)
+            {
+                foreach (var entry in m_notificationsByPriority)
+                    entry.Value.Clear();
+            }
         }
 
         public void Draw()
@@ -202,31 +266,37 @@ namespace Sandbox.Game.Gui
         public void ReloadTexts()
         {
             FormatNotifications(MyInput.Static.IsJoystickConnected() && MyFakes.ENABLE_CONTROLLER_HINTS);
-            foreach (var entry in m_notificationsByPriority)
+            lock (m_lockObject)
             {
-                foreach (var item in entry.Value)
-                    item.SetTextDirty();
+                foreach (var entry in m_notificationsByPriority)
+                {
+                    foreach (var item in entry.Value)
+                        item.SetTextDirty();
+                }
             }
         }
 
         public void UpdateBeforeSimulation()
         {
-            foreach (var entry in m_notificationsByPriority)
+            lock (m_lockObject)
             {
-                foreach (var item in entry.Value)
-                    item.AddAliveTime(MyEngineConstants.UPDATE_STEP_SIZE_IN_MILLISECONDS);
-            }
-
-            foreach (var entry in m_notificationsByPriority)
-            {
-                foreach (var notification in entry.Value)
+                foreach (var entry in m_notificationsByPriority)
                 {
-                    if (m_disappearedPredicate(notification))
-                    {
-                        notification.BeforeRemove();
-                    }
+                    foreach (var item in entry.Value)
+                        item.AddAliveTime(VRage.Game.MyEngineConstants.UPDATE_STEP_SIZE_IN_MILLISECONDS);
                 }
-                entry.Value.RemoveAll(m_disappearedPredicate);
+
+                foreach (var entry in m_notificationsByPriority)
+                {
+                    foreach (var notification in entry.Value)
+                    {
+                        if (m_disappearedPredicate(notification))
+                        {
+                            notification.BeforeRemove();
+                        }
+                    }
+                    entry.Value.RemoveAll(m_disappearedPredicate);
+                }
             }
         }
 
@@ -258,30 +328,34 @@ namespace Sandbox.Game.Gui
             ClearTexts();
 
             visibleCount = 0;
-            for (int i = MAX_PRIORITY; i >= 0; --i)
+            lock (m_lockObject)
             {
-                List<MyHudNotificationBase> notifications;
-                m_notificationsByPriority.TryGetValue(i, out notifications);
-                if (notifications == null)
-                    continue;
-
-                foreach (var notification in notifications)
+                for (int i = MAX_PRIORITY; i >= 0; --i)
                 {
-                    if (!IsDrawn(notification))
+                    List<MyHudNotificationBase> notifications;
+                    m_notificationsByPriority.TryGetValue(i, out notifications);
+                    if (notifications == null)
                         continue;
 
-                    StringBuilder messageStringBuilder = m_textsPool.Allocate();
-                    Debug.Assert(messageStringBuilder != null);
 
-                    messageStringBuilder.Append(notification.GetText());
+                    foreach (var notification in notifications)
+                    {
+                        if (!IsDrawn(notification))
+                            continue;
 
-                    Vector2 textSize = MyGuiManager.MeasureString(notification.Font, messageStringBuilder, MyGuiSandbox.GetDefaultTextScaleWithLanguage());
+                        StringBuilder messageStringBuilder = m_textsPool.Allocate();
+                        Debug.Assert(messageStringBuilder != null);
 
-                    m_textSizes.Add(textSize);
-                    m_texts.Add(messageStringBuilder);
-                    ++visibleCount;
-                    if (visibleCount == MyNotificationConstants.MAX_DISPLAYED_NOTIFICATIONS_COUNT)
-                        return;
+                        messageStringBuilder.Append(notification.GetText());
+
+                        Vector2 textSize = MyGuiManager.MeasureString(notification.Font, messageStringBuilder, MyGuiSandbox.GetDefaultTextScaleWithLanguage());
+
+                        m_textSizes.Add(textSize);
+                        m_texts.Add(messageStringBuilder);
+                        ++visibleCount;
+                        if (visibleCount == MyNotificationConstants.MAX_DISPLAYED_NOTIFICATIONS_COUNT)
+                            return;
+                    }
                 }
             }
         }
@@ -293,35 +367,39 @@ namespace Sandbox.Game.Gui
             for (int i = 0; i < m_textSizes.Count; i++)
             {
                 var textSize = m_textSizes[i];
-                MyGuiScreenHudBase.DrawFog(ref notificationPosition, ref textSize);
+                MyGuiTextShadows.DrawShadow(ref notificationPosition, ref textSize);
                 notificationPosition.Y += textSize.Y;
             }
         }
 
         private void DrawNotifications(int visibleCount)
         {
-            var notificationPosition = Position;
-            int textIdx = 0;
-            for (int i = MAX_PRIORITY; i >= 0; --i)
+            lock (m_lockObject)
             {
-                List<MyHudNotificationBase> notifications;
-                m_notificationsByPriority.TryGetValue(i, out notifications);
-                if (notifications == null)
-                    continue;
-
-                foreach (var notification in notifications)
+                var notificationPosition = Position;
+                int textIdx = 0;
+                for (int i = MAX_PRIORITY; i >= 0; --i)
                 {
-                    if (!IsDrawn(notification))
+
+                    List<MyHudNotificationBase> notifications;
+                    m_notificationsByPriority.TryGetValue(i, out notifications);
+                    if (notifications == null)
                         continue;
 
-                    MyGuiManager.DrawString(notification.Font, m_texts[textIdx], notificationPosition,
-                                            MyGuiSandbox.GetDefaultTextScaleWithLanguage(), Color.White,
-                                            MyGuiDrawAlignEnum.HORISONTAL_CENTER_AND_VERTICAL_CENTER, MyVideoSettingsManager.IsTripleHead());
-                    notificationPosition.Y += m_textSizes[textIdx].Y;
-                    ++textIdx;
-                    --visibleCount;
-                    if (visibleCount == 0)
-                        return;
+                    foreach (var notification in notifications)
+                    {
+                        if (!IsDrawn(notification))
+                            continue;
+
+                        MyGuiManager.DrawString(notification.Font, m_texts[textIdx], notificationPosition,
+                                                MyGuiSandbox.GetDefaultTextScaleWithLanguage(), Color.White,
+                                                MyGuiDrawAlignEnum.HORISONTAL_CENTER_AND_VERTICAL_CENTER, MyVideoSettingsManager.IsTripleHead());
+                        notificationPosition.Y += m_textSizes[textIdx].Y;
+                        ++textIdx;
+                        --visibleCount;
+                        if (visibleCount == 0)
+                            return;
+                    }
                 }
             }
         }
@@ -342,7 +420,9 @@ namespace Sandbox.Game.Gui
             bool isDrawn = notification.Alive;
             if (notification.IsControlsHint)
                 isDrawn = isDrawn && MySandboxGame.Config.ControlsHints;
-            if (MyHud.MinimalHud && notification.Level != MyNotificationLevel.Important)
+            if (MyHud.MinimalHud && !MyHud.CutsceneHud && notification.Level != MyNotificationLevel.Important)
+                isDrawn = false;
+            if(MyHud.CutsceneHud && notification.Level == MyNotificationLevel.Control)
                 isDrawn = false;
 
             return isDrawn;
@@ -367,15 +447,15 @@ namespace Sandbox.Game.Gui
                 var nextItemCode = MyControllerHelper.GetCodeForControl(cx_char, MyControlsSpace.TOOLBAR_NEXT_ITEM);
                 var prevItemCode = MyControllerHelper.GetCodeForControl(cx_char, MyControlsSpace.TOOLBAR_PREV_ITEM);
 
-                Remove(MyNotificationSingletons.HudHideHint);
+                //Remove(MyNotificationSingletons.HudHideHint);
                 if (MyPerGameSettings.Game == GameEnum.ME_GAME)
                 {
                     Remove(MyNotificationSingletons.GameplayOptions);
                 }
 
-                SetNotificationTextAndArgs(MyNotificationSingletons.HelpHint, MySpaceTexts.NotificationJoystickControlMenuFormat, controlMenuCode);
-                SetNotificationTextAndArgs(MyNotificationSingletons.ScreenHint, MySpaceTexts.NotificationJoystickMenus);
-                SetNotificationTextAndArgs(MyNotificationSingletons.SlotEquipHint, MySpaceTexts.NotificationJoystickSlotEquipFormat, prevItemCode, nextItemCode);
+                SetNotificationTextAndArgs(MyNotificationSingletons.HelpHint, MyCommonTexts.NotificationJoystickControlMenuFormat, controlMenuCode);
+                SetNotificationTextAndArgs(MyNotificationSingletons.ScreenHint, MyCommonTexts.NotificationJoystickMenus);
+                //SetNotificationTextAndArgs(MyNotificationSingletons.SlotEquipHint, MyCommonTexts.NotificationJoystickSlotEquipFormat, prevItemCode, nextItemCode);
             }
             else
             {          
@@ -387,17 +467,17 @@ namespace Sandbox.Game.Gui
                 var help = MyInput.Static.GetGameControl(MyControlsSpace.HELP_SCREEN);
                 var compoundToggle = MyInput.Static.GetGameControl(MyControlsSpace.SWITCH_COMPOUND);             
 
-                Add(MyNotificationSingletons.HudHideHint);
+                //Add(MyNotificationSingletons.HudHideHint);
                 if (MyPerGameSettings.Game == GameEnum.ME_GAME)
                 {
                     Add(MyNotificationSingletons.GameplayOptions);
-                    SetNotificationTextAndArgs(MyNotificationSingletons.GameplayOptions, MySpaceTexts.Notification_GameplayOptions, MyInput.Static.GetGameControl(MyControlsSpace.TERMINAL));
+                    SetNotificationTextAndArgs(MyNotificationSingletons.GameplayOptions, MyCommonTexts.Notification_GameplayOptions, MyInput.Static.GetGameControl(MyControlsSpace.TERMINAL));
                 }
 
-                SetNotificationTextAndArgs(MyNotificationSingletons.HelpHint, MySpaceTexts.NotificationNeedShowHelpScreen, help);
-                SetNotificationTextAndArgs(MyNotificationSingletons.ScreenHint, MySpaceTexts.NotificationScreenFormat, buildScreen);
-                SetNotificationTextAndArgs(MyNotificationSingletons.HudHideHint, MySpaceTexts.NotificationHudHideFormat, hud);
-                SetNotificationTextAndArgs(MyNotificationSingletons.SlotEquipHint, MySpaceTexts.NotificationSlotEquipFormat, slot1, slot2, slot3);
+                SetNotificationTextAndArgs(MyNotificationSingletons.HelpHint, MyCommonTexts.NotificationNeedShowHelpScreen, help);
+                SetNotificationTextAndArgs(MyNotificationSingletons.ScreenHint, MyCommonTexts.NotificationScreenFormat, buildScreen);
+                //SetNotificationTextAndArgs(MyNotificationSingletons.HudHideHint, MyCommonTexts.NotificationHudHideFormat, hud);
+                //SetNotificationTextAndArgs(MyNotificationSingletons.SlotEquipHint, MyCommonTexts.NotificationSlotEquipFormat, slot1, slot2, slot3);
             }
         }
     }

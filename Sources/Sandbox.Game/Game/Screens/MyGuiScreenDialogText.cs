@@ -1,11 +1,12 @@
-﻿using System;
-using System.IO;
-using Sandbox.Common.ObjectBuilders.Gui;
-using Sandbox.Game.Localization;
+﻿using Sandbox.Game.Localization;
 using Sandbox.Graphics.GUI;
+using System;
+using System.IO;
 using VRage.FileSystem;
+using VRage.Game;
 using VRage.Input;
-using VRage.Library.Utils;
+using VRage.ObjectBuilders;
+using VRage.Utils;
 
 namespace Sandbox.Game.Screens
 {
@@ -25,7 +26,7 @@ namespace Sandbox.Game.Screens
             m_value = initialValue ?? string.Empty;
             CanHideOthers = false;
             EnabledBackgroundFade = true;
-            m_caption = caption ?? MySpaceTexts.DialogAmount_SetValueCaption;
+            m_caption = caption ?? MyCommonTexts.DialogAmount_SetValueCaption;
             RecreateControls(true);
         }
         
@@ -42,7 +43,7 @@ namespace Sandbox.Game.Screens
             var fsPath = Path.Combine(MyFileSystem.ContentPath, fileName);
 
             MyObjectBuilder_GuiScreen objectBuilder;
-            Sandbox.Common.ObjectBuilders.Serializer.MyObjectBuilderSerializer.DeserializeXML<MyObjectBuilder_GuiScreen>(fsPath, out objectBuilder);
+            MyObjectBuilderSerializer.DeserializeXML<MyObjectBuilder_GuiScreen>(fsPath, out objectBuilder);
             Init(objectBuilder);
 
             m_valueTextbox = (MyGuiControlTextbox)Controls.GetControlByName("ValueTextbox");

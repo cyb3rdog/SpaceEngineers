@@ -29,7 +29,11 @@ namespace VRageMath
         /// <summary>
         /// Represents the value of pi times two.
         /// </summary>
-        public const float TwoPi = 6.283185f;
+        public const float TwoPi = 6.28318530718f;
+        /// <summary>
+        /// Represents the value of pi times two.
+        /// </summary>
+        public const float FourPi = 12.5663706144f;
         /// <summary>
         /// Represents the value of pi divided by two.
         /// </summary>
@@ -133,8 +137,8 @@ namespace VRageMath
         /// <param name="value">The value to clamp.</param><param name="min">The minimum value. If value is less than min, min will be returned.</param><param name="max">The maximum value. If value is greater than max, max will be returned.</param>
         public static float Clamp(float value, float min, float max)
         {
-            value = (double)value > (double)max ? max : value;
-            value = (double)value < (double)min ? min : value;
+            value = (value > max) ? max : value;
+            value = (value < min) ? min : value;
             return value;
         }
 
@@ -226,6 +230,52 @@ namespace VRageMath
         }
 
         /// <summary>
+        /// Interpolates between two values using a cubic equation.
+        /// </summary>
+        /// <param name="value1">Source value.</param><param name="value2">Source value.</param><param name="amount">Weighting value.</param>
+        public static double SmoothStep(double value1, double value2, double amount)
+        {
+            Debug.Assert(amount >= 0f && amount <= 1f, "Wrong amount value for SmoothStep");
+            return MathHelper.Lerp(value1, value2, SCurve3(amount));
+        }
+
+        /// <summary>
+        /// Interpolates between zero and one using cubic equiation, solved by de Casteljau.
+        /// </summary>
+        /// <param name="amount">Weighting value [0..1].</param>
+        public static float SmoothStepStable(float amount)
+        {
+            Debug.Assert(amount >= 0f && amount <= 1f, "Wrong amount value for SmoothStep");
+            float invAmount = 1 - amount;
+            // y1 = 0, y2 = 0, y3 = 1, y4 = 1
+            // y12 = 0
+            float y23 = amount;
+            // y34 = 1
+            float y123 = /*y12 * invAmount + */ y23 * amount;
+            float y234 = y23 * invAmount + /* y34 * */amount;
+            float y1234 = y123 * invAmount + y234 * amount;
+            return y1234;
+        }
+
+        /// <summary>
+        /// Interpolates between zero and one using cubic equiation, solved by de Casteljau.
+        /// </summary>
+        /// <param name="amount">Weighting value [0..1].</param>
+        public static double SmoothStepStable(double amount)
+        {
+            Debug.Assert(amount >= 0f && amount <= 1f, "Wrong amount value for SmoothStep");
+            double invAmount = 1 - amount;
+            // y1 = 0, y2 = 0, y3 = 1, y4 = 1
+            // y12 = 0
+            double y23 = amount;
+            // y34 = 1
+            double y123 = /*y12 * invAmount + */ y23 * amount;
+            double y234 = y23 * invAmount + /* y34 * */amount;
+            double y1234 = y123 * invAmount + y234 * amount;
+            return y1234;
+        }
+
+        /// <summary>
         /// Performs a Catmull-Rom interpolation using the specified positions.
         /// </summary>
         /// <param name="value1">The first position in the interpolation.</param><param name="value2">The second position in the interpolation.</param><param name="value3">The third position in the interpolation.</param><param name="value4">The fourth position in the interpolation.</param><param name="amount">Weighting factor.</param>
@@ -252,6 +302,22 @@ namespace VRageMath
             return (float)((double)value1 * (double)num4 + (double)value2 * (double)num5 + (double)tangent1 * (double)num6 + (double)tangent2 * (double)num7);
         }
 
+        public static Vector3D CalculateBezierPoint(double t, Vector3D p0, Vector3D p1, Vector3D p2, Vector3D p3)
+        {
+            double u = 1 - t;
+            double tt = t * t;
+            double uu = u * u;
+            double uuu = uu * u;
+            double ttt = tt * t;
+
+            Vector3D p = uuu * p0; //first term
+            p += 3 * uu * t * p1; //second term
+            p += 3 * u * tt * p2; //third term
+            p += ttt * p3; //fourth term
+
+            return p;
+        }
+
         /// <summary>
         /// Reduces a given angle to a value between π and -π.
         /// </summary>
@@ -266,8 +332,19 @@ namespace VRageMath
             return angle;
         }
 
-
         public static int GetNearestBiggerPowerOfTwo(int v)
+        {
+            --v;
+            v |= v >> 1;
+            v |= v >> 2;
+            v |= v >> 4;
+            v |= v >> 8;
+            v |= v >> 16;
+            ++v;
+            return v;
+        }
+
+        public static uint GetNearestBiggerPowerOfTwo(uint v)
         {
             --v;
             v |= v >> 1;
@@ -340,6 +417,7 @@ namespace VRageMath
             return abMin < c ? abMin : c;
         }
 
+#if !XB1
         public static int ComputeHashFromBytes(byte[] bytes)
         {
             int size = bytes.Length;
@@ -361,6 +439,7 @@ namespace VRageMath
                 }
             }
         }
+#endif // !XB1
 
         public static float RoundOn2(float x)
         {
@@ -411,6 +490,51 @@ namespace VRageMath
             return n < 0.0 ? (int)n - 1 : (int)n;
         }
 
+        private static readonly int[] lof2floor_lut = new int[]
+        {
+             0,  9,  1, 10, 13, 21,  2, 29,
+            11, 14, 16, 18, 22, 25,  3, 30,
+             8, 12, 20, 28, 15, 17, 24,  7,
+            19, 27, 23,  6, 26,  5,  4, 31
+        };
+
+        /**
+         * Fast integer Floor(Log2(value)).
+         * 
+         * Uses a DeBruijn-like method to find quickly the MSB.
+         * 
+         * Algorithm:
+         * https://en.wikipedia.org/wiki/De_Bruijn_sequence#Uses
+         * 
+         * This implementation:
+         * http://stackoverflow.com/a/11398748
+         */
+        public static int Log2Floor(int value)
+        {
+            value |= value >> 1;
+            value |= value >> 2;
+            value |= value >> 4;
+            value |= value >> 8;
+            value |= value >> 16;
+            return lof2floor_lut[(uint)(value * 0x07C4ACDD) >> 27];
+        }
+
+        /**
+         * Based on the above and this discussion:
+         * http://stackoverflow.com/questions/3272424/compute-fast-log-base-2-ceiling
+         * 
+         */
+        public static int Log2Ceiling(int value)
+        {
+            value |= value >> 1;
+            value |= value >> 2;
+            value |= value >> 4;
+            value |= value >> 8;
+            value |= value >> 16;
+            value = lof2floor_lut[(uint)(value * 0x07C4ACDD) >> 27];
+            return (value & (value - 1)) != 0 ? value + 1 : value;
+        }
+
         public static int Log2(int n)
         {
             int r = 0;
@@ -421,6 +545,24 @@ namespace VRageMath
             return r;
         }
 
+        public static int Log2(uint n)
+        {
+            int r = 0;
+
+            while ((n >>= 1) > 0)
+                ++r;
+
+            return r;
+        }
+
+        /// <summary>
+        /// Returns 2^n
+        /// </summary>
+        public static int Pow2(int n)
+        {
+            return 1 << n;
+        }
+
         public static double CubicInterp(double p0, double p1, double p2, double p3, double t)
         {
             double P  = (p3 - p2) - (p0 - p1);
@@ -428,6 +570,95 @@ namespace VRageMath
             double t2 = t*t;
 
             return P*t2*t + Q*t2 + (p2 - p0)*t + p1;
+        }
+
+        /// <summary>
+        /// Returns angle in range 0..2*PI
+        /// </summary>
+        /// <param name="angle">in radians</param>
+        public static void LimitRadians2PI(ref double angle)
+        {
+            if (angle > TwoPi)
+            {            
+                angle = angle % TwoPi;
+            }
+            else if (angle < 0)
+            {
+                angle = angle % TwoPi + TwoPi;
+            }
+        }
+
+        /// <summary>
+        /// Returns angle in range 0..2*PI
+        /// </summary>
+        /// <param name="angle">in radians</param>
+        public static void LimitRadians(ref float angle)
+        {
+            if (angle > TwoPi)
+            {
+                angle = angle % TwoPi;
+            }
+            else if (angle < 0)
+            {
+                angle = angle % TwoPi + TwoPi;
+            }
+        }
+
+        /// <summary>
+        /// Returns angle in range -PI..PI
+        /// </summary>
+        /// <param name="angle">radians</param>
+        public static void LimitRadiansPI(ref double angle)
+        {
+            if (angle > Pi)
+            {
+                angle = angle % Pi - Pi;
+            }
+            else if (angle < -Pi)
+            {
+                angle = angle % Pi + Pi;
+            }
+        }
+
+        /// <summary>
+        /// Returns angle in range -PI..PI
+        /// </summary>
+        /// <param name="angle">radians</param>
+        public static void LimitRadiansPI(ref float angle)
+        {
+            if (angle > Pi)
+            {
+                angle = angle % Pi - Pi;
+            }
+            else if (angle < Pi)
+            {
+                angle = angle % Pi + Pi;
+            }
+        }
+
+        public static Vector3 CalculateVectorOnSphere(Vector3 northPoleDir, float phi, float theta)
+        {
+            var sinTheta = Math.Sin(theta);
+            return Vector3.TransformNormal(new Vector3(
+               Math.Cos(phi) * sinTheta,
+               Math.Sin(phi) * sinTheta,
+               Math.Cos(theta)), Matrix.CreateFromDir(northPoleDir));
+        }
+
+        public static float MonotonicCosine(float radians)
+        {
+            if (radians > 0)
+                return 2 - (float)Math.Cos(radians);
+            else
+                return (float)Math.Cos(radians);
+        }
+
+        public static float MonotonicAcos(float cos)
+        {
+            if (cos > 1)
+                return (float)Math.Acos(2 - cos);
+            else
+                return (float)-Math.Acos(cos);
         }
     }
 }

@@ -2,14 +2,19 @@
 
 using Sandbox.Engine.Utils;
 using Sandbox.Game.Localization;
+using Sandbox.ModAPI;
 using System;
 using System.Collections.Generic;
 using System.Reflection;
 using System.Text;
+#if !XB1
+using System.Text.RegularExpressions;
+#endif // !XB1
 using VRage;
 using VRage.Input;
 using VRage.Library.Utils;
 using VRage.Plugins;
+using VRage.Profiler;
 using VRage.Utils;
 using Vector2 = VRageMath.Vector2;
 
@@ -40,10 +45,14 @@ namespace Sandbox.Graphics.GUI
         /// </summary>
         public static void LoadData(bool nullGui)
         {
+            ProfilerShort.Begin("Create MyDX9Gui");
             if (!nullGui)
                 Gui = new MyDX9Gui();
+            ProfilerShort.End();
 
+            ProfilerShort.Begin("Gui.LoadData");
             Gui.LoadData();
+            ProfilerShort.End();
         }
 
         public static void LoadContent(MyFontDescription[] fonts)
@@ -52,13 +61,51 @@ namespace Sandbox.Graphics.GUI
         }
 
         /// <summary>
+        /// Event triggered on gui control created.
+        /// </summary>
+        public static Action<object> GuiControlCreated;
+
+        /// <summary>
+        /// Event triggered on gui control removed.
+        /// </summary>
+        public static Action<object> GuiControlRemoved;
+
+#if XB1
+        //TODO for XB1
+#else // !XB1
+        //when changing sites, change WwwLinkNotAllowed accordingly. Also, when using whitelists, consider using WwwLinkNotAllowed to inform user that link is not available
+        private static Regex[] WWW_WHITELIST = {   new Regex(@"^(http[s]{0,1}://){0,1}[^/]*youtube.com/.*", RegexOptions.IgnoreCase),
+                                              new Regex(@"^(http[s]{0,1}://){0,1}[^/]*youtu.be/.*", RegexOptions.IgnoreCase),
+                                              new Regex(@"^(http[s]{0,1}://){0,1}[^/]*steamcommunity.com/.*", RegexOptions.IgnoreCase),
+                                              new Regex(@"^(http[s]{0,1}://){0,1}[^/]*forum[s]{0,1}.keenswh.com/.*", RegexOptions.IgnoreCase),
+                                          };
+#endif // !XB1
+
+        public static bool IsUrlWhitelisted(string wwwLink)
+        {
+#if XB1
+            System.Diagnostics.Debug.Assert(false, "TODO for XB1.");
+#else // !XB1
+            foreach (var r in WWW_WHITELIST)
+                if (r.IsMatch(wwwLink))
+                    return true;
+#endif // !XB1
+            return false;
+        }
+
+        /// <summary>
         /// Opens URL in Steam overlay or external browser.
         /// </summary>
         /// <param name="url">Url to open.</param>
         /// <param name="urlFriendlyName">Friendly name of URL to show in confirmation screen, e.g. Steam Workshop</param>
-        public static void OpenUrlWithFallback(string url, string urlFriendlyName)
+        public static void OpenUrlWithFallback(string url, string urlFriendlyName, bool useWhitelist=false)
         {
-            var confirmMessage = MyTexts.AppendFormat(new StringBuilder(), MySpaceTexts.MessageBoxTextOpenUrlOverlayNotEnabled, urlFriendlyName);
+            if (useWhitelist && !IsUrlWhitelisted(url))
+            {
+                MySandboxGame.Log.WriteLine("URL NOT ALLOWED: " + url);//gameplay may not be running yet, so no message box :-(
+                return;
+            }
+            var confirmMessage = MyTexts.AppendFormat(new StringBuilder(), MyCommonTexts.MessageBoxTextOpenUrlOverlayNotEnabled, urlFriendlyName);
             OpenUrl(url, UrlOpenMode.SteamOrExternalWithConfirm, confirmMessage);
         }
 
@@ -77,7 +124,7 @@ namespace Sandbox.Graphics.GUI
 
             if (MyFakes.XBOX_PREVIEW)
             {
-                MyGuiSandbox.Show(MySpaceTexts.MessageBoxTextErrorFeatureNotAvailableYet, MySpaceTexts.MessageBoxCaptionError);
+                MyGuiSandbox.Show(MyCommonTexts.MessageBoxTextErrorFeatureNotAvailableYet, MyCommonTexts.MessageBoxCaptionError);
             }
             else
             {
@@ -87,8 +134,8 @@ namespace Sandbox.Graphics.GUI
                     {
                         MyGuiSandbox.AddScreen(MyGuiSandbox.CreateMessageBox(
                             buttonType: MyMessageBoxButtonsType.YES_NO,
-                            messageCaption: MyTexts.Get(MySpaceTexts.MessageBoxCaptionPleaseConfirm),
-                            messageText: confirmMessage ?? MyTexts.AppendFormat(new StringBuilder(), MySpaceTexts.MessageBoxTextOpenBrowser, url),
+                            messageCaption: MyTexts.Get(MyCommonTexts.MessageBoxCaptionPleaseConfirm),
+                            messageText: confirmMessage ?? MyTexts.AppendFormat(new StringBuilder(), MyCommonTexts.MessageBoxTextOpenBrowser, url),
                             callback: delegate(MyGuiScreenMessageBox.ResultEnum retval)
                             {
                                 if (retval == MyGuiScreenMessageBox.ResultEnum.YES)
@@ -109,7 +156,7 @@ namespace Sandbox.Graphics.GUI
         {
             if (!MyBrowserHelper.OpenInternetBrowser(url))
             {
-                StringBuilder text = MyTexts.Get(MySpaceTexts.TitleFailedToStartInternetBrowser);
+                StringBuilder text = MyTexts.Get(MyCommonTexts.TitleFailedToStartInternetBrowser);
                 MyGuiSandbox.AddScreen(MyGuiSandbox.CreateMessageBox(messageText: text, messageCaption: text));
             }
         }
@@ -151,8 +198,13 @@ namespace Sandbox.Graphics.GUI
             {
                 var resultType = typeof(T);
                 createdType = resultType;
+#if XB1 // XB1_ALLINONEASSEMBLY
+                ChooseScreenType<T>(ref createdType, MyAssembly.AllInOneAssembly);
+#else // !XB1
                 ChooseScreenType<T>(ref createdType, MyPlugins.GameAssembly);
+                ChooseScreenType<T>(ref createdType, MyPlugins.SandboxAssembly);
                 ChooseScreenType<T>(ref createdType, MyPlugins.UserAssembly);
+#endif // !XB1
                 m_createdScreenTypes[resultType] = createdType;
             }
 
@@ -164,7 +216,11 @@ namespace Sandbox.Graphics.GUI
             if (assembly == null)
                 return;
 
+#if XB1 // XB1_ALLINONEASSEMBLY
+            foreach (var type in MyAssembly.GetTypes())
+#else // !XB1
             foreach (var type in assembly.GetTypes())
+#endif // !XB1
             {
                 if (typeof(T).IsAssignableFrom(type))
                 {
@@ -177,11 +233,17 @@ namespace Sandbox.Graphics.GUI
         public static void AddScreen(MyGuiScreenBase screen)
         {
             Gui.AddScreen(screen);
+            if (GuiControlCreated != null)
+                GuiControlCreated(screen);
+            if ( MyAPIGateway.GuiControlCreated != null )
+                MyAPIGateway.GuiControlCreated( screen );
         }
 
         public static void RemoveScreen(MyGuiScreenBase screen)
         {
             Gui.RemoveScreen(screen);
+            if ( GuiControlRemoved != null )
+                GuiControlRemoved( screen );
         }
 
         //  Sends input (keyboard/mouse) to screen which has focus (top-most)
@@ -240,16 +302,17 @@ namespace Sandbox.Graphics.GUI
             Action<MyGuiScreenMessageBox.ResultEnum> callback = null,
             int timeoutInMiliseconds = 0,
             MyGuiScreenMessageBox.ResultEnum focusedResult = MyGuiScreenMessageBox.ResultEnum.YES,
-            bool canHideOthers = true
+            bool canHideOthers = true,
+            Vector2? size = null
             )
         {
             return new MyGuiScreenMessageBox(
                 styleEnum, buttonType, messageText, messageCaption,
-                okButtonText ?? MySpaceTexts.Ok,
-                cancelButtonText ?? MySpaceTexts.Cancel,
-                yesButtonText ?? MySpaceTexts.Yes,
-                noButtonText ?? MySpaceTexts.No,
-                callback, timeoutInMiliseconds, focusedResult, canHideOthers);
+                okButtonText ?? MyCommonTexts.Ok,
+                cancelButtonText ?? MyCommonTexts.Cancel,
+                yesButtonText ?? MyCommonTexts.Yes,
+                noButtonText ?? MyCommonTexts.No,
+                callback, timeoutInMiliseconds, focusedResult, canHideOthers, size);
         }
 
         public static void Show(StringBuilder text, MyStringId caption = default(MyStringId), MyMessageBoxStyleEnum type = MyMessageBoxStyleEnum.Error)
@@ -280,7 +343,10 @@ namespace Sandbox.Graphics.GUI
 
         public static string GetKeyName(MyStringId control)
         {
-            return MyInput.Static.GetGameControl(control).GetControlButtonName(MyGuiInputDeviceEnum.Keyboard);
+            var controls = MyInput.Static.GetGameControl(control);
+            if (controls != null)
+                return controls.GetControlButtonName(MyGuiInputDeviceEnum.Keyboard);
+            else return "";
         }
     }
 }

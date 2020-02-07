@@ -1,83 +1,143 @@
-﻿using System;
+﻿using Havok;
+using Sandbox.Common.ObjectBuilders;
+using Sandbox.Engine.Multiplayer;
+using Sandbox.Engine.Physics;
+using Sandbox.Engine.Utils;
+using Sandbox.Game.Entities.Blocks;
+using Sandbox.Game.GameSystems.Conveyors;
+using Sandbox.Game.Gui;
+using Sandbox.Game.Localization;
+using Sandbox.Game.Multiplayer;
+using Sandbox.Game.Screens.Terminal.Controls;
+using Sandbox.ModAPI.Ingame;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
 using System.Text;
-using Havok;
-using Sandbox.Common;
-
-using Sandbox.Common.ObjectBuilders;
-using Sandbox.Definitions;
-using Sandbox.Graphics.GUI;
-using Sandbox.Engine.Physics;
-using Sandbox.Engine.Utils;
-using Sandbox.Game.Debugging;
-using Sandbox.Game.GameSystems.Electricity;
-
+using VRage;
+using VRage.Game;
+using VRage.ModAPI;
+using VRage.Network;
 using VRage.Utils;
-using VRage.Trace;
 using VRageMath;
-using Sandbox.Game.Multiplayer;
-using Sandbox.Game.World;
-using Sandbox.Game.Gui;
-using Sandbox.Game.Weapons;
-using Sandbox.Game.GameSystems.Conveyors;
+using VRage.Library;
+using VRage.Sync;
 
 namespace Sandbox.Game.Entities.Cube
 {
-    using Sandbox.Engine.Models;
-    using VRage.Groups;
-    using Sandbox.Game.Screens.Terminal.Controls;
-    using Sandbox.ModAPI.Ingame;
-    using Sandbox.Game.Localization;
-    using VRage;
-
     [MyCubeBlockType(typeof(MyObjectBuilder_MotorStator))]
-    class MyMotorStator : MyMotorBase, IMyConveyorEndpointBlock, Sandbox.ModAPI.IMyMotorStator
+    public class MyMotorStator : MyMotorBase, IMyConveyorEndpointBlock, Sandbox.ModAPI.IMyMotorStator
     {
         const float NormalizedToRadians = (float)(2.0f * Math.PI);
         const float DegreeToRadians = (float)(Math.PI / 180.0f);
 
+        private static readonly float MIN_LOWER_LIMIT = -NormalizedToRadians - MathHelper.ToRadians(0.5f);
+        private static readonly float MAX_UPPER_LIMIT = NormalizedToRadians + MathHelper.ToRadians(0.5f);
+
+        //public readonly Sync<float> WeldVelocity;
+        //public readonly Sync<float> UnweldVelocity;
+        public readonly Sync<float> Torque;
+        public readonly Sync<float> BrakingTorque;
+        public readonly Sync<float> TargetVelocity;
+        private readonly Sync<float> m_minAngle;
+        private readonly Sync<float> m_maxAngle;
+
         private HkVelocityConstraintMotor m_motor;
-
-        private float m_torque;
-
-        private float m_brakingTorque;
-
-        private float m_targetVelocity;
-        private float m_minAngle;
-        private float m_maxAngle;
         private bool m_limitsActive;
-        private bool m_isAttached = false;
         protected bool m_canBeDetached = false;
-
         private float m_currentAngle;
+        protected MyAttachableConveyorEndpoint m_conveyorEndpoint;
 
-        static MyMotorStator()
+        public float TargetVelocityRPM
         {
-            var reverse = new MyTerminalControlButton<MyMotorStator>("Reverse", MySpaceTexts.BlockActionTitle_Reverse, MySpaceTexts.Blank, (b) => b.ReverseValuesRequest());
+            get { return TargetVelocity * MathHelper.RadiansPerSecondToRPM; }
+            set { TargetVelocity.Value = value * MathHelper.RPMToRadiansPerSecond; }
+        }
+
+        public float MinAngle
+        {
+            get { return m_minAngle / DegreeToRadians; }
+            set { SetSafeAngles(false, value * DegreeToRadians, m_maxAngle); }
+        }
+
+        public float MaxAngle
+        {
+            get { return m_maxAngle / DegreeToRadians; }
+            set { SetSafeAngles(true, m_minAngle, value * DegreeToRadians); }
+        }
+
+        protected override float ModelDummyDisplacement
+        {
+            get { return MotorDefinition.RotorDisplacementInModel; }
+        }
+
+        public IMyConveyorEndpoint ConveyorEndpoint
+        {
+            get { return m_conveyorEndpoint; }
+        }
+
+        event Action<bool> LimitReached;
+
+        public MyMotorStator()
+        {
+#if XB1 // XB1_SYNC_NOREFLECTION
+            m_dummyDisplacement = SyncType.CreateAndAddProp<float>(); //<== from base class
+
+            Torque = SyncType.CreateAndAddProp<float>();
+            BrakingTorque = SyncType.CreateAndAddProp<float>();
+            TargetVelocity = SyncType.CreateAndAddProp<float>();
+            m_minAngle = SyncType.CreateAndAddProp<float>();
+            m_maxAngle = SyncType.CreateAndAddProp<float>();
+#endif // XB1
+            CreateTerminalControls();
+
+            NeedsUpdate = MyEntityUpdateEnum.EACH_FRAME | MyEntityUpdateEnum.EACH_100TH_FRAME;
+            m_soundEmitter = new MyEntity3DSoundEmitter(this, true);
+            m_canBeDetached = true;
+
+            SyncType.PropertyChanged += SyncType_PropertyChanged;
+        }
+
+        protected override void CreateTerminalControls()
+        {
+            if (MyTerminalControlFactory.AreControlsCreated<MyMotorStator>())
+                return;
+            base.CreateTerminalControls();
+
+            var addRotorHead = new MyTerminalControlButton<MyMotorStator>("Add Top Part", MySpaceTexts.BlockActionTitle_AddRotorHead, MySpaceTexts.BlockActionTooltip_AddRotorHead, (b) => b.RecreateTop());
+            addRotorHead.Enabled = (b) => (b.TopBlock == null);
+            addRotorHead.EnableAction(MyTerminalActionIcons.STATION_ON);
+            MyTerminalControlFactory.AddControl(addRotorHead);
+
+            var addSmallRotorHead = new MyTerminalControlButton<MyMotorStator>("Add Small Top Part", MySpaceTexts.BlockActionTitle_AddSmallRotorHead, MySpaceTexts.BlockActionTooltip_AddSmallRotorHead, (b) => b.RecreateTop(smallToLarge: true));
+            addSmallRotorHead.Enabled = (b) => (b.TopBlock == null);
+            addSmallRotorHead.Visible = (b) => (b.CubeGrid.GridSizeEnum == MyCubeSize.Large);
+            addSmallRotorHead.EnableAction(MyTerminalActionIcons.STATION_ON);
+            MyTerminalControlFactory.AddControl(addSmallRotorHead);
+
+            var reverse = new MyTerminalControlButton<MyMotorStator>("Reverse", MySpaceTexts.BlockActionTitle_Reverse, MySpaceTexts.Blank, (b) => b.TargetVelocityRPM = -b.TargetVelocityRPM);
             reverse.EnableAction(MyTerminalActionIcons.REVERSE);
             MyTerminalControlFactory.AddControl(reverse);
 
-            var detach = new MyTerminalControlButton<MyMotorStator>("Detach", MySpaceTexts.BlockActionTitle_Detach, MySpaceTexts.Blank, (b) => b.OnDetachRotorBtnClick());
-
+            var detach = new MyTerminalControlButton<MyMotorStator>("Detach", MySpaceTexts.BlockActionTitle_Detach, MySpaceTexts.Blank, (b) => b.m_connectionState.Value = new State() { TopBlockId = null, MasterToSlave = null });
+            detach.Enabled = (b) => b.m_connectionState.Value.TopBlockId.HasValue && b.m_isWelding == false && b.m_welded == false;
+            detach.Visible = (b) => b.m_canBeDetached;
             var actionDetach = detach.EnableAction(MyTerminalActionIcons.NONE);
             actionDetach.Enabled = (b) => b.m_canBeDetached;
-            detach.Enabled = (b) => b.m_isAttached;
-            detach.Visible = (b) => b.m_canBeDetached;
             MyTerminalControlFactory.AddControl(detach);
 
-            var attach = new MyTerminalControlButton<MyMotorStator>("Attach", MySpaceTexts.BlockActionTitle_Attach, MySpaceTexts.Blank, (b) => b.SyncObject.AttachRotor());
+            var attach = new MyTerminalControlButton<MyMotorStator>("Attach", MySpaceTexts.BlockActionTitle_Attach, MySpaceTexts.Blank, (b) => b.m_connectionState.Value = new State() { TopBlockId = 0, MasterToSlave = null });
+            attach.Enabled = (b) => !b.m_connectionState.Value.TopBlockId.HasValue;
+            attach.Visible = (b) => b.m_canBeDetached;
             var actionAttach = attach.EnableAction(MyTerminalActionIcons.NONE);
             actionAttach.Enabled = (b) => b.m_canBeDetached;
-            attach.Enabled = (b) => !b.m_isAttached;
-            attach.Visible = (b) => b.m_canBeDetached;
             MyTerminalControlFactory.AddControl(attach);
 
             var torque = new MyTerminalControlSlider<MyMotorStator>("Torque", MySpaceTexts.BlockPropertyTitle_MotorTorque, MySpaceTexts.BlockPropertyDescription_MotorTorque);
             torque.Getter = (x) => x.Torque;
-            torque.Setter = (x, v) => x.TorqueChangeRequest(v);
+            torque.Setter = (x, v) => x.Torque.Value = v;
             torque.DefaultValueGetter = (x) => x.MotorDefinition.MaxForceMagnitude;
             torque.Writer = (x, result) => MyValueFormatter.AppendTorqueInBestUnit(x.Torque, result);
             torque.EnableActions();
@@ -87,7 +147,7 @@ namespace Sandbox.Game.Entities.Cube
 
             var brakingTorque = new MyTerminalControlSlider<MyMotorStator>("BrakingTorque", MySpaceTexts.BlockPropertyTitle_MotorBrakingTorque, MySpaceTexts.BlockPropertyDescription_MotorBrakingTorque);
             brakingTorque.Getter = (x) => x.BrakingTorque;
-            brakingTorque.Setter = (x, v) => x.BrakingTorqueChangeRequest(v);
+            brakingTorque.Setter = (x, v) => x.BrakingTorque.Value = v;
             brakingTorque.DefaultValue = 0;
             brakingTorque.Writer = (x, result) => MyValueFormatter.AppendTorqueInBestUnit(x.BrakingTorque, result);
             brakingTorque.EnableActions();
@@ -96,10 +156,10 @@ namespace Sandbox.Game.Entities.Cube
             MyTerminalControlFactory.AddControl(brakingTorque);
 
             var targetVelocity = new MyTerminalControlSlider<MyMotorStator>("Velocity", MySpaceTexts.BlockPropertyTitle_MotorTargetVelocity, MySpaceTexts.BlockPropertyDescription_MotorVelocity);
-            targetVelocity.Getter = (x) => x.GetTargetVelocityRPM();
-            targetVelocity.Setter = (x, v) => x.SetTargetVelocity(v);
+            targetVelocity.Getter = (x) => x.TargetVelocityRPM;
+            targetVelocity.Setter = (x, v) => x.TargetVelocityRPM = v;
             targetVelocity.DefaultValue = 0;
-            targetVelocity.Writer = (x, result) => result.Concat(x.GetTargetVelocityRPM(), 2).Append(" rpm");
+            targetVelocity.Writer = (x, result) => result.Concat(x.TargetVelocityRPM, 2).Append(" rpm");
             targetVelocity.EnableActionsWithReset();
             targetVelocity.Denormalizer = (x, v) => x.DenormalizeRPM(v);
             targetVelocity.Normalizer = (x, v) => x.NormalizeRPM(v);
@@ -107,7 +167,7 @@ namespace Sandbox.Game.Entities.Cube
 
             var lowerLimit = new MyTerminalControlSlider<MyMotorStator>("LowerLimit", MySpaceTexts.BlockPropertyTitle_MotorMinAngle, MySpaceTexts.BlockPropertyDescription_MotorLowerLimit);
             lowerLimit.Getter = (x) => x.MinAngle;
-            lowerLimit.Setter = (x, v) => x.MinAngleChangeRequest(v);
+            lowerLimit.Setter = (x, v) => x.MinAngle = v;
             lowerLimit.DefaultValue = -361;
             lowerLimit.SetLimits(-361, 360);
             lowerLimit.Writer = (x, result) => WriteAngle(x.m_minAngle, result);
@@ -116,7 +176,7 @@ namespace Sandbox.Game.Entities.Cube
 
             var upperLimit = new MyTerminalControlSlider<MyMotorStator>("UpperLimit", MySpaceTexts.BlockPropertyTitle_MotorMaxAngle, MySpaceTexts.BlockPropertyDescription_MotorUpperLimit);
             upperLimit.Getter = (x) => x.MaxAngle;
-            upperLimit.Setter = (x, v) => x.MaxAngleChangeRequest(v);
+            upperLimit.Setter = (x, v) => x.MaxAngle = v;
             upperLimit.DefaultValue = 361;
             upperLimit.SetLimits(-360, 361);
             upperLimit.Writer = (x, result) => WriteAngle(x.m_maxAngle, result);
@@ -125,13 +185,56 @@ namespace Sandbox.Game.Entities.Cube
 
             var rotorDisplacement = new MyTerminalControlSlider<MyMotorStator>("Displacement", MySpaceTexts.BlockPropertyTitle_MotorRotorDisplacement, MySpaceTexts.BlockPropertyDescription_MotorRotorDisplacement);
             rotorDisplacement.Getter = (x) => x.DummyDisplacement;
-            rotorDisplacement.Setter = (x, v) => x.SyncObject.ChangeRotorDisplacement(v);
+            rotorDisplacement.Setter = (x, v) => x.DummyDisplacement = v;
             rotorDisplacement.DefaultValueGetter = (x) => 0.0f;
             rotorDisplacement.SetLimits((x) => x.MotorDefinition.RotorDisplacementMin, (x) => x.MotorDefinition.RotorDisplacementMax);
             rotorDisplacement.Writer = (x, result) => MyValueFormatter.AppendDistanceInBestUnit(x.DummyDisplacement, result);
             rotorDisplacement.Enabled = (b) => b.m_isAttached;
             rotorDisplacement.EnableActions();
             MyTerminalControlFactory.AddControl(rotorDisplacement);
+        }
+
+        public override void Init(MyObjectBuilder_CubeBlock objectBuilder, MyCubeGrid cubeGrid)
+        {
+            SyncFlag = true;
+            base.Init(objectBuilder, cubeGrid);
+
+            var ob = (MyObjectBuilder_MotorStator)objectBuilder;
+            Torque.Value = MathHelper.Clamp(DenormalizeTorque(ob.Force), 0f, MotorDefinition.MaxForceMagnitude);
+            BrakingTorque.Value = MathHelper.Clamp(DenormalizeTorque(ob.Friction), 0f, MotorDefinition.MaxForceMagnitude);
+            TargetVelocity.Value = MathHelper.Clamp(ob.TargetVelocity * MaxRotorAngularVelocity, -MaxRotorAngularVelocity, MaxRotorAngularVelocity);
+            m_limitsActive = ob.LimitsActive;
+            m_currentAngle = ob.CurrentAngle;
+            SetSafeAngles(true, ob.MinAngle ?? float.NegativeInfinity, ob.MaxAngle ?? float.PositiveInfinity);
+
+            DummyDisplacement = ob.DummyDisplacement;
+            // We have to limit the displacement, because default value for small rotors is too large
+            if (DummyDisplacement < MotorDefinition.RotorDisplacementMin) DummyDisplacement = MotorDefinition.RotorDisplacementMin;
+            if (DummyDisplacement > MotorDefinition.RotorDisplacementMax) DummyDisplacement = MotorDefinition.RotorDisplacementMax;
+
+            AddDebugRenderComponent(new Components.MyDebugRenderComponentMotorStator(this));
+        }
+
+        public override MyObjectBuilder_CubeBlock GetObjectBuilderCubeBlock(bool copy = false)
+        {
+            var ob = (MyObjectBuilder_MotorStator)base.GetObjectBuilderCubeBlock(copy);
+            ob.Force = NormalizeTorque(Torque);
+            ob.Friction = NormalizeTorque(BrakingTorque);
+            ob.TargetVelocity = TargetVelocity / MaxRotorAngularVelocity;
+            ob.MinAngle = float.IsNegativeInfinity(m_minAngle) ? (float?)null : m_minAngle;
+            ob.MaxAngle = float.IsPositiveInfinity(m_maxAngle) ? (float?)null : m_maxAngle;
+            ob.CurrentAngle = m_currentAngle;
+            ob.LimitsActive = m_limitsActive;
+            ob.DummyDisplacement = DummyDisplacement;
+            return ob;
+        }
+
+        void SyncType_PropertyChanged(SyncBase obj)
+        {
+            if (obj == m_dummyDisplacement && MyPhysicsBody.IsConstraintValid(m_constraint))
+            {
+                SetConstraintPosition(TopBlock, (HkLimitedHingeConstraintData)m_constraint.ConstraintData);
+            }
         }
 
         private float NormalizeRPM(float v)
@@ -144,41 +247,12 @@ namespace Sandbox.Game.Entities.Cube
             return (v - 0.5f) * 2 * (MaxRotorAngularVelocity * MathHelper.RadiansPerSecondToRPM);
         }
 
-        #region Terminal properties and value writers
-
-        public new MySyncMotorStator SyncObject { get { return (MySyncMotorStator)base.SyncObject; } }
-
-        protected override MySyncEntity OnCreateSync()
-        {
-            var sync = new MySyncMotorStator(this);
-            sync.SetAngle = SyncAngle;
-            return sync;
-        }
-
         public static void WriteAngle(float angleRad, StringBuilder result)
         {
             if (float.IsInfinity(angleRad))
                 result.Append(MyTexts.Get(MySpaceTexts.BlockPropertyValue_MotorAngleUnlimited));
             else
                 result.Concat(MathHelper.ToDegrees(angleRad), 0).Append("°");
-        }
-
-        public void ReverseValuesRequest()
-        {
-            SyncObject.ChangeStatorTargetVelocity(-TargetVelocity);
-        }
-
-        public float Torque
-        {
-            get { return m_torque; }
-            set
-            {
-                if (m_torque != value)
-                {
-                    m_torque = value;
-                    RaisePropertiesChanged();
-                }
-            }
         }
 
         private float NormalizeTorque(float value)
@@ -197,150 +271,25 @@ namespace Sandbox.Game.Entities.Cube
                 return MathHelper.InterpLog(value, 1f, MotorDefinition.MaxForceMagnitude);
         }
 
-        public void TorqueChangeRequest(float torque)
+        protected override void UpdateText()
         {
-            if (Sync.IsServer)
-            {
-                Torque = torque;
-            }
-            SyncObject.ChangeStatorTorque(torque);
-        }
+            VRage.Profiler.ProfilerShort.Begin("UpdateText");
+            DetailedInfo.Clear();
+            DetailedInfo.AppendStringBuilder(MyTexts.Get(GetAttachState())).AppendLine();
 
-        public float BrakingTorque
-        {
-            get { return m_brakingTorque; }
-            set
-            {
-                if (m_brakingTorque != value)
-                {
-                    m_brakingTorque = value;
-                    RaisePropertiesChanged();
-                }
-            }
-        }
-
-        public void BrakingTorqueChangeRequest(float brakingTorque)
-        {
-            if (Sync.IsServer)
-            {
-                BrakingTorque = brakingTorque;
-            }
-            SyncObject.ChangeStatorBrakingTorque(brakingTorque);
-        }
-
-        private float GetTargetVelocityRPM()
-        {
-            return MathHelper.RadiansPerSecondToRPM * m_targetVelocity;
-        }
-
-        private void SetTargetVelocity(float RPM, bool sync = true)
-        {
-            if (RPM != GetTargetVelocityRPM())
-            {
-                var velocity = MathHelper.RPMToRadiansPerMillisec * 1000 * RPM;
-                if (sync)
-                {
-                    if (Sync.IsServer)
-                    {
-                        TargetVelocity = velocity;
-                    }
-                    SyncObject.ChangeStatorTargetVelocity(velocity);
-                }
-                else
-                {
-                    TargetVelocity = velocity;
-                }
-            }
-        }
-
-        public float TargetVelocity
-        {
-            get { return m_targetVelocity; }
-            set
-            {
-                if (m_targetVelocity != value)
-                {
-                    m_targetVelocity = value;
-                    RaisePropertiesChanged();
-                }
-            }
-        }
-
-        public void TargetVelocityChangeRequest(float targetVelocity)
-        {
-            if (Sync.IsServer)
-            {
-                TargetVelocity = targetVelocity;
-            }
-            SyncObject.ChangeStatorTargetVelocity(targetVelocity);
-        }
-
-        public float MinAngle
-        {
-            get { return m_minAngle / DegreeToRadians; }
-            set
-            {
-                if (MinAngle != value)
-                {
-                    m_minAngle = value * DegreeToRadians;
-                    FixAngles(false);
-                    RaisePropertiesChanged();
-                }
-            }
-        }
-
-        public void MinAngleChangeRequest(float minAngle)
-        {
-            if (Sync.IsServer)
-            {
-                MinAngle = minAngle;
-            }
-            SyncObject.ChangeStatorMinAngle(minAngle);
-        }
-
-        public float MaxAngle
-        {
-            get { return m_maxAngle / DegreeToRadians; }
-            set
-            {
-                if (MaxAngle != value)
-                {
-                    m_maxAngle = value * DegreeToRadians;
-                    FixAngles(true);
-                    RaisePropertiesChanged();
-                }
-            }
-        }
-
-        public void MaxAngleChangeRequest(float maxAngle)
-        {
-            if (Sync.IsServer)
-            {
-                MaxAngle = MaxAngle;
-            }
-            SyncObject.ChangeStatorMaxAngle(maxAngle);
-        }
-        #endregion
-
-        private static readonly float MIN_LOWER_LIMIT = -NormalizedToRadians - MathHelper.ToRadians(0.5f);
-
-        private static readonly float MAX_UPPER_LIMIT = NormalizedToRadians + MathHelper.ToRadians(0.5f);
-
-        void UpdateText()
-        {
             if (SafeConstraint != null)
             {
-                DetailedInfo.Clear();
-                DetailedInfo.AppendStringBuilder(MyTexts.Get(MySpaceTexts.BlockPropertiesText_MotorCurrentAngle)).AppendDecimal(MathHelper.ToDegrees(m_currentAngle), 0).Append("°");
+                float angle = m_limitsActive ? MyMath.Clamp(m_currentAngle, m_minAngle, m_maxAngle) : m_currentAngle;
+                DetailedInfo.AppendStringBuilder(MyTexts.Get(MySpaceTexts.BlockPropertiesText_MotorCurrentAngle)).AppendDecimal(MathHelper.ToDegrees(angle), 0).Append("°");
 
                 if (!m_limitsActive && !(float.IsNegativeInfinity(m_minAngle) && float.IsPositiveInfinity(m_maxAngle)))
                 {
-                    DetailedInfo.Append(Environment.NewLine);
+                    DetailedInfo.Append(MyEnvironment.NewLine);
                     DetailedInfo.AppendStringBuilder(MyTexts.Get(MySpaceTexts.BlockPropertiesText_MotorLimitsDisabled));
                 }
-
-                RaisePropertiesChanged();
             }
+            RaisePropertiesChanged();
+            VRage.Profiler.ProfilerShort.End();
         }
 
         void ScaleDown()
@@ -361,12 +310,6 @@ namespace Sandbox.Game.Entities.Cube
             SetAngleToPhysics();
         }
 
-        void SyncAngle(float angle)
-        {
-            m_currentAngle = angle;
-            SetAngleToPhysics();
-        }
-
         void SetAngleToPhysics()
         {
             if (SafeConstraint != null)
@@ -375,37 +318,40 @@ namespace Sandbox.Game.Entities.Cube
             }
         }
 
-        void FixAngles(bool lowerIsFixed)
+        void SetSafeAngles(bool lowerIsFixed, float lowerLimit, float upperLimit)
         {
             // When out of limits get to limits
-            if (m_currentAngle < m_minAngle)
+            if (m_currentAngle < lowerLimit)
             {
                 ScaleUp();
             }
 
-            if (m_currentAngle > m_maxAngle)
+            if (m_currentAngle > upperLimit)
             {
                 ScaleDown();
             }
 
             // Min must be smaller than max
-            if (m_maxAngle < m_minAngle)
+            if (upperLimit < lowerLimit)
             {
                 if (lowerIsFixed)
-                    m_maxAngle = m_minAngle;
+                    upperLimit = lowerLimit;
                 else
-                    m_minAngle = m_maxAngle;
+                    lowerLimit = upperLimit;
             }
 
-            if (m_minAngle < MIN_LOWER_LIMIT)
+            if (lowerLimit < MIN_LOWER_LIMIT)
             {
-                m_minAngle = float.NegativeInfinity;
+                lowerLimit = float.NegativeInfinity;
             }
 
-            if (m_maxAngle > MAX_UPPER_LIMIT)
+            if (upperLimit > MAX_UPPER_LIMIT)
             {
-                m_maxAngle = float.PositiveInfinity;
+                upperLimit = float.PositiveInfinity;
             }
+
+            m_minAngle.Value = lowerLimit;
+            m_maxAngle.Value = upperLimit;
 
             m_limitsActive = false;
             TryActivateLimits();
@@ -473,52 +419,6 @@ namespace Sandbox.Game.Entities.Cube
             }
         }
 
-        #region Construction and serialization
-        public MyMotorStator()
-        {
-            NeedsUpdate = MyEntityUpdateEnum.EACH_FRAME | MyEntityUpdateEnum.EACH_100TH_FRAME;
-            m_soundEmitter = new MyEntity3DSoundEmitter(this);
-            m_canBeDetached = true;
-        }
-
-        public override void Init(MyObjectBuilder_CubeBlock objectBuilder, MyCubeGrid cubeGrid)
-        {
-            SyncFlag = true;
-            base.Init(objectBuilder, cubeGrid);
-
-            var ob = (MyObjectBuilder_MotorStator)objectBuilder;
-            Torque = MathHelper.Clamp(DenormalizeTorque(ob.Force), 0f, MotorDefinition.MaxForceMagnitude);
-            BrakingTorque = MathHelper.Clamp(DenormalizeTorque(ob.Friction), 0f, MotorDefinition.MaxForceMagnitude);
-            TargetVelocity = MathHelper.Clamp(ob.TargetVelocity * MaxRotorAngularVelocity, -MaxRotorAngularVelocity, MaxRotorAngularVelocity);
-            m_minAngle = ob.MinAngle ?? float.NegativeInfinity;
-            m_maxAngle = ob.MaxAngle ?? float.PositiveInfinity;
-            m_limitsActive = ob.LimitsActive;
-            m_currentAngle = ob.CurrentAngle;
-
-            DummyDisplacement = ob.DummyDisplacement;
-            // We have to limit the displacement, because default value for small rotors is too large
-            if (DummyDisplacement < MotorDefinition.RotorDisplacementMin) DummyDisplacement = MotorDefinition.RotorDisplacementMin;
-            if (DummyDisplacement > MotorDefinition.RotorDisplacementMax) DummyDisplacement = MotorDefinition.RotorDisplacementMax;
-
-            AddDebugRenderComponent(new Components.MyDebugRenderComponentMotorStator(this));
-        }
-
-        public override MyObjectBuilder_CubeBlock GetObjectBuilderCubeBlock(bool copy = false)
-        {
-            var ob = (MyObjectBuilder_MotorStator)base.GetObjectBuilderCubeBlock(copy);
-            ob.Force = NormalizeTorque(Torque);
-            ob.Friction = NormalizeTorque(BrakingTorque);
-            ob.TargetVelocity = TargetVelocity / MaxRotorAngularVelocity;
-            ob.MinAngle = float.IsNegativeInfinity(m_minAngle) ? (float?)null : m_minAngle;
-            ob.MaxAngle = float.IsPositiveInfinity(m_maxAngle) ? (float?)null : m_maxAngle;
-            ob.CurrentAngle = m_currentAngle;
-            ob.LimitsActive = m_limitsActive;
-            ob.DummyDisplacement = DummyDisplacement;
-            return ob;
-        }
-        #endregion
-
-
         float GetAngle(Quaternion q, Vector3 axis)
         {
             float a2 = 2 * (float)Math.Atan2(new Vector3(q.X, q.Y, q.Z).Length(), q.W);
@@ -532,13 +432,18 @@ namespace Sandbox.Game.Entities.Cube
         {
             base.UpdateBeforeSimulation();
 
-            if (MyFakes.REPORT_INVALID_ROTORS)
+            if (m_welded)
+                return;
+
+            if (TopGrid == null || SafeConstraint == null)
+                return;
+
+            if (SafeConstraint.RigidBodyA == SafeConstraint.RigidBodyB) //welded
             {
-                //Debug.Assert(m_constraint != null, "Rotor constraint is not created although it should be!");
+                SafeConstraint.Enabled = false;
+                return;
             }
 
-            if (m_rotorGrid == null || SafeConstraint == null)
-                return;
             var oldAngle = m_currentAngle;
             m_currentAngle = HkLimitedHingeConstraintData.GetCurrentAngle(SafeConstraint);
             if (oldAngle != m_currentAngle)
@@ -561,7 +466,7 @@ namespace Sandbox.Game.Entities.Cube
 
                 // Activate even when motor is stopped, so it fixes it's limits
                 CubeGrid.Physics.RigidBody.Activate();
-                m_rotorGrid.Physics.RigidBody.Activate();
+                TopGrid.Physics.RigidBody.Activate();
             }
             if (m_limitsActive)
             {
@@ -573,11 +478,16 @@ namespace Sandbox.Game.Entities.Cube
                     if (oldAngle < data.MaxAngularLimit && m_currentAngle >= data.MaxAngularLimit)
                         handle(true);
                 }
+                if (m_currentAngle > MathHelper.TwoPi)
+                   ScaleDown();
+                if (m_currentAngle < -MathHelper.TwoPi)
+                    ScaleUp();
             }
 
-            m_motor.MaxForce = Torque;
-            m_motor.MinForce = -Torque;
-            m_motor.VelocityTarget = TargetVelocity * Sync.RelativeSimulationRatio;
+            var effectiveTorque = Math.Min(Torque, TopGrid.Physics.Mass * TopGrid.Physics.Mass);
+            m_motor.MaxForce = effectiveTorque;
+            m_motor.MinForce = -effectiveTorque;
+            m_motor.VelocityTarget = TargetVelocity;
 
             bool motorRunning = IsWorking;
             if (data.MotorEnabled != motorRunning)
@@ -585,89 +495,84 @@ namespace Sandbox.Game.Entities.Cube
                 data.SetMotorEnabled(m_constraint, motorRunning);
             }
 
-            if (motorRunning && m_rotorGrid != null && !m_motor.VelocityTarget.IsZero())
+            if (motorRunning && TopGrid != null && !m_motor.VelocityTarget.IsZero())
             {
                 CubeGrid.Physics.RigidBody.Activate();
-                m_rotorGrid.Physics.RigidBody.Activate();
+                TopGrid.Physics.RigidBody.Activate();
             }
         }
 
-        public override bool Attach(MyMotorRotor rotor, bool updateSync = false, bool updateGroup = true)
+        private void SetConstraintPosition(MyAttachableTopBlockBase rotor, HkLimitedHingeConstraintData data)
         {
-            if (CubeGrid.Physics == null || SafeConstraint != null)
-                return false;
+            var posA = DummyPosition;
+            var posB = rotor.Position * rotor.CubeGrid.GridSize;
+            var axisA = PositionComp.LocalMatrix.Up;
+            var axisAPerp = PositionComp.LocalMatrix.Forward;
+            var axisB = rotor.PositionComp.LocalMatrix.Up;
+            var axisBPerp = rotor.PositionComp.LocalMatrix.Forward;
+            data.SetInBodySpace(posA, posB, axisA, axisB, axisAPerp, axisBPerp, CubeGrid.Physics, TopGrid.Physics);
+        }
 
-            Debug.Assert(SafeConstraint == null);
-
-            if (CubeGrid.Physics.Enabled && rotor != null)
+        protected override bool Attach(MyAttachableTopBlockBase rotor, bool updateGroup = true)
+        {
+            if (rotor is MyMotorRotor && base.Attach(rotor, updateGroup))
             {
-                m_rotorBlock = rotor;
-                m_rotorBlockId = rotor.EntityId;
-
-                if (updateSync)
-                    SyncObject.AttachRotor(m_rotorBlock);
-
-                m_rotorGrid = m_rotorBlock.CubeGrid;
-                if (m_rotorGrid.Physics == null)
-                    return false;
-                var rotorBody = m_rotorGrid.Physics.RigidBody;
-                var data = new HkLimitedHingeConstraintData();
-                m_motor = new HkVelocityConstraintMotor(1.0f, 1000000f);
-
-                data.SetSolvingMethod(HkSolvingMethod.MethodStabilized);
-                data.Motor = m_motor;
-                data.DisableLimits();
-
-                var posA = DummyPosition;
-                var posB = rotor.Position * rotor.CubeGrid.GridSize;
-                var axisA = PositionComp.LocalMatrix.Up;
-                var axisAPerp = PositionComp.LocalMatrix.Forward;
-                var axisB = rotor.PositionComp.LocalMatrix.Up;
-                var axisBPerp = rotor.PositionComp.LocalMatrix.Forward;
-                data.SetInBodySpace(ref posA, ref posB, ref axisA, ref axisB, ref axisAPerp, ref axisBPerp);
-                m_constraint = new HkConstraint(CubeGrid.Physics.RigidBody, rotorBody, data);
-
-                m_constraint.WantRuntime = true;
-                CubeGrid.Physics.AddConstraint(m_constraint);
-                m_constraint.Enabled = true;
-
-                SetAngleToPhysics();
-
-                m_rotorBlock.Attach(this);
-
-                if (updateGroup)
-                {
-                    OnConstraintAdded(GridLinkTypeEnum.Physical, m_rotorGrid);
-                    OnConstraintAdded(GridLinkTypeEnum.Logical, m_rotorGrid);
-                }
-                m_isAttached = true;
+                CreateConstraint(rotor);
+                
+                UpdateText();
                 return true;
             }
-
             return false;
         }
 
-        public override bool Detach(bool updateGroup = true, bool reattach = true)
+        protected override bool CreateConstraint(MyAttachableTopBlockBase rotor)
         {
-            m_isAttached = false;
-            if (m_constraint == null)
+            if (!base.CreateConstraint(rotor))
                 return false;
-            Debug.Assert(m_motor != null);
-            m_motor.Dispose();
-            base.Detach(updateGroup, reattach);
+            Debug.Assert(rotor != null, "Rotor cannot be null!");
+            Debug.Assert(m_constraint == null, "Already attached, call detach first!");
+            Debug.Assert(
+                m_connectionState.Value.TopBlockId == 0 || m_connectionState.Value.TopBlockId == rotor.EntityId,
+                "m_rotorBlockId must be set prior calling Attach");
 
+
+            var rotorBody = TopGrid.Physics.RigidBody;
+            var data = new HkLimitedHingeConstraintData();
+            m_motor = new HkVelocityConstraintMotor(1.0f, 1000000f);
+
+            data.SetSolvingMethod(HkSolvingMethod.MethodStabilized);
+            data.Motor = m_motor;
+            data.DisableLimits();
+
+            SetConstraintPosition(rotor, data);
+            m_constraint = new HkConstraint(CubeGrid.Physics.RigidBody, rotorBody, data);
+
+            m_constraint.WantRuntime = true;
+            CubeGrid.Physics.AddConstraint(m_constraint);
+            if (!m_constraint.InWorld)
+            {
+                CubeGrid.Physics.RemoveConstraint(m_constraint);
+                m_constraint.Dispose();
+                m_constraint = null;
+                return false;
+            }
+
+            m_constraint.Enabled = true;
+
+            SetAngleToPhysics();
             return true;
         }
 
-        protected override float GetModelDummyDisplacement()
+        protected override void DisposeConstraint()
         {
-            return MotorDefinition.RotorDisplacementInModel;
-        }
+            if (m_constraint != null)
+            {
+                CubeGrid.Physics.RemoveConstraint(m_constraint);
+                m_constraint.Dispose();
+                m_constraint = null;
 
-        protected MyAttachableConveyorEndpoint m_conveyorEndpoint;
-        public IMyConveyorEndpoint ConveyorEndpoint
-        {
-            get { return m_conveyorEndpoint; }
+                m_motor.Dispose();
+            }
         }
 
         public void InitializeConveyorEndpoint()
@@ -676,44 +581,35 @@ namespace Sandbox.Game.Entities.Cube
             AddDebugRenderComponent(new Components.MyDebugRenderComponentDrawConveyorEndpoint(m_conveyorEndpoint));
         }
 
-        event Action<bool> LimitReached;
-        event Action<bool> Sandbox.ModAPI.IMyMotorStator.LimitReached
-        {
-            add { LimitReached += value; }
-            remove { LimitReached -= value; }
-        }
-
         public bool CanDebugDraw()
         {
-            return (m_rotorGrid != null && m_rotorGrid.Physics != null);
-        }
-        public void AttachRotor()
-        {
-            NeedsUpdate |= MyEntityUpdateEnum.BEFORE_NEXT_FRAME;
+            return (TopGrid != null && TopGrid.Physics != null);
         }
 
-        public void DetachRotor()
-        {
-            NeedsUpdate &= ~MyEntityUpdateEnum.BEFORE_NEXT_FRAME;
-            m_rotorBlockId = 0;
-            //do not reattach motor when user selected to detach rotor
-            this.Detach(true, false);
-        }
-
-        void OnDetachRotorBtnClick()
-        {
-            this.SyncObject.ChangeRotorDisplacement(0.0f);
-            this.SyncObject.DetachRotor();
-        }
         #region Motor API interface
-        bool IMyMotorStator.IsAttached { get { return m_isAttached; } }
+        bool IMyMotorStator.IsLocked { get { return m_welded || m_isWelding; } }
         float IMyMotorStator.Angle { get { return m_currentAngle; } }
         float IMyMotorStator.Torque { get { return Torque; } }
         float IMyMotorStator.BrakingTorque { get { return BrakingTorque; } }
-        float IMyMotorStator.Velocity { get { return GetTargetVelocityRPM(); } }
+        float IMyMotorStator.Velocity { get { return TargetVelocityRPM; } }
         float IMyMotorStator.LowerLimit { get { return m_minAngle; } }
         float IMyMotorStator.UpperLimit { get { return m_maxAngle; } }
         float IMyMotorStator.Displacement { get { return m_dummyDisplacement; } }
+        event Action<bool> Sandbox.ModAPI.IMyMotorStator.LimitReached { add { LimitReached += value; } remove { LimitReached -= value; } }
+        #endregion
+
+        #region IMyConveyorEndpointBlock implementation
+
+        public Sandbox.Game.GameSystems.Conveyors.PullInformation GetPullInformation()
+        {
+            return null;
+        }
+
+        public Sandbox.Game.GameSystems.Conveyors.PullInformation GetPushInformation()
+        {
+            return null;
+        }
+
         #endregion
     }
 }

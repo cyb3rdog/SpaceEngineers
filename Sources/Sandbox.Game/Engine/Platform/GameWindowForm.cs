@@ -1,9 +1,11 @@
-﻿using System;
+﻿#if !XB1
+
+using System;
 using System.Drawing;
 using System.Windows.Forms;
-
-using SharpDX.Windows;
 using SharpDX.Win32;
+using SharpDX;
+using SharpDX.Desktop;
 using System.Collections.Generic;
 using Sandbox.Engine.Utils;
 using System.Runtime.InteropServices;
@@ -14,6 +16,7 @@ using Vector2 = VRageMath.Vector2;
 using System.Diagnostics;
 using VRageRender;
 using VRage.Utils;
+using VRageRender.ExternalApp;
 
 namespace Sandbox.Engine.Platform
 {
@@ -129,7 +132,7 @@ namespace Sandbox.Engine.Platform
 
             if (size.Height > screen.Height)
             {
-                Location = new Point(Location.X, screen.Height - size.Height); 
+                Location = new System.Drawing.Point(Location.X, screen.Height - size.Height); 
             }
         }
 
@@ -214,23 +217,14 @@ namespace Sandbox.Engine.Platform
                 return true;
             }
 
-            //if (m.Msg == (int)WM.ACTIVATE || m.Msg == (int)WM.SIZE || m.Msg == (int)WM.ACTIVATEAPP || m.Msg == (int)WM.SETFOCUS)
-            //{
-            //    Debug.WriteLine((WM)m.Msg);
-            //}
-
-            if(MyFakes.ENABLE_DX11_RENDERER)
+            if (m.Msg == (int)WinApi.WM.ACTIVATE)
             {
-                if (m.Msg == (int)WinApi.WM.ACTIVATE && MyRenderProxy.RenderThread.CurrentSettings.WindowMode == MyWindowModeEnum.Fullscreen)
-                {
-                    MyRenderProxy.RenderThread.UpdateSize(MyWindowModeEnum.FullscreenWindow);
-                }
+                MyRenderProxy.HandleFocusMessage(MyWindowFocusMessage.Activate);
+            }
 
-                if (m.Msg == (int)WinApi.WM.SETFOCUS && MyRenderProxy.RenderThread.CurrentSettings.WindowMode == MyWindowModeEnum.Fullscreen)
-                {
-                    MyRenderProxy.RenderThread.UpdateSize(MyWindowModeEnum.Fullscreen);
-                    MyRenderProxy.RestoreDXGISwapchainFullscreenMode();
-                }
+            if (m.Msg == (int)WinApi.WM.SETFOCUS)
+            {
+                MyRenderProxy.HandleFocusMessage(MyWindowFocusMessage.SetFocus);
             }
 
             if (BypassedMessages.Contains(m.Msg))
@@ -276,3 +270,5 @@ namespace Sandbox.Engine.Platform
         }
     }
 }
+
+#endif

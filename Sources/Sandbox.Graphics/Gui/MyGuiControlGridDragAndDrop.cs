@@ -46,7 +46,7 @@ namespace Sandbox.Graphics.GUI
         public MyGuiControlGrid.Item Item { get; set; }
         public MySharedButtonsEnum DragButton;
     }
-    
+
     public delegate void OnItemDropped(object sender, MyDragAndDropEventArgs eventArgs);
 
     public class MyGuiControlGridDragAndDrop : MyGuiControlBase
@@ -91,7 +91,7 @@ namespace Sandbox.Graphics.GUI
             return IsActive();
         }
 
-        public override void Draw(float transitionAlpha)
+        public override void Draw(float transitionAlpha, float backgroundTransitionAlpha)
         {
             //base.Draw();
 
@@ -103,16 +103,17 @@ namespace Sandbox.Graphics.GUI
                     MyGuiManager.DrawSpriteBatch(MyGuiConstants.BLANK_TEXTURE,
                         MyGuiManager.MouseCursorPosition,
                         Size,
-                        ApplyColorMaskModifiers(ColorMask * new Color(50, 66, 70, 255).ToVector4(), true, transitionAlpha), MyGuiDrawAlignEnum.HORISONTAL_CENTER_AND_VERTICAL_CENTER);
+                        ApplyColorMaskModifiers(ColorMask * new Color(50, 66, 70, 255).ToVector4(), true, backgroundTransitionAlpha), MyGuiDrawAlignEnum.HORISONTAL_CENTER_AND_VERTICAL_CENTER);
                 }
 
                 Vector2 itemPosition = MyGuiManager.MouseCursorPosition - Size / 2.0f;
                 Vector2 textPosition = itemPosition + m_textOffset;
                 textPosition.Y += (Size.Y / 2.0f);
                 // draw item's icon
-                if (m_supportIcon == true && m_draggingGridItem.Icon != null)
+                if (m_supportIcon == true && m_draggingGridItem.Icons != null)
                 {
-                    MyGuiManager.DrawSpriteBatch(m_draggingGridItem.Icon, itemPosition, Size, ApplyColorMaskModifiers(ColorMask, true, transitionAlpha), MyGuiDrawAlignEnum.HORISONTAL_LEFT_AND_VERTICAL_TOP);
+                    for (int i = 0; i < m_draggingGridItem.Icons.Length; i++)
+                        MyGuiManager.DrawSpriteBatch(m_draggingGridItem.Icons[i], itemPosition, Size, ApplyColorMaskModifiers(ColorMask, true, transitionAlpha), MyGuiDrawAlignEnum.HORISONTAL_LEFT_AND_VERTICAL_TOP);
                 }
                 ShowToolTip();
             }
@@ -148,6 +149,12 @@ namespace Sandbox.Graphics.GUI
             }
             return null;
         }
+
+        public override MyGuiControlGridDragAndDrop GetDragAndDropHandlingNow()
+        {
+            return this;
+        }
+
         #endregion
 
         #region public methods
@@ -203,7 +210,7 @@ namespace Sandbox.Graphics.GUI
                 var grid = control as MyGuiControlGrid;
                 if (grid != null)
                 {
-                    if (grid.Enabled && grid.MouseOverIndex != MyGuiControlGrid.INVALID_INDEX)
+                    if (grid.Enabled && grid.MouseOverIndex >= 0 && grid.MouseOverIndex < grid.MaxItemCount)
                     {
                         dropTo = new MyDragAndDropInfo();
                         dropTo.Grid = grid;
@@ -215,10 +222,10 @@ namespace Sandbox.Graphics.GUI
 
             ItemDropped(this, new MyDragAndDropEventArgs()
             {
-                DragFrom    = m_draggingFrom,
-                DropTo      = dropTo,
+                DragFrom = m_draggingFrom,
+                DropTo = dropTo,
                 Item = m_draggingGridItem,
-                DragButton  = m_dragButton.Value,
+                DragButton = m_dragButton.Value,
             });
 
             Stop();

@@ -11,9 +11,9 @@ using VRage.FileSystem;
 using VRage.Input;
 using VRage.Library.Utils;
 using VRage.Utils;
-using VRage.Utils;
 using VRageMath;
 using VRageRender;
+using VRageRender.Messages;
 
 //  IMPORTANT: It seems that even if my computer (Marek's) can handle 1280x720 in high bit-rate, a lot
 //  of people has problem with it, even if they have high-end computer. Looks to be XNA/DirectX/Windows
@@ -42,7 +42,7 @@ namespace Sandbox.Game.Gui
         bool m_playbackStarted;
 
         string[] m_videos;
-        string m_currentVideo;
+        string m_currentVideo = "";
         List<Subtitle> m_subtitles = new List<Subtitle>();
         int m_currentSubtitleIndex = 0;
 
@@ -66,7 +66,6 @@ namespace Sandbox.Game.Gui
         public static MyGuiScreenIntroVideo CreateBackgroundScreen()
         {
             var result = new MyGuiScreenIntroVideo(MyPerGameSettings.GUI.MainMenuBackgroundVideos);
-            result.m_colorMultiplier = new Vector4(0.5f, 0.5f, 0.5f, 1);
             return result;
         }
 
@@ -83,7 +82,10 @@ namespace Sandbox.Game.Gui
         private void LoadRandomVideo()
         {
             int index = MyUtils.GetRandomInt(0, m_videos.Length);
-            m_currentVideo = m_videos[index];
+            if (m_videos.Length > 0)
+            {
+                m_currentVideo = m_videos[index];
+            }
         }
 
         public override void LoadContent()
@@ -222,7 +224,7 @@ namespace Sandbox.Game.Gui
             {
                 VRageRender.MyRenderProxy.UpdateVideo(m_videoID);
                 Vector4 color = m_colorMultiplier * m_transitionAlpha;
-                VRageRender.MyRenderProxy.DrawVideo(m_videoID, MyGuiManager.GetSafeFullscreenRectangle(), new Color(color), VRageRender.MyVideoRectangleFitMode.AutoFit);
+                VRageRender.MyRenderProxy.DrawVideo(m_videoID, MyGuiManager.GetSafeFullscreenRectangle(), new Color(color), MyVideoRectangleFitMode.AutoFit);
             }
 
             if (VideoOverlayEnabled)

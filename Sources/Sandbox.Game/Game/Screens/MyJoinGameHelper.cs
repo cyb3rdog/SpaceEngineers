@@ -1,37 +1,28 @@
 ﻿#region Using
 
-using System;
-using System.Collections.Generic;
-using System.Text;
-using System.Threading;
-using ParallelTasks;
 using Sandbox.Common;
-
-using Sandbox.Common.ObjectBuilders.Gui;
-using Sandbox.Graphics.GUI;
+using Sandbox.Common.ObjectBuilders;
+using Sandbox.Engine.Multiplayer;
 using Sandbox.Engine.Networking;
 using Sandbox.Engine.Utils;
-using SteamSDK;
-
-using VRageMath;
-using Sandbox.Common.ObjectBuilders;
-using Sandbox.Game.World;
-using Sandbox.Engine.Multiplayer;
-using VRage;
-using VRage.Utils;
-using System.Diagnostics;
-using Sandbox.Game.Screens.Helpers;
-using VRage.Utils;
-using Sandbox.Game.Multiplayer;
 using Sandbox.Game.Localization;
+using Sandbox.Game.Multiplayer;
+using Sandbox.Game.Screens.Helpers;
+using Sandbox.Game.World;
+using Sandbox.Graphics.GUI;
+using SteamSDK;
+using System;
+using System.Diagnostics;
+using System.Text;
 using VRage;
-using System.IO;
+using VRage.Game;
+using VRage.Utils;
 
 #endregion
 
 namespace Sandbox.Game.Gui
 {
-    public static class MyJoinGameHelper 
+    public static class MyJoinGameHelper
     {
         #region Join
 
@@ -42,12 +33,12 @@ namespace Sandbox.Game.Gui
 
             if (lobby.GetLobbyType() == LobbyTypeEnum.FriendsOnly && !MySteam.API.Friends.HasFriend(lobby.GetOwner()))
             {
-                MyGuiSandbox.Show(MySpaceTexts.OnlyFriendsCanJoinThisGame);
+                MyGuiSandbox.Show(MyCommonTexts.OnlyFriendsCanJoinThisGame);
                 return false;
             }
             if (!MyMultiplayerLobby.IsLobbyCorrectVersion(lobby))
             {
-                var formatString = MyTexts.GetString(MySpaceTexts.MultiplayerError_IncorrectVersion);
+                var formatString = MyTexts.GetString(MyCommonTexts.MultiplayerError_IncorrectVersion);
                 var myVersion = MyBuildNumbers.ConvertBuildNumberFromIntToString(MyFinalBuildConstants.APP_VERSION);
                 var serverVersion = MyBuildNumbers.ConvertBuildNumberFromIntToString(MyMultiplayerLobby.GetLobbyAppVersion(lobby));
                 MyGuiSandbox.Show(new StringBuilder(String.Format(formatString, myVersion, serverVersion)));
@@ -55,13 +46,13 @@ namespace Sandbox.Game.Gui
             }
             if (MyFakes.ENABLE_MP_DATA_HASHES && !MyMultiplayerLobby.HasSameData(lobby))
             {
-                MyGuiSandbox.Show(MySpaceTexts.MultiplayerError_DifferentData);
+                MyGuiSandbox.Show(MyCommonTexts.MultiplayerError_DifferentData);
                 MySandboxGame.Log.WriteLine("Different game data when connecting to server. Local hash: " + MyDataIntegrityChecker.GetHashBase64() + ", server hash: " + MyMultiplayerLobby.GetDataHash(lobby));
                 return false;
             }
             return true;
         }
-    
+
         public static void JoinGame(Lobby lobby, bool requestData = true)
         {
             // Data not received
@@ -76,34 +67,24 @@ namespace Sandbox.Game.Gui
             if (!JoinGameTest(lobby))
                 return;
 
-            JoinGame(lobby.LobbyId);
-        }
-
-        public static void JoinBattleGame(Lobby lobby, bool requestData = true)
-        {
-            // Data not received
-            if (requestData && String.IsNullOrEmpty(lobby.GetLobbyData(MyMultiplayer.AppVersionTag)))
+            if (MyMultiplayerLobby.GetLobbyScenario(lobby))
             {
-                var helper = new MyLobbyHelper(lobby);
-                helper.OnSuccess += (l) => JoinBattleGame(l, false);
-                if (helper.RequestData())
-                    return;
+                MyJoinGameHelper.JoinScenarioGame(lobby.LobbyId);
             }
-
-            if (!JoinGameTest(lobby))
-                return;
-
-            JoinBattleGame(lobby.LobbyId);
+            else
+            {
+                JoinGame(lobby.LobbyId);
+            }
         }
-
 
         public static void JoinGame(GameServerItem server)
         {
+            MyAnalyticsHelper.SetEntry(MyGameEntryEnum.Join);
             if (server.ServerVersion != MyFinalBuildConstants.APP_VERSION)
             {
                 var sb = new StringBuilder();
-                sb.AppendFormat(MyTexts.GetString(MySpaceTexts.MultiplayerError_IncorrectVersion), MyFinalBuildConstants.APP_VERSION, server.ServerVersion);
-                MyGuiSandbox.Show(sb, MySpaceTexts.MessageBoxCaptionError);
+                sb.AppendFormat(MyTexts.GetString(MyCommonTexts.MultiplayerError_IncorrectVersion), MyFinalBuildConstants.APP_VERSION, server.ServerVersion);
+                MyGuiSandbox.Show(sb, MyCommonTexts.MessageBoxCaptionError);
                 return;
             }
             if (MyFakes.ENABLE_MP_DATA_HASHES)
@@ -111,7 +92,7 @@ namespace Sandbox.Game.Gui
                 var serverHash = server.GetGameTagByPrefix("datahash");
                 if (serverHash != "" && serverHash != MyDataIntegrityChecker.GetHashBase64())
                 {
-                    MyGuiSandbox.Show(MySpaceTexts.MultiplayerError_DifferentData);
+                    MyGuiSandbox.Show(MyCommonTexts.MultiplayerError_DifferentData);
                     MySandboxGame.Log.WriteLine("Different game data when connecting to server. Local hash: " + MyDataIntegrityChecker.GetHashBase64() + ", server hash: " + serverHash);
                     return;
                 }
@@ -127,30 +108,37 @@ namespace Sandbox.Game.Gui
 
             multiplayer.SendPlayerData(MySteam.UserName);
 
-            StringBuilder text = MyTexts.Get(MySpaceTexts.DialogTextJoiningWorld);
+            string gamemode = server.GetGameTagByPrefix("gamemode");
+            StringBuilder text = MyTexts.Get(MyCommonTexts.DialogTextJoiningWorld);
 
-            MyGuiScreenProgress progress = new MyGuiScreenProgress(text, MySpaceTexts.Cancel);
+            MyGuiScreenProgress progress = new MyGuiScreenProgress(text, MyCommonTexts.Cancel);
             MyGuiSandbox.AddScreen(progress);
             progress.ProgressCancelled += () =>
+            {
+                multiplayer.Dispose();
+                MySessionLoader.UnloadAndExitToMenu();
+                if (MyMultiplayer.Static != null)
                 {
-                    multiplayer.Dispose();
-                    MyGuiScreenMainMenu.ReturnToMainMenu();
-                };
+                    MyMultiplayer.Static.Dispose();
+                }
+            };
 
             multiplayer.OnJoin += delegate
             {
                 MyJoinGameHelper.OnJoin(progress, SteamSDK.Result.OK, new LobbyEnterInfo() { EnterState = LobbyEnterResponseEnum.Success }, multiplayer);
             };
+
+            VRage.Profiler.MyRenderProfiler.GetProfilerFromServer = MyMultiplayer.Static.DownloadProfiler;
         }
 
         public static void JoinGame(ulong lobbyId)
         {
-            StringBuilder text = MyTexts.Get(MySpaceTexts.DialogTextJoiningWorld);
+            StringBuilder text = MyTexts.Get(MyCommonTexts.DialogTextJoiningWorld);
 
-            MyGuiScreenProgress progress = new MyGuiScreenProgress(text, MySpaceTexts.Cancel);
+            MyGuiScreenProgress progress = new MyGuiScreenProgress(text, MyCommonTexts.Cancel);
             MyGuiSandbox.AddScreen(progress);
 
-            progress.ProgressCancelled += () => MyGuiScreenMainMenu.ReturnToMainMenu();
+            progress.ProgressCancelled += () => MySessionLoader.UnloadAndExitToMenu();
 
             MyLog.Default.WriteLine("Joining lobby: " + lobbyId);
 
@@ -158,21 +146,21 @@ namespace Sandbox.Game.Gui
             result.JoinDone += (joinResult, info, multiplayer) => OnJoin(progress, joinResult, info, multiplayer);
 
             progress.ProgressCancelled += () => result.Cancel();
-        }
+        }       
 
-        public static void JoinBattleGame(ulong lobbyId)
+        public static void JoinScenarioGame(ulong lobbyId)
         {
-            StringBuilder text = MyTexts.Get(MySpaceTexts.DialogTextJoiningWorld);
+            StringBuilder text = MyTexts.Get(MySpaceTexts.DialogTextJoiningScenario);
 
-            MyGuiScreenProgress progress = new MyGuiScreenProgress(text, MySpaceTexts.Cancel);
+            MyGuiScreenProgress progress = new MyGuiScreenProgress(text, MyCommonTexts.Cancel);
             MyGuiSandbox.AddScreen(progress);
 
-            progress.ProgressCancelled += () => MyGuiScreenMainMenu.ReturnToMainMenu();
+            progress.ProgressCancelled += () => MySessionLoader.UnloadAndExitToMenu();
 
-            MyLog.Default.WriteLine("Joining battle lobby: " + lobbyId);
+            MyLog.Default.WriteLine("Joining scenario lobby: " + lobbyId);
 
             var result = MyMultiplayer.JoinLobby(lobbyId);
-            result.JoinDone += (joinResult, info, multiplayer) => OnJoinBattle(progress, joinResult, info, multiplayer);
+            result.JoinDone += (joinResult, info, multiplayer) => OnJoinScenario(progress, joinResult, info, multiplayer);
 
             progress.ProgressCancelled += () => result.Cancel();
         }
@@ -185,7 +173,7 @@ namespace Sandbox.Game.Gui
 
             MyLog.Default.WriteLine(String.Format("Lobby join response: {0}, enter state: {1}", joinResult.ToString(), enterInfo.EnterState));
 
-            if (joinResult == Result.OK && enterInfo.EnterState == LobbyEnterResponseEnum.Success && multiplayer.GetOwner() != MySteam.UserId)
+            if (joinResult == Result.OK && enterInfo.EnterState == LobbyEnterResponseEnum.Success && multiplayer.GetOwner() != Sync.MyId)
             {
                 DownloadWorld(progress, multiplayer);
             }
@@ -210,7 +198,7 @@ namespace Sandbox.Game.Gui
             if (progress.Text != null)
             {
                 progress.Text.Clear();
-                progress.Text.Append(MyTexts.Get(MySpaceTexts.MultiplayerStateConnectingToServer));
+                progress.Text.Append(MyTexts.Get(MyCommonTexts.MultiplayerStateConnectingToServer));
             }
 
             MyLog.Default.WriteLine("World requested");
@@ -232,7 +220,7 @@ namespace Sandbox.Game.Gui
                     if (progress.Text != null)
                     {
                         progress.Text.Clear();
-                        progress.Text.Append(MyTexts.Get(MySpaceTexts.MultiplayerStateWaitingForServer));
+                        progress.Text.Append(MyTexts.Get(MyCommonTexts.MultiplayerStateWaitingForServer));
                     }
                 }
 
@@ -251,7 +239,7 @@ namespace Sandbox.Game.Gui
                 {
                     MyLog.Default.WriteLine("World requested - failed, server changed");
                     progress.Cancel();
-                    MyGuiSandbox.Show(MySpaceTexts.MultiplayerErrorServerHasLeft);
+                    MyGuiSandbox.Show(MyCommonTexts.MultiplayerErrorServerHasLeft);
                     multiplayer.Dispose();
                 }
 
@@ -259,7 +247,7 @@ namespace Sandbox.Game.Gui
                 {
                     MyLog.Default.WriteLine("World requested - failed, server changed");
                     progress.Cancel();
-                    MyGuiSandbox.Show(MySpaceTexts.MultiplaterJoin_ServerIsNotResponding);
+                    MyGuiSandbox.Show(MyCommonTexts.MultiplaterJoin_ServerIsNotResponding);
                     multiplayer.Dispose();
                 }
             };
@@ -281,11 +269,12 @@ namespace Sandbox.Game.Gui
             };
         }
 
-        public static void OnJoinBattle(MyGuiScreenProgress progress, Result joinResult, LobbyEnterInfo enterInfo, MyMultiplayerBase multiplayer)
-        {
-            MyLog.Default.WriteLine(String.Format("Battle lobby join response: {0}, enter state: {1}", joinResult.ToString(), enterInfo.EnterState));
 
-            if (joinResult == Result.OK && enterInfo.EnterState == LobbyEnterResponseEnum.Success && multiplayer.GetOwner() != MySteam.UserId)
+        public static void OnJoinScenario(MyGuiScreenProgress progress, Result joinResult, LobbyEnterInfo enterInfo, MyMultiplayerBase multiplayer)
+        {
+            MyLog.Default.WriteLine(String.Format("Lobby join response: {0}, enter state: {1}", joinResult.ToString(), enterInfo.EnterState));
+          
+            if (joinResult == Result.OK && enterInfo.EnterState == LobbyEnterResponseEnum.Success && multiplayer.GetOwner() != Sync.MyId)
             {
                 // Create session with empty world
                 if (MySession.Static != null)
@@ -295,16 +284,16 @@ namespace Sandbox.Game.Gui
                 }
 
                 MySession.CreateWithEmptyWorld(multiplayer);
-                MySession.Static.Settings.Battle = true;
 
                 progress.CloseScreen();
 
-                MyLog.Default.WriteLine("Battle lobby joined");
+                MyScreenManager.CloseAllScreensNowExcept(null);
+                MyLog.Default.WriteLine("Scenario lobby joined");
 
-                if (MyPerGameSettings.GUI.BattleLobbyClientScreen != null)
-                    MyGuiSandbox.AddScreen(MyGuiSandbox.CreateScreen(MyPerGameSettings.GUI.BattleLobbyClientScreen));
+                if (MyPerGameSettings.GUI.ScenarioLobbyClientScreen != null)
+                    MyGuiSandbox.AddScreen(MyGuiSandbox.CreateScreen(MyPerGameSettings.GUI.ScenarioLobbyClientScreen));
                 else
-                    Debug.Fail("No battle lobby client screen");
+                    Debug.Fail("No scenario lobby client screen");
             }
             else
             {
@@ -318,20 +307,39 @@ namespace Sandbox.Game.Gui
                     status = enterInfo.EnterState.ToString();
                 }
 
-                OnJoinFailed(progress, multiplayer, status);
+                OnJoinBattleFailed(progress, multiplayer, status);
             }
+        }
+
+        public static void DownloadScenarioWorld(MyMultiplayerBase multiplayer)
+        {
+            StringBuilder text = MyTexts.Get(MyCommonTexts.MultiplayerStateConnectingToServer);
+
+            MyGuiScreenProgress progress = new MyGuiScreenProgress(text, MyCommonTexts.Cancel);
+            MyGuiSandbox.AddScreen(progress);
+            // Set focus to different control than Cancel button (because focused Cancel button can be unexpectedly pressed when sending a chat message - in case server has just started game).
+            progress.FocusedControl = progress.RotatingWheel;
+
+            progress.ProgressCancelled += () =>
+            {
+                MySessionLoader.UnloadAndExitToMenu();
+            };
+
+            DownloadWorld(progress, multiplayer);
         }
 
         public static void DownloadBattleWorld(MyMultiplayerBase multiplayer)
         {
-            StringBuilder text = MyTexts.Get(MySpaceTexts.MultiplayerStateConnectingToServer);
+            StringBuilder text = MyTexts.Get(MyCommonTexts.MultiplayerStateConnectingToServer);
 
-            MyGuiScreenProgress progress = new MyGuiScreenProgress(text, MySpaceTexts.Cancel);
+            MyGuiScreenProgress progress = new MyGuiScreenProgress(text, MyCommonTexts.Cancel);
             MyGuiSandbox.AddScreen(progress);
+            // Set focus to different control than Cancel button (because focused Cancel button can be unexpectedly pressed when sending a chat message - in case server has just started game).
+            progress.FocusedControl = progress.RotatingWheel;
 
             progress.ProgressCancelled += () =>
             {
-                MyGuiScreenMainMenu.ReturnToMainMenu();
+                MySessionLoader.UnloadAndExitToMenu();
             };
 
             DownloadWorld(progress, multiplayer);
@@ -345,15 +353,90 @@ namespace Sandbox.Game.Gui
             }
             progress.Cancel();
             StringBuilder error = new StringBuilder();
-            error.AppendFormat(MySpaceTexts.DialogTextJoinWorldFailed, status);
+            error.AppendFormat(MyCommonTexts.DialogTextJoinWorldFailed, status);
 
-            MyGuiScreenMessageBox mb = MyGuiSandbox.CreateMessageBox(messageText: error, messageCaption: MyTexts.Get(MySpaceTexts.MessageBoxCaptionError));
+            MyGuiScreenMessageBox mb = MyGuiSandbox.CreateMessageBox(messageText: error, messageCaption: MyTexts.Get(MyCommonTexts.MessageBoxCaptionError));
+            MyGuiSandbox.AddScreen(mb);
+        }
+
+        private static void OnJoinBattleFailed(MyGuiScreenProgress progress, MyMultiplayerBase multiplayer, string status, bool statusFullMessage = false)
+        {
+            MySessionLoader.UnloadAndExitToMenu();
+
+            progress.Cancel();
+            StringBuilder error = new StringBuilder();
+            if (statusFullMessage)
+                error.Append(status);
+            else
+                error.AppendFormat(MySpaceTexts.DialogTextJoinBattleFailed, status);
+
+            MyGuiScreenMessageBox mb = MyGuiSandbox.CreateMessageBox(messageText: error, messageCaption: MyTexts.Get(MyCommonTexts.MessageBoxCaptionError));
             MyGuiSandbox.AddScreen(mb);
         }
 
         #endregion
 
         #region Download progress
+
+        private static void CheckDx11AndJoin(MyObjectBuilder_World world, MyMultiplayerBase multiplayer)
+        {
+            bool needsDx11 = world.Checkpoint.RequiresDX >= 11;
+            if (!needsDx11 || MySandboxGame.IsDirectX11)
+            {
+                if (multiplayer.Scenario)
+                {
+                    MySessionLoader.LoadMultiplayerScenarioWorld(world, multiplayer);
+                }
+                else
+                {
+                    MySessionLoader.LoadMultiplayerSession(world, multiplayer);
+                }
+            }
+            else
+            {
+                HandleDx11Needed();
+            }
+        }
+
+        public static void HandleDx11Needed()
+        {
+            MySessionLoader.UnloadAndExitToMenu();
+            if (MyDirectXHelper.IsDx11Supported())
+            {
+                // Has DX11, ask for switch or selecting different scenario
+                MyGuiSandbox.AddScreen(MyGuiSandbox.CreateMessageBox(
+                    callback: OnDX11SwitchRequestAnswer,
+                    messageCaption: MyTexts.Get(MyCommonTexts.MessageBoxCaptionError),
+                    messageText: MyTexts.Get(MySpaceTexts.QuickstartDX11SwitchQuestion),
+                    buttonType: MyMessageBoxButtonsType.YES_NO));
+            }
+            else
+            {
+                // No DX11, ask for selecting another scenario
+                var text = MyTexts.Get(MySpaceTexts.QuickstartNoDx9SelectDifferent);
+                MyGuiScreenMessageBox mb = MyGuiSandbox.CreateMessageBox(messageText: text, messageCaption: MyTexts.Get(MyCommonTexts.MessageBoxCaptionError));
+                MyGuiSandbox.AddScreen(mb);
+            }
+        }
+
+        public static void OnDX11SwitchRequestAnswer(MyGuiScreenMessageBox.ResultEnum result)
+        {
+            if (result == MyGuiScreenMessageBox.ResultEnum.YES)
+            {
+                MySandboxGame.Config.GraphicsRenderer = MySandboxGame.DirectX11RendererKey;
+                MySandboxGame.Config.Save();
+                MyGuiSandbox.BackToMainMenu();
+                var text = MyTexts.Get(MySpaceTexts.QuickstartDX11PleaseRestartGame);
+                MyGuiScreenMessageBox mb = MyGuiSandbox.CreateMessageBox(messageText: text, messageCaption: MyTexts.Get(MyCommonTexts.MessageBoxCaptionError));
+                MyGuiSandbox.AddScreen(mb);
+            }
+            else
+            {
+                var text = MyTexts.Get(MySpaceTexts.QuickstartSelectDifferent);
+                MyGuiScreenMessageBox mb = MyGuiSandbox.CreateMessageBox(messageText: text, messageCaption: MyTexts.Get(MyCommonTexts.MessageBoxCaptionError));
+                MyGuiSandbox.AddScreen(mb);
+            }
+        }
 
         private static void OnDownloadProgressChanged(MyGuiScreenProgress progress, MyDownloadWorldResult result, MyMultiplayerBase multiplayer)
         {
@@ -362,10 +445,8 @@ namespace Sandbox.Game.Gui
                 case MyDownloadWorldStateEnum.Success:
                     progress.CloseScreen();
                     var world = multiplayer.ProcessWorldDownloadResult(result);
-                    if (MyFakes.ENABLE_BATTLE_SYSTEM && multiplayer.Battle)
-                        MyGuiScreenLoadSandbox.LoadMultiplayerBattleWorld(world, multiplayer);
-                    else
-                        MyGuiScreenLoadSandbox.LoadMultiplayerSession(world, multiplayer);
+
+                    CheckDx11AndJoin(world, multiplayer);
                     break;
 
                 case MyDownloadWorldStateEnum.InProgress:
@@ -381,26 +462,26 @@ namespace Sandbox.Game.Gui
                     {
                         MyLog.Default.WriteLine("World requested - preemble received");
                         if (progress.Text != null)
-                            progress.Text.Append(MyTexts.Get(MySpaceTexts.DialogWaitingForWorldData));
+                            progress.Text.Append(MyTexts.Get(MyCommonTexts.DialogWaitingForWorldData));
                     }
                     else
                     {
                         if (progress.Text != null)
-                            progress.Text.AppendFormat(MyTexts.GetString(MySpaceTexts.DialogTextDownloadingWorld), percent, worldSize);
+                            progress.Text.AppendFormat(MyTexts.GetString(MyCommonTexts.DialogTextDownloadingWorld), percent, worldSize);
                     }
                     break;
 
                 case MyDownloadWorldStateEnum.WorldNotAvailable:
                     MyLog.Default.WriteLine("World requested - world not available");
                     progress.Cancel();
-                    MyGuiSandbox.Show(MySpaceTexts.DialogDownloadWorld_WorldDoesNotExists);
+                    MyGuiSandbox.Show(MyCommonTexts.DialogDownloadWorld_WorldDoesNotExists);
                     multiplayer.Dispose();
                     break;
 
                 case MyDownloadWorldStateEnum.ConnectionFailed:
                     MyLog.Default.WriteLine("World requested - connection failed");
                     progress.Cancel();
-                    MyGuiSandbox.Show(MyTexts.AppendFormat(new StringBuilder(), MySpaceTexts.MultiplayerErrorConnectionFailed, result.ConnectionError));
+                    MyGuiSandbox.Show(MyTexts.AppendFormat(new StringBuilder(), MyCommonTexts.MultiplayerErrorConnectionFailed, result.ConnectionError));
                     multiplayer.Dispose();
                     break;
 
@@ -408,7 +489,7 @@ namespace Sandbox.Game.Gui
                 case MyDownloadWorldStateEnum.InvalidMessage:
                     MyLog.Default.WriteLine("World requested - message invalid (wrong version?)");
                     progress.Cancel();
-                    MyGuiSandbox.Show(MySpaceTexts.DialogTextDownloadWorldFailed);
+                    MyGuiSandbox.Show(MyCommonTexts.DialogTextDownloadWorldFailed);
                     multiplayer.Dispose();
                     break;
 
@@ -416,7 +497,6 @@ namespace Sandbox.Game.Gui
                     throw new InvalidBranchException();
             }
         }
-
 
         #endregion
     }

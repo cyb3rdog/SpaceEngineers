@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using VRage.Algorithms;
+using VRage.Game;
 using VRageMath;
 using VRageRender;
 
@@ -17,7 +18,7 @@ namespace Sandbox.Game.GameSystems.Conveyors
     // |   o-->| Direction
     // |       |
     // '-------'
-    internal struct ConveyorLinePosition : IEquatable<ConveyorLinePosition>
+    public struct ConveyorLinePosition : IEquatable<ConveyorLinePosition>
     {
         public Vector3I LocalGridPosition;
 
@@ -86,7 +87,7 @@ namespace Sandbox.Game.GameSystems.Conveyors
         }
     }
 
-    struct ConveyorLineEnumerator : IEnumerator<MyConveyorLine>
+    public struct ConveyorLineEnumerator : IEnumerator<MyConveyorLine>
     {
         int index;
         private IMyConveyorEndpoint m_enumerated;
@@ -141,7 +142,7 @@ namespace Sandbox.Game.GameSystems.Conveyors
         }
     }
 
-    interface IMyConveyorEndpoint : IMyPathVertex<IMyConveyorEndpoint>
+    public interface IMyConveyorEndpoint : IMyPathVertex<IMyConveyorEndpoint>
     {
         /// <summary>
         /// Returns a connecting line for the given line position, or null, if no such line exists
@@ -205,7 +206,7 @@ namespace Sandbox.Game.GameSystems.Conveyors
 
                 if (line.GetEndpoint(0) == null || line.GetEndpoint(1) == null)
                 {
-                    if (line.Type == Common.ObjectBuilders.MyObjectBuilder_ConveyorLine.LineType.SMALL_LINE)
+                    if (line.Type == MyObjectBuilder_ConveyorLine.LineType.SMALL_LINE)
                     {
                         dirMultiplier = 0.2f;
                         radius = 0.015f;
@@ -220,7 +221,7 @@ namespace Sandbox.Game.GameSystems.Conveyors
                 }
                 else
                 {
-                    if (line.Type == Common.ObjectBuilders.MyObjectBuilder_ConveyorLine.LineType.SMALL_LINE)
+                    if (line.Type == MyObjectBuilder_ConveyorLine.LineType.SMALL_LINE)
                     {
                         dirMultiplier = 1.0f;
                         radius = 0.05f;

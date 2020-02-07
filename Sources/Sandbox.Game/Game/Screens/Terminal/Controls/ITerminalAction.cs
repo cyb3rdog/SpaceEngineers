@@ -7,10 +7,11 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using VRage.Collections;
+using VRage.Game;
 
 namespace Sandbox.Game.Gui
 {
-    interface ITerminalAction : Sandbox.ModAPI.Interfaces.ITerminalAction
+    public interface ITerminalAction : Sandbox.ModAPI.Interfaces.ITerminalAction
     {
         new string Id { get; }
         new string Icon { get; }

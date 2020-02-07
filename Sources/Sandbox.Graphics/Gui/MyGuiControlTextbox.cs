@@ -1,12 +1,13 @@
-﻿using Sandbox.Common;
-using Sandbox.Common.ObjectBuilders.Gui;
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Text;
 using System.Threading;
+#if !XB1
 using System.Windows.Forms;
+#endif
+using VRage.Game;
 using VRage.Input;
 using VRage.Utils;
 using VRageMath;
@@ -28,7 +29,8 @@ namespace Sandbox.Graphics.GUI
     public enum MyGuiControlTextboxStyleEnum
     {
         Default,
-        Debug
+        Debug,
+        Custom
     }
 
     [MyGuiControlType(typeof(MyObjectBuilder_GuiControlTextbox))]
@@ -37,14 +39,13 @@ namespace Sandbox.Graphics.GUI
         #region Styles and static data
         public class StyleDefinition
         {
-            public MyFontEnum NormalFont;
-            public MyFontEnum HighlightFont;
+            public string NormalFont;
+            public string HighlightFont;
             public MyGuiCompositeTexture NormalTexture;
             public MyGuiCompositeTexture HighlightTexture;
         }
 
         private static StyleDefinition[] m_styles;
-        private static MyGuiControlTextboxKeyToString[] m_keyToString;
 
         static MyGuiControlTextbox()
         {
@@ -65,99 +66,12 @@ namespace Sandbox.Graphics.GUI
                 HighlightFont = MyFontEnum.Debug
             };
 
-
-
-            m_keyToString = new MyGuiControlTextboxKeyToString[MyUtils.GetMaxValueFromEnum<MyKeys>() + 1];
-
-            //  First set all items to null so later we can assing individual strings only where we want (when we want to map key to string)
-            for (int i = 0; i < m_keyToString.Length; i++)
-            {
-                m_keyToString[i] = null;
-            }
-
-            //  This are here only for controling the delay in keypress
-            AddKey(MyKeys.Left, null, null);
-            AddKey(MyKeys.Right, null, null);
-            AddKey(MyKeys.Home, null, null);
-            AddKey(MyKeys.End, null, null);
-            AddKey(MyKeys.Delete, null, null);
-            AddKey(MyKeys.Back, null, null);
-
-            //  For converting key to string
-            AddKey(MyKeys.A, "a", "A");
-            AddKey(MyKeys.B, "b", "B");
-            AddKey(MyKeys.C, "c", "C");
-            AddKey(MyKeys.D, "d", "D");
-            AddKey(MyKeys.E, "e", "E");
-            AddKey(MyKeys.F, "f", "F");
-            AddKey(MyKeys.G, "g", "G");
-            AddKey(MyKeys.H, "h", "H");
-            AddKey(MyKeys.I, "i", "I");
-            AddKey(MyKeys.J, "j", "J");
-            AddKey(MyKeys.K, "k", "K");
-            AddKey(MyKeys.L, "l", "L");
-            AddKey(MyKeys.M, "m", "M");
-            AddKey(MyKeys.N, "n", "N");
-            AddKey(MyKeys.O, "o", "O");
-            AddKey(MyKeys.P, "p", "P");
-            AddKey(MyKeys.Q, "q", "Q");
-            AddKey(MyKeys.R, "r", "R");
-            AddKey(MyKeys.S, "s", "S");
-            AddKey(MyKeys.T, "t", "T");
-            AddKey(MyKeys.U, "u", "U");
-            AddKey(MyKeys.V, "v", "V");
-            AddKey(MyKeys.W, "w", "W");
-            AddKey(MyKeys.X, "x", "X");
-            AddKey(MyKeys.Y, "y", "Y");
-            AddKey(MyKeys.Z, "z", "Z");
-            AddKey(MyKeys.OemOpenBrackets, "[", "{");
-            AddKey(MyKeys.OemCloseBrackets, "]", "}");
-            AddKey(MyKeys.Multiply, "*", "*");
-            AddKey(MyKeys.Subtract, "-", "-");
-            AddKey(MyKeys.Add, "+", "+");
-            AddKey(MyKeys.Divide, "/", "/");
-            AddKey(MyKeys.NumPad0, "0", "0");
-            AddKey(MyKeys.NumPad1, "1", "1");
-            AddKey(MyKeys.NumPad2, "2", "2");
-            AddKey(MyKeys.NumPad3, "3", "3");
-            AddKey(MyKeys.NumPad4, "4", "4");
-            AddKey(MyKeys.NumPad5, "5", "5");
-            AddKey(MyKeys.NumPad6, "6", "6");
-            AddKey(MyKeys.NumPad7, "7", "7");
-            AddKey(MyKeys.NumPad8, "8", "8");
-            AddKey(MyKeys.NumPad9, "9", "9");
-            AddKey(MyKeys.Decimal, ".", ".");
-            AddKey(MyKeys.OemBackslash, "\\", "|");
-            AddKey(MyKeys.OemComma, ",", "<");
-            AddKey(MyKeys.OemMinus, "-", "_");
-            AddKey(MyKeys.OemPeriod, ".", ">");
-            AddKey(MyKeys.OemPipe, "\\", "|");
-            AddKey(MyKeys.OemPlus, "=", "+");
-            AddKey(MyKeys.OemQuestion, "/", "?");
-            AddKey(MyKeys.OemQuotes, "\'", "\"");
-            AddKey(MyKeys.OemSemicolon, ";", ":");
-            AddKey(MyKeys.OemTilde, "`", "~");
-            AddKey(MyKeys.Space, " ", " ");
-            AddKey(MyKeys.D0, "0", ")");
-            AddKey(MyKeys.D1, "1", "!");
-            AddKey(MyKeys.D2, "2", "@");
-            AddKey(MyKeys.D3, "3", "#");
-            AddKey(MyKeys.D4, "4", "$");
-            AddKey(MyKeys.D5, "5", "%");
-            AddKey(MyKeys.D6, "6", "^");
-            AddKey(MyKeys.D7, "7", "&");
-            AddKey(MyKeys.D8, "8", "*");
-            AddKey(MyKeys.D9, "9", "(");
+            m_keyThrottler = new MyKeyThrottler();
         }
 
         public static StyleDefinition GetVisualStyle(MyGuiControlTextboxStyleEnum style)
         {
             return m_styles[(int)style];
-        }
-
-        private static void AddKey(MyKeys key, string character, string characterWhenShift)
-        {
-            m_keyToString[(int)key] = new MyGuiControlTextboxKeyToString(key, character, characterWhenShift);
         }
 
         #endregion
@@ -182,6 +96,17 @@ namespace Sandbox.Graphics.GUI
         #endregion
 
         #region Properties
+        public int MaxLength
+        {
+            get { return m_maxLength; }
+            set
+            {
+                m_maxLength = value;
+                if (m_text.Length > m_maxLength)
+                    m_text.Remove(m_maxLength, m_text.Length - m_maxLength);
+            }
+        }
+
         public float TextScale
         {
             get { return m_textScale; }
@@ -201,7 +126,7 @@ namespace Sandbox.Graphics.GUI
         /// <summary>
         /// When setting text to textbox, make sure you won't set it to unsuported charact
         /// </summary>
-        [Obsolete("Do not use this, it allocates!")]
+        [Obsolete("Do not use this, it allocates! Use SetText instead!")]
         public string Text
         {
             get { return m_text.ToString(); }
@@ -254,6 +179,9 @@ namespace Sandbox.Graphics.GUI
         }
         private MyGuiControlTextboxStyleEnum m_visualStyle;
         private StyleDefinition m_styleDef;
+        private StyleDefinition m_customStyle;
+        private bool m_useCustomStyle;
+        private static MyKeyThrottler m_keyThrottler;
 
         protected int CarriagePositionIndex
         {
@@ -267,7 +195,14 @@ namespace Sandbox.Graphics.GUI
 
         private void RefreshVisualStyle()
         {
-            m_styleDef = GetVisualStyle(VisualStyle);
+            if (m_useCustomStyle)
+            {
+                m_styleDef = m_customStyle;
+            }
+            else
+            {
+                m_styleDef = GetVisualStyle(VisualStyle);
+            }
             RefreshInternals();
         }
 
@@ -347,14 +282,14 @@ namespace Sandbox.Graphics.GUI
 
         #endregion
 
-        public override void Draw(float transitionAlpha)
+        public override void Draw(float transitionAlpha, float backgroundTransitionAlpha)
         {
             if (!Visible)
                 return;
 
-            m_compositeBackground.Draw(GetPositionAbsoluteTopLeft(), Size, ApplyColorMaskModifiers(ColorMask, Enabled, transitionAlpha));
+            m_compositeBackground.Draw(GetPositionAbsoluteTopLeft(), Size, ApplyColorMaskModifiers(ColorMask, Enabled, backgroundTransitionAlpha));
 
-            base.Draw(transitionAlpha);
+            base.Draw(transitionAlpha, backgroundTransitionAlpha);
 
             var textAreaRelative = m_textAreaRelative;
             var textArea = textAreaRelative;
@@ -483,17 +418,9 @@ namespace Sandbox.Graphics.GUI
                     }
                     else if (m_selection.Dragging)
                     {
-                        if (IsMouseOver)
-                        {
-                            CarriagePositionIndex = GetCarriagePositionFromMouseCursor();
-                            m_selection.SetEnd(this);
-                            ret = this;
-                        }
-                    }
-
-                    if (HasFocus && !m_hadFocusLastTime)
-                    {
-                        UpdateLastKeyPressTimes(null);
+                        CarriagePositionIndex = GetCarriagePositionFromMouseCursor();
+                        m_selection.SetEnd(this);
+                        ret = this;
                     }
 
                     if (HasFocus)
@@ -502,14 +429,12 @@ namespace Sandbox.Graphics.GUI
                             HandleTextInputBuffered(ref ret);
 
                         //  Move left
-                        if ((MyInput.Static.IsKeyPress(MyKeys.Left)) && (IsEnoughDelay(MyKeys.Left, MyGuiConstants.TEXTBOX_MOVEMENT_DELAY)))
+                        if (m_keyThrottler.GetKeyStatus(MyKeys.Left) == ThrottledKeyStatus.PRESSED_AND_READY)
                         {
                             if (MyInput.Static.IsAnyCtrlKeyPressed())
                                 CarriagePositionIndex = GetPreviousSpace();
                             else
                                 CarriagePositionIndex--;
-
-                            UpdateLastKeyPressTimes(MyKeys.Left);
 
                             if (MyInput.Static.IsAnyShiftKeyPressed())
                                 m_selection.SetEnd(this);
@@ -520,14 +445,12 @@ namespace Sandbox.Graphics.GUI
                         }
 
                         //  Move right
-                        if ((MyInput.Static.IsKeyPress(MyKeys.Right)) && (IsEnoughDelay(MyKeys.Right, MyGuiConstants.TEXTBOX_MOVEMENT_DELAY)))
+                        if (m_keyThrottler.GetKeyStatus(MyKeys.Right) == ThrottledKeyStatus.PRESSED_AND_READY)
                         {
                             if (MyInput.Static.IsAnyCtrlKeyPressed())
                                 CarriagePositionIndex = GetNextSpace();
                             else
                                 CarriagePositionIndex++;
-
-                            UpdateLastKeyPressTimes(MyKeys.Right);
 
                             if (MyInput.Static.IsAnyShiftKeyPressed())
                                 m_selection.SetEnd(this);
@@ -538,46 +461,52 @@ namespace Sandbox.Graphics.GUI
                         }
 
                         //  Move home
-                        if ((MyInput.Static.IsNewKeyPressed(MyKeys.Home)) && (IsEnoughDelay(MyKeys.Home, MyGuiConstants.TEXTBOX_MOVEMENT_DELAY)))
+                        if (m_keyThrottler.IsNewPressAndThrottled(MyKeys.Home))
                         {
                             CarriagePositionIndex = 0;
-                            UpdateLastKeyPressTimes(MyKeys.Home);
+
+                            if (MyInput.Static.IsAnyShiftKeyPressed())
+                                m_selection.SetEnd(this);
+                            else
+                                m_selection.Reset(this);
+
                             ret = this;
                         }
 
                         //  Move end
-                        if ((MyInput.Static.IsNewKeyPressed(MyKeys.End)) && (IsEnoughDelay(MyKeys.End, MyGuiConstants.TEXTBOX_MOVEMENT_DELAY)))
+                        if (m_keyThrottler.IsNewPressAndThrottled(MyKeys.End))
                         {
                             CarriagePositionIndex = m_text.Length;
-                            UpdateLastKeyPressTimes(MyKeys.End);
+                            
+                            if (MyInput.Static.IsAnyShiftKeyPressed())
+                                m_selection.SetEnd(this);
+                            else
+                                m_selection.Reset(this);
+                            
                             ret = this;
                         }
 
                         //Cut selected text
-                        if (MyInput.Static.IsNewKeyPressed(MyKeys.X) && IsEnoughDelay(MyKeys.X, MyGuiConstants.TEXTBOX_MOVEMENT_DELAY) && MyInput.Static.IsAnyCtrlKeyPressed())
+                        if (m_keyThrottler.IsNewPressAndThrottled(MyKeys.X) && MyInput.Static.IsAnyCtrlKeyPressed())
                         {
-                            UpdateLastKeyPressTimes(MyKeys.X);
                             m_selection.CutText(this);
                         }
 
                         //Copy
-                        if (MyInput.Static.IsNewKeyPressed(MyKeys.C) && IsEnoughDelay(MyKeys.C, MyGuiConstants.TEXTBOX_MOVEMENT_DELAY) && MyInput.Static.IsAnyCtrlKeyPressed())
+                        if (m_keyThrottler.IsNewPressAndThrottled(MyKeys.C) && MyInput.Static.IsAnyCtrlKeyPressed())
                         {
-                            UpdateLastKeyPressTimes(MyKeys.C);
                             m_selection.CopyText(this);
                         }
 
                         //Paste
-                        if (MyInput.Static.IsNewKeyPressed(MyKeys.V) && IsEnoughDelay(MyKeys.V, MyGuiConstants.TEXTBOX_MOVEMENT_DELAY) && MyInput.Static.IsAnyCtrlKeyPressed())
+                        if (m_keyThrottler.IsNewPressAndThrottled(MyKeys.V) && MyInput.Static.IsAnyCtrlKeyPressed())
                         {
-                            UpdateLastKeyPressTimes(MyKeys.V);
                             m_selection.PasteText(this);
                         }
 
                         //Select All
-                        if (MyInput.Static.IsNewKeyPressed(MyKeys.A) && IsEnoughDelay(MyKeys.A, MyGuiConstants.TEXTBOX_MOVEMENT_DELAY) && MyInput.Static.IsAnyCtrlKeyPressed())
+                        if (m_keyThrottler.IsNewPressAndThrottled(MyKeys.A) && MyInput.Static.IsAnyCtrlKeyPressed())
                         {
-                            UpdateLastKeyPressTimes(MyKeys.A);
                             m_selection.SelectAll(this);
                         }
 
@@ -589,7 +518,6 @@ namespace Sandbox.Graphics.GUI
                             }
                         }
 
-                        ResetLastKeyPressTimes();
                         m_formattedAlready = false;
                     }
                     else
@@ -597,7 +525,7 @@ namespace Sandbox.Graphics.GUI
                         if (Type == MyGuiControlTextboxType.DigitsOnly && m_formattedAlready == false && m_text.Length != 0)
                         {
                             var number = MyValueFormatter.GetDecimalFromString(Text, 1);
-                            int decimalDigits = (number - (int)number > 0) ? 1 : 0;
+                            int decimalDigits = (number - Decimal.Truncate(number) > 0) ? 1 : 0;
                             m_text.Clear().Append(MyValueFormatter.GetFormatedFloat((float)number, decimalDigits, ""));
                             CarriagePositionIndex = m_text.Length;
                             m_formattedAlready = true;
@@ -612,31 +540,30 @@ namespace Sandbox.Graphics.GUI
             m_hadFocusLastTime = HasFocus;
             return ret;
         }
-
+        public bool IsSkipCharacter(MyKeys character)
+        {
+            if (SkipCombinations != null)
+                foreach (var skipCombination in SkipCombinations)
+                {
+                    if (skipCombination.Alt == MyInput.Static.IsAnyAltKeyPressed() &&
+                        skipCombination.Ctrl == MyInput.Static.IsAnyCtrlKeyPressed() &&
+                        skipCombination.Shift == MyInput.Static.IsAnyShiftKeyPressed() &&
+                        (skipCombination.Keys == null ||
+                        skipCombination.Keys.Contains((MyKeys)character)))
+                    {
+                        return true;
+                    }
+                }
+            return false;
+        }
         private void HandleTextInputBuffered(ref MyGuiControlBase ret)
         {
             const char BACKSPACE = '\b';
             bool textChanged = false;
             foreach (var character in MyInput.Static.TextInput)
             {
-                bool skipCharacter = false;
-                if (SkipCombinations != null)
-                    foreach (var skipCombination in SkipCombinations)
-                    {
-                        if (skipCombination.Alt == MyInput.Static.IsAnyAltKeyPressed() &&
-                            skipCombination.Ctrl == MyInput.Static.IsAnyCtrlKeyPressed() &&
-                            skipCombination.Shift == MyInput.Static.IsAnyShiftKeyPressed() &&
-                            (skipCombination.Keys == null ||
-                            skipCombination.Keys.Contains((MyKeys)character)))
-                        {
-                            skipCharacter = true;
-                            break; //forbiden character combination is being pressed
-                        }
-                    }
-
-                if (skipCharacter)
+                if (IsSkipCharacter((MyKeys)character))
                     continue;
-
                 if (Char.IsControl(character))
                 {
                     if (character == BACKSPACE)
@@ -660,8 +587,7 @@ namespace Sandbox.Graphics.GUI
             }
 
             // Unbuffered Delete because it's not delivered as a message through Win32 message loop.
-            if (MyInput.Static.IsKeyPress(MyKeys.Delete) &&
-                IsEnoughDelay(MyKeys.Delete, MyGuiConstants.TEXTBOX_MOVEMENT_DELAY))
+            if (m_keyThrottler.GetKeyStatus(MyKeys.Delete) == ThrottledKeyStatus.PRESSED_AND_READY)
             {
                 if (m_selection.Length == 0)
                     ApplyDelete();
@@ -669,7 +595,6 @@ namespace Sandbox.Graphics.GUI
                     m_selection.EraseText(this);
 
                 textChanged = true;
-                UpdateLastKeyPressTimes(MyKeys.Delete);
             }
 
             if (textChanged)
@@ -718,52 +643,32 @@ namespace Sandbox.Graphics.GUI
             RefreshSlidingWindow();
         }
 
+        internal override void OnFocusChanged(bool focus)
+        {
+            if (focus)
+            {
+                if (MyInput.Static.IsNewKeyPressed(MyKeys.Tab))     // If we got here by Tab key
+                {
+                    // Highlight the text in the text box when tabbed to
+                    MoveCarriageToEnd();
+                    m_selection.SelectAll(this);
+                }
+            }
+            else
+            {
+                // Clear the selection when leaving
+                m_selection.Reset(this);
+            }
+
+            base.OnFocusChanged(focus);
+        }
+
         public void MoveCarriageToEnd()
         {
             CarriagePositionIndex = m_text.Length;
         }
 
         #region Private helpers
-
-        /// <summary>
-        /// Corrects/fixes string so it will contain only characters that Textbox can display and handle
-        /// This method is slow, but I hope it's OK because it should be called only in textbox constructor and that's rare
-        /// </summary>
-        private string CorrectString(string original)
-        {
-            StringBuilder res = new StringBuilder(original.Length);
-
-            for (int i = 0; i < original.Length; i++)
-            {
-                //  Check if actual character is supported by textbox
-                bool found = false;
-                for (int j = 0; j < m_keyToString.Length; j++)
-                {
-                    if ((m_keyToString[j] != null) && (m_keyToString[j].Character != null) && (m_keyToString[j].CharacterWhenShift != null))
-                    {
-                        string orig = original[i].ToString();
-                        if ((orig == m_keyToString[j].Character) || (orig == m_keyToString[j].CharacterWhenShift))
-                        {
-                            found = true;
-                            break;
-                        }
-                    }
-                }
-
-                //  Add actual character to result
-                if (found == true)
-                {
-                    res.Append(original[i]);
-                }
-                else
-                {
-                    //  This is fall-back character in case we have found not supported character
-                    res.Append(MyGuiConstants.TEXTBOX_FALLBACK_CHARACTER);
-                }
-            }
-
-            return res.ToString();
-        }
 
         /// <summary>
         /// Converts carriage (or just char) position to normalized coordinates
@@ -824,14 +729,6 @@ namespace Sandbox.Graphics.GUI
             }
         }
 
-        private bool IsEnoughDelay(MyKeys key, int forcedDelay)
-        {
-            MyGuiControlTextboxKeyToString keyEx = m_keyToString[(int)key];
-            if (keyEx == null) return true;
-
-            return ((MyGuiManager.TotalTimeInMilliseconds - keyEx.LastKeyPressTime) > forcedDelay);
-        }
-
         private void OnTextChanged()
         {
             if (TextChanged != null)
@@ -839,45 +736,6 @@ namespace Sandbox.Graphics.GUI
 
             RefreshSlidingWindow();
             m_selection.Reset(this);
-        }
-
-        /// <summary>
-        /// Call this every update, it will check if key as UNPRESSED (thus UP), and if yes, we will remove delay, so multiple
-        /// keypresses are possible fast, but not automatic. User must press DOWN/UP.
-        /// </summary>
-        private void ResetLastKeyPressTimes()
-        {
-            for (int i = 0; i < m_keyToString.Length; i++)
-            {
-                MyGuiControlTextboxKeyToString keyEx = m_keyToString[i];
-                if (keyEx != null)
-                {
-                    if (MyInput.Static.IsKeyPress(keyEx.Key) == false)
-                    {
-                        keyEx.LastKeyPressTime = MyGuiManager.FAREST_TIME_IN_PAST;
-                    }
-                }
-            }
-        }
-
-        /// <summary>
-        /// Call this after some specified keypress was detected so we will make delay.
-        /// </summary>
-        private void UpdateLastKeyPressTimes(MyKeys? key)
-        {
-            //  This will reset the counter so it starts blinking whenever we enter the textbox
-            //  And also when user presses a lot of keys, it won't blink for a while
-            m_carriageBlinkerTimer = 0;
-
-            //  Making delays between one long key press
-            if (key.HasValue)
-            {
-                MyGuiControlTextboxKeyToString keyEx = m_keyToString[(int)key];
-                if (keyEx != null)
-                {
-                    keyEx.LastKeyPressTime = MyGuiManager.TotalTimeInMilliseconds;
-                }
-            }
         }
 
         /// <summary>
@@ -901,34 +759,6 @@ namespace Sandbox.Graphics.GUI
         }
 
         #endregion
-
-        private class MyGuiControlTextboxKeyToString
-        {
-            /// <summary>
-            /// Char/string when shift isn't pressed.
-            /// </summary>
-            public string Character;
-
-            /// <summary>
-            /// Char/string when shift IS pressed
-            /// </summary>
-            public string CharacterWhenShift;
-
-            public MyKeys Key;
-
-            /// <summary>
-            /// This is not for converting key to string, but for controling repeated key input with delay
-            /// </summary>
-            public int LastKeyPressTime;
-
-            public MyGuiControlTextboxKeyToString(MyKeys key, string character, string characterWhenShift)
-            {
-                Key                = key;
-                Character          = character;
-                CharacterWhenShift = characterWhenShift;
-                LastKeyPressTime = MyGuiManager.FAREST_TIME_IN_PAST;
-            }
-        }
 
         private class MyGuiControlTextboxSelection
         {
@@ -1002,29 +832,41 @@ namespace Sandbox.Graphics.GUI
 
             public void CopyText(MyGuiControlTextbox sender)
             {
+#if !XB1
                 ClipboardText = sender.Text.Substring(Start, Length);
 
-                Thread myth;
-                myth = new Thread(new System.Threading.ThreadStart(CopyToClipboard));
-                myth.ApartmentState = ApartmentState.STA;
-                myth.Start();
+                if (!string.IsNullOrEmpty(ClipboardText))
+                {
+                    Thread thread = new Thread(() => System.Windows.Forms.Clipboard.SetText(ClipboardText));
+                    thread.SetApartmentState(ApartmentState.STA);
+                    thread.Start();
+                    thread.Join();
+                }
+#else // XB1
+                System.Diagnostics.Debug.Assert(false, "Not Clipboard support on XB1!");
+#endif // XB1
             }
 
             void CopyToClipboard()
             {
+#if !XB1
                 if(ClipboardText != "")
                     Clipboard.SetText(ClipboardText);
+#else
+                Debug.Assert(false, "Not Clipboard support on XB1!");
+#endif
             }
 
             public void PasteText(MyGuiControlTextbox sender)
             {
+#if !XB1
                 //First we erase the selection
                 EraseText(sender);
+                
                 var prefix = sender.Text.Substring(0, sender.CarriagePositionIndex);
                 var suffix = sender.Text.Substring(sender.CarriagePositionIndex);
-                Thread myth;
                 
-                myth = new Thread(new System.Threading.ThreadStart(PasteFromClipboard));
+                Thread myth = new Thread(new System.Threading.ThreadStart(PasteFromClipboard));
                 myth.ApartmentState = ApartmentState.STA;
                 myth.Start();
                 
@@ -1034,18 +876,43 @@ namespace Sandbox.Graphics.GUI
                 sender.Text = new StringBuilder(prefix).Append(ClipboardText).Append(suffix).ToString();
                 sender.CarriagePositionIndex = prefix.Length + ClipboardText.Length;
                 Reset(sender);
+#else
+                Debug.Assert(false, "Not Clipboard support on XB1!");
+#endif
             }
 
             void PasteFromClipboard()
             {
+#if !XB1
                 ClipboardText = Clipboard.GetText();
+#else
+                Debug.Assert(false, "Not Clipboard support on XB1!");
+#endif
             }
         }
 
-        public MyFontEnum TextFont
+        public string TextFont
         {
             get;
             private set;
+        }
+
+        /// <summary>
+        /// GR: Use this to select all text outside for current textbox.
+        /// </summary>
+        public void SelectAll()
+        {
+            if (m_selection != null)
+            {
+                m_selection.SelectAll(this);
+            }
+        }
+
+        public void ApplyStyle(StyleDefinition style)
+        {
+            m_useCustomStyle = true;
+            m_customStyle = style;
+            RefreshVisualStyle();
         }
     }
 }

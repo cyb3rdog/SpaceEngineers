@@ -1,5 +1,4 @@
 ﻿using Sandbox.Common;
-using Sandbox.Common.ObjectBuilders.Gui;
 using Sandbox.Engine.Utils;
 using Sandbox.Game.Entities;
 using Sandbox.Game.Entities.Character;
@@ -11,27 +10,21 @@ using Sandbox.Game.Screens.Terminal;
 using Sandbox.Game.World;
 using Sandbox.Graphics.GUI;
 using System;
+using System.Diagnostics;
 using System.Text;
+using Sandbox.Engine.Networking;
 using VRage;
+using VRage.Game;
 using VRage.Input;
 using VRage.Library.Utils;
 using VRage.Utils;
 using VRageMath;
+using VRage.Game.Entity;
+using VRage.Game.ModAPI;
 
 namespace Sandbox.Game.Gui
 {
-    enum MyTerminalPageEnum
-    {
-        Properties = -1,
-        Inventory = 0,
-        ControlPanel = 1,
-        Production = 2,
-        Info = 3,
-        Factions = 4,
-        Gps = 6
-    }
-
-    partial class MyGuiScreenTerminal : MyGuiScreenBase
+    public partial class MyGuiScreenTerminal : MyGuiScreenBase
     {
         public static event ScreenHandler ClosedCallback
         {
@@ -101,7 +94,7 @@ namespace Sandbox.Game.Gui
         private MyGuiScreenTerminal() :
             base(position: new Vector2(0.5f, 0.5f),
                  backgroundColor: MyGuiConstants.SCREEN_BACKGROUND_COLOR,
-                 size: new Vector2(0.99f, 0.9f))
+                 size: new Vector2(0.99f, 0.9f), backgroundTransition: MySandboxGame.Config.UIBkOpacity, guiTransition: MySandboxGame.Config.UIOpacity)
         {
             EnabledBackgroundFade = true;
             m_closeHandler = OnInteractedClose;
@@ -118,6 +111,17 @@ namespace Sandbox.Game.Gui
         public override string GetFriendlyName()
         {
             return "MyGuiScreenTerminal";
+        }
+
+        public override bool CloseScreen()
+        {
+            if (base.CloseScreen())
+            {
+                if (m_interactedEntity != null)
+                    m_interactedEntity.OnClose -= m_closeHandler;
+                return true;
+            }
+            return false;
         }
 
         #region recreate controls on load
@@ -144,8 +148,8 @@ namespace Sandbox.Game.Gui
                 //Inits of temporary panels
                 m_propertiesTopMenuParent = new MyGuiControlParent()
                 {
-                    Position = new Vector2(-0.614f, -0.487f),
-                    Size = new Vector2(0.3f, 0.15f),
+                    Position = new Vector2(-0.864f, -0.487f),
+                    Size = new Vector2(0.8f, 0.15f),
                     Name = "PropertiesPanel",
                     OriginAlign = MyGuiDrawAlignEnum.HORISONTAL_LEFT_AND_VERTICAL_TOP,
                 };
@@ -269,7 +273,7 @@ namespace Sandbox.Game.Gui
             }
 
             m_controllerInventory.Init(inventoryPage, m_user, InteractedEntity, m_colorHelper);
-            m_controllerControlPanel.Init(controlPanelPage, MySession.LocalHumanPlayer, grid, InteractedEntity as MyTerminalBlock, m_colorHelper);
+            m_controllerControlPanel.Init(controlPanelPage, MySession.Static.LocalHumanPlayer, grid, InteractedEntity as MyTerminalBlock, m_colorHelper);
             m_controllerProduction.Init(productionPage, grid);
             m_controllerInfo.Init(infoPage, InteractedEntity != null ? InteractedEntity.Parent as MyCubeGrid : null);
             m_controllerFactions.Init(factionsPage);
@@ -736,8 +740,8 @@ namespace Sandbox.Game.Gui
                 VisibleRowsCount = 14,
             };
             factionsTable.SetCustomColumnWidths(new float[] { 0.16f, 0.75f, 0.09f });
-            factionsTable.SetColumnName(0, MyTexts.Get(MySpaceTexts.Tag));
-            factionsTable.SetColumnName(1, MyTexts.Get(MySpaceTexts.Name));
+            factionsTable.SetColumnName(0, MyTexts.Get(MyCommonTexts.Tag));
+            factionsTable.SetColumnName(1, MyTexts.Get(MyCommonTexts.Name));
             top += factionsTable.Size.Y + spacingV;
 
             var createBtn      = new MyGuiControlButton(originAlign: MyGuiDrawAlignEnum.HORISONTAL_LEFT_AND_VERTICAL_TOP, position: new Vector2(left, top)) { Name = "buttonCreate" };
@@ -879,8 +883,8 @@ namespace Sandbox.Game.Gui
                 HeaderVisible = false
             };
             membersTable.SetCustomColumnWidths(new float[] { 0.7f, 0.3f });
-            membersTable.SetColumnName(0, MyTexts.Get(MySpaceTexts.Name));
-            membersTable.SetColumnName(1, MyTexts.Get(MySpaceTexts.Status));
+            membersTable.SetColumnName(0, MyTexts.Get(MyCommonTexts.Name));
+            membersTable.SetColumnName(1, MyTexts.Get(MyCommonTexts.Status));
 
             var btnSpacing = smallerBtn.Y + spacingV;
             var editBtn = new MyGuiControlButton(visualStyle: MyGuiControlButtonStyleEnum.Rectangular, size: smallerBtn, originAlign: MyGuiDrawAlignEnum.HORISONTAL_LEFT_AND_VERTICAL_TOP, position: new Vector2(left + membersTable.Size.X + spacingV, factionDesc.Position.Y)) { Name = "buttonEdit" };
@@ -889,6 +893,7 @@ namespace Sandbox.Game.Gui
             var acceptJoin = new MyGuiControlButton(visualStyle: MyGuiControlButtonStyleEnum.Rectangular, size: smallerBtn, originAlign: MyGuiDrawAlignEnum.HORISONTAL_LEFT_AND_VERTICAL_TOP, position: new Vector2(left + membersTable.Size.X + spacingV, membersTable.Position.Y + 2f * btnSpacing)) { Name = "buttonAcceptJoin" };
             var demote = new MyGuiControlButton(visualStyle: MyGuiControlButtonStyleEnum.Rectangular, size: smallerBtn, originAlign: MyGuiDrawAlignEnum.HORISONTAL_LEFT_AND_VERTICAL_TOP, position: new Vector2(left + membersTable.Size.X + spacingV, membersTable.Position.Y + 3f * btnSpacing)) { Name = "buttonDemote" };
             //var acceptPeace = new MyGuiControlButton(visualStyle: MyGuiControlButtonStyleEnum.Rectangular, size: smallerBtn, originAlign: MyGuiDrawAlignEnum.HORISONTAL_LEFT_AND_VERTICAL_TOP,    position: new Vector2(left + membersTable.Size.X + spacingV, membersTable.Position.Y + 2f * btnSpacing)) { Name = "buttonAcceptPeace" };
+            var addNpcToFaction = new MyGuiControlButton(visualStyle: MyGuiControlButtonStyleEnum.Rectangular, size: smallerBtn, originAlign: MyGuiDrawAlignEnum.HORISONTAL_LEFT_AND_VERTICAL_TOP, position: new Vector2(left + membersTable.Size.X + spacingV, membersTable.Position.Y + 4f * btnSpacing)) { Name = "buttonAddNpc" };
 
             page.Controls.Add(factionComposite);
             page.Controls.Add(factionNamePanel);
@@ -909,6 +914,7 @@ namespace Sandbox.Game.Gui
             page.Controls.Add(kickBtn);
             page.Controls.Add(demote);
             page.Controls.Add(acceptJoin);
+            page.Controls.Add(addNpcToFaction);
         }
 
         private void CreateChatPageControls(MyGuiControlTabPage chatPage)
@@ -934,7 +940,7 @@ namespace Sandbox.Game.Gui
                 Position = new Vector2(left, top),
                 Name = "PlayerLabel",
                 OriginAlign = MyGuiDrawAlignEnum.HORISONTAL_LEFT_AND_VERTICAL_TOP,
-                Text = MyTexts.GetString(MySpaceTexts.ScreenCaptionPlayers)
+                Text = MyTexts.GetString(MyCommonTexts.ScreenCaptionPlayers)
             };
             chatPage.Controls.Add(playerLabel);
 
@@ -959,7 +965,7 @@ namespace Sandbox.Game.Gui
                 Position = new Vector2(left, top),
                 Name = "PlayerLabel",
                 OriginAlign = MyGuiDrawAlignEnum.HORISONTAL_LEFT_AND_VERTICAL_TOP,
-                Text = MyTexts.GetString(MySpaceTexts.Factions)
+                Text = MyTexts.GetString(MyCommonTexts.Factions)
             };
             chatPage.Controls.Add(factionLabel);
 
@@ -1042,9 +1048,22 @@ namespace Sandbox.Game.Gui
             infoPage.Controls.Add(list);
 
             var convertBtn = new MyGuiControlButton();
+            convertBtn.Position = new Vector2(0f, 0.06f);
             convertBtn.TextEnum = MySpaceTexts.TerminalTab_Info_ConvertButton;
+            convertBtn.SetToolTip(MySpaceTexts.TerminalTab_Info_ConvertButton_TT);
+            convertBtn.ShowTooltipWhenDisabled = true;
             convertBtn.Name = "ConvertBtn";
             infoPage.Controls.Add(convertBtn);
+
+            var convertToStationBtn = new MyGuiControlButton();
+            convertBtn.Position = new Vector2(0f, -0.06f);
+            convertToStationBtn.TextEnum = MySpaceTexts.TerminalTab_Info_ConvertToStationButton;
+            convertToStationBtn.SetToolTip(MySpaceTexts.TerminalTab_Info_ConvertToStationButton_TT);
+            convertToStationBtn.ShowTooltipWhenDisabled = true;
+            convertToStationBtn.Name = "ConvertToStationBtn";
+            convertToStationBtn.Visible = MySession.Static.EnableConvertToStation;
+            infoPage.Controls.Add(convertToStationBtn);
+            
 
             if (MyFakes.ENABLE_CENTER_OF_MASS)
             {
@@ -1129,6 +1148,16 @@ namespace Sandbox.Game.Gui
                 infoPage.Controls.Add(nameTextBox);
                 infoPage.Controls.Add(renameButton);
             }
+
+            var setDestructibleBlocksLabel = new MyGuiControlLabel(new Vector2(0.15f, 0.28f), text: MyTexts.GetString(MySpaceTexts.TerminalTab_Info_DestructibleBlocks));
+            setDestructibleBlocksLabel.OriginAlign = MyGuiDrawAlignEnum.HORISONTAL_LEFT_AND_VERTICAL_CENTER;
+            setDestructibleBlocksLabel.Visible = MySession.Static.Settings.ScenarioEditMode || MySession.Static.IsScenario;
+            infoPage.Controls.Add(setDestructibleBlocksLabel);
+
+            var setDestructibleBlocksBtn = new MyGuiControlCheckbox(new Vector2(0.45f, setDestructibleBlocksLabel.Position.Y), toolTip: MyTexts.GetString(MySpaceTexts.TerminalTab_Info_DestructibleBlocks_Tooltip));
+            setDestructibleBlocksBtn.OriginAlign = MyGuiDrawAlignEnum.HORISONTAL_RIGHT_AND_VERTICAL_CENTER;
+            setDestructibleBlocksBtn.Name = "SetDestructibleBlocks";
+            infoPage.Controls.Add(setDestructibleBlocksBtn);
         }
 
 		private static bool OnAntennaSliderClicked(MyGuiControlSlider arg)
@@ -1145,7 +1174,7 @@ namespace Sandbox.Game.Gui
 					min = 0;
 
 				// TODO: allocations, needs GUI redo
-				MyGuiScreenDialogAmount dialog = new MyGuiScreenDialogAmount(min, max, parseAsInteger: parseAsInteger, defaultAmount: val, caption: MySpaceTexts.DialogAmount_SetValueCaption);
+                MyGuiScreenDialogAmount dialog = new MyGuiScreenDialogAmount(min, max, parseAsInteger: parseAsInteger, defaultAmount: val, caption: MyCommonTexts.DialogAmount_SetValueCaption);
 				dialog.OnConfirmed += (v) => { arg.Value = MyHudMarkerRender.Normalize(v); };
 				MyGuiSandbox.AddScreen(dialog);
 				return true;
@@ -1638,7 +1667,9 @@ namespace Sandbox.Game.Gui
              originAlign: MyGuiDrawAlignEnum.HORISONTAL_LEFT_AND_VERTICAL_CENTER,
              position: new Vector2(left+ checkGpsShowOnHud.Size.X + spacingH, top),
              size: checkGpsShowOnHud.Size - new Vector2(0.01f, 0.01f)
-            ) { Name = "TerminalTab_INS_ShowOnHud" ,
+            )
+            {
+                Name = "labelInsShowOnHud",
                 Text = MyTexts.Get(MySpaceTexts.TerminalTab_GPS_ShowOnHud).ToString()
             };
 
@@ -1652,7 +1683,28 @@ namespace Sandbox.Game.Gui
                 Name = "buttonToClipboard"
             };
 
-            top += toClipboardButton.Size.Y;
+            top += toClipboardButton.Size.Y * 1.1f;
+            var checkGpsAlwaysVisible = new MyGuiControlCheckbox(
+                originAlign: MyGuiDrawAlignEnum.HORISONTAL_LEFT_AND_VERTICAL_CENTER,
+                position: new Vector2(left, top)
+            )
+            {
+                Name = "checkInsAlwaysVisible",
+            };
+            checkGpsAlwaysVisible.SetToolTip(MySpaceTexts.TerminalTab_GPS_AlwaysVisible_Tooltip);
+
+            var labelGpsAlwaysVisible = new MyGuiControlLabel(
+             originAlign: MyGuiDrawAlignEnum.HORISONTAL_LEFT_AND_VERTICAL_CENTER,
+             position: new Vector2(left + checkGpsShowOnHud.Size.X + spacingH, top),
+             size: checkGpsShowOnHud.Size - new Vector2(0.01f, 0.01f)
+            )
+            {
+                Name = "labelInsAlwaysVisible",
+                Text = MyTexts.Get(MySpaceTexts.TerminalTab_GPS_AlwaysVisible).ToString()
+            };
+            labelGpsAlwaysVisible.SetToolTip(MySpaceTexts.TerminalTab_GPS_AlwaysVisible_Tooltip);
+
+            top += checkGpsShowOnHud.Size.Y;
             var labelIllegalDataWarning = new MyGuiControlLabel(
              originAlign: MyGuiDrawAlignEnum.HORISONTAL_LEFT_AND_VERTICAL_CENTER,
              position: new Vector2(left + spacingH, top),
@@ -1661,9 +1713,8 @@ namespace Sandbox.Game.Gui
             {
                 Name = "TerminalTab_GPS_SaveWarning",
                 Text = MyTexts.Get(MySpaceTexts.TerminalTab_GPS_SaveWarning).ToString(),
-                ColorMask=Color.Red.ToVector4()
+                ColorMask = Color.Red.ToVector4()
             };
-
 
             gpsPage.Controls.Add(gpsComposite);
             gpsPage.Controls.Add(gpsNamePanel);
@@ -1682,8 +1733,11 @@ namespace Sandbox.Game.Gui
 
             gpsPage.Controls.Add(checkGpsShowOnHud);
             gpsPage.Controls.Add(labelGpsShowOnHud);
+
             gpsPage.Controls.Add(labelIllegalDataWarning);
 
+            gpsPage.Controls.Add(checkGpsAlwaysVisible);
+            gpsPage.Controls.Add(labelGpsAlwaysVisible);
         }
         #endregion
 
@@ -1704,12 +1758,13 @@ namespace Sandbox.Game.Gui
 
             var selectShipButton = new MyGuiControlButton()
             {
-                Position = new Vector2(0.27f, 0.0f),
-                Size = new Vector2(0.05f, 0.05f),
+                Position = new Vector2(0.265f, 0.0f),
+                Size = new Vector2(0.2f, 0.05f),
                 Name = "SelectShip",
-                Text = "...",
+                Text = MyTexts.GetString(MySpaceTexts.Terminal_RemoteControl_Button),
+                TextScale = 0.9f,
                 OriginAlign = MyGuiDrawAlignEnum.HORISONTAL_LEFT_AND_VERTICAL_TOP,
-                VisualStyle = MyGuiControlButtonStyleEnum.Tiny,
+                VisualStyle = MyGuiControlButtonStyleEnum.Small,
             };
             selectShipButton.SetToolTip(MySpaceTexts.ScreenTerminal_ShipList);
 
@@ -1722,19 +1777,25 @@ namespace Sandbox.Game.Gui
                 Position = new Vector2(0.0f, 0.0f),
                 Size = new Vector2(0.88f, 0.78f),
                 Name = "ShipsData",
-                ColumnsCount = 3,
+                ColumnsCount = 5,
                 VisibleRowsCount = 16,
                 HeaderVisible = true,
                 OriginAlign = MyGuiDrawAlignEnum.HORISONTAL_CENTER_AND_VERTICAL_TOP,
             };
 
-            shipsDataTable.SetCustomColumnWidths(new float[] { 0.40f, 0.20f, 0.28f });
+            shipsDataTable.SetCustomColumnWidths(new float[] { 0.4f, 0.15f, 0.15f, 0.1f, 0.2f });
             shipsDataTable.SetColumnName(0, new StringBuilder("Name"));
-            shipsDataTable.SetColumnName(1, new StringBuilder("Distance"));
-            shipsDataTable.SetColumnName(2, new StringBuilder("Status"));
+            shipsDataTable.SetColumnName(1, new StringBuilder("Control"));
+            shipsDataTable.SetColumnName(2, new StringBuilder("Distance"));
+            shipsDataTable.SetColumnName(3, new StringBuilder("Status"));
+            shipsDataTable.SetColumnName(4, new StringBuilder("Terminal Access"));
+            shipsDataTable.SetHeaderColumnAlign(1, MyGuiDrawAlignEnum.HORISONTAL_CENTER_AND_VERTICAL_CENTER);
+            shipsDataTable.SetHeaderColumnAlign(4, MyGuiDrawAlignEnum.HORISONTAL_CENTER_AND_VERTICAL_CENTER);
+            shipsDataTable.SetColumnAlign(1, MyGuiDrawAlignEnum.HORISONTAL_CENTER_AND_VERTICAL_CENTER);
+            shipsDataTable.SetColumnAlign(4, MyGuiDrawAlignEnum.HORISONTAL_CENTER_AND_VERTICAL_CENTER);
             shipsDataTable.SetColumnComparison(0, (a, b) => (a.Text).CompareTo(b.Text));
-            shipsDataTable.SetColumnComparison(1, (a, b) => ((float)a.UserData).CompareTo((float)b.UserData));
-            shipsDataTable.SetColumnComparison(2, (a, b) => ((Int32)a.UserData).CompareTo((Int32)b.UserData));
+            shipsDataTable.SetColumnComparison(2, (a, b) => ((float)a.UserData).CompareTo((float)b.UserData));
+            shipsDataTable.SetColumnComparison(3, (a, b) => ((Int32)a.UserData).CompareTo((Int32)b.UserData));
 
             panelParent.Controls.Add(shipsDataTable);
             panelParent.Visible = false;
@@ -1746,6 +1807,8 @@ namespace Sandbox.Game.Gui
         {
             MyGuiScreenGamePlay.ActiveGameplayScreen = null;
             m_interactedEntity = null;
+
+            MyAnalyticsHelper.ReportActivityEnd(m_instance.m_user, "show_terminal");
 
             if (MyFakes.ENABLE_GPS)
                 m_controllerGps.Close();
@@ -1792,7 +1855,7 @@ namespace Sandbox.Game.Gui
             // interfere with player typing.
             bool textboxHasFocus = FocusedControl is MyGuiControlTextbox;
 
-            if (!textboxHasFocus && MyInput.Static.IsNewGameControlPressed(MyControlsSpace.TERMINAL))
+            if (!textboxHasFocus && (MyInput.Static.IsNewGameControlPressed(MyControlsSpace.TERMINAL) || MyInput.Static.IsNewGameControlPressed(MyControlsSpace.USE)))
             {
                 GuiSounds closeEnum = m_closingCueEnum.HasValue ? m_closingCueEnum.Value : GuiSounds.MouseClick;
                 MyGuiSoundManager.PlaySound(closeEnum);
@@ -1808,12 +1871,12 @@ namespace Sandbox.Game.Gui
                 }
                 else
                 {
-                    m_terminalTabs.SelectedPage = (int)MyTerminalPageEnum.Inventory;
+					SwitchToInventory();
                 }
             }
             if (!textboxHasFocus && MyInput.Static.IsNewGameControlPressed(MyControlsSpace.PAUSE_GAME))
             {
-                MySandboxGame.UserPauseToggle();
+                MySandboxGame.PauseToggle();
             }
 
             if (!textboxHasFocus && MyInput.Static.IsAnyCtrlKeyPressed() && MyInput.Static.IsKeyPress(MyKeys.A))
@@ -1830,6 +1893,7 @@ namespace Sandbox.Game.Gui
         public void PropertiesButtonClicked()
         {
             m_terminalTabs.SelectedPage = (int)MyTerminalPageEnum.Properties;
+            m_controllerProperties.Refresh();
             m_propertiesTableParent.Visible = true;
         }
 
@@ -1842,6 +1906,8 @@ namespace Sandbox.Game.Gui
         {
             if (m_propertiesTableParent.Visible)
                 m_propertiesTableParent.Visible = false;
+            if (m_instance.m_terminalTabs.SelectedPage == (int)MyTerminalPageEnum.Inventory && m_instance.m_controllerInventory != null)
+                m_instance.m_controllerInventory.Refresh();
         }
 
         public override void HandleInput(bool receivedFocusInThisUpdate)
@@ -1860,21 +1926,23 @@ namespace Sandbox.Game.Gui
         #region Static
         private static MyGuiScreenTerminal m_instance;
 
-        internal static void Show(MyTerminalPageEnum page, MyCharacter user, MyEntity interactedEntity)
+        public static void Show(MyTerminalPageEnum page, MyCharacter user, MyEntity interactedEntity)
         {
-            if (!MyPerGameSettings.TerminalEnabled)
+            if (!MyPerGameSettings.TerminalEnabled || !MyPerGameSettings.GUI.EnableTerminalScreen)
                 return;
 
             bool showProperties = MyInput.Static.IsAnyShiftKeyPressed();
-            System.Diagnostics.Debug.Assert(m_instance == null);
+            Debug.Assert(m_instance == null);
 
             m_instance = new MyGuiScreenTerminal();
             m_instance.m_user = user;
 
             m_openInventoryInteractedEntity = interactedEntity;
 
-            if(MyFakes.ENABLE_TERMINAL_PROPERTIES)
+            if (MyFakes.ENABLE_TERMINAL_PROPERTIES)
+            {
                 m_instance.m_initialPage = showProperties ? MyTerminalPageEnum.Properties : page;
+            }
             else
                 m_instance.m_initialPage = page;
 
@@ -1883,6 +1951,9 @@ namespace Sandbox.Game.Gui
 
             MyGuiSandbox.AddScreen(MyGuiScreenGamePlay.ActiveGameplayScreen = m_instance);
             m_screenOpen = true;
+
+            string target = interactedEntity != null ? interactedEntity.GetType().Name : "";
+            MyAnalyticsHelper.ReportActivityStart(user, "show_terminal", target, "gui", string.Empty);
         }
 
         internal static void Hide()
@@ -1953,7 +2024,7 @@ namespace Sandbox.Game.Gui
                     m_controllerControlPanel.Close();
 
                     var controlPanelPage = (MyGuiControlTabPage)m_terminalTabs.Controls.GetControlByName("PageControlPanel");
-                    m_controllerControlPanel.Init(controlPanelPage, MySession.LocalHumanPlayer, grid, InteractedEntity as MyTerminalBlock, m_colorHelper);
+                    m_controllerControlPanel.Init(controlPanelPage, MySession.Static.LocalHumanPlayer, grid, InteractedEntity as MyTerminalBlock, m_colorHelper);
                 }
 
                 if (m_controllerProduction != null)
@@ -1988,6 +2059,15 @@ namespace Sandbox.Game.Gui
             m_terminalTabs.Visible = true;
             m_propertiesTableParent.Visible = m_terminalTabs.SelectedPage == (int) MyTerminalPageEnum.Properties;
             m_terminalNotConnected.Visible = false;
+        }
+
+        public static MyTerminalPageEnum GetCurrentScreen()
+        {
+            if(IsOpen)
+            {
+                return (MyTerminalPageEnum)m_instance.m_terminalTabs.SelectedPage;
+            }
+            return MyTerminalPageEnum.None;
         }
 
         #endregion

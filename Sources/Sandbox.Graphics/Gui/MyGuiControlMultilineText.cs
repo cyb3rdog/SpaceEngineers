@@ -1,11 +1,16 @@
-﻿using Sandbox.Common;
-using Sandbox.Common.ObjectBuilders.Gui;
-using System;
+﻿using System;
+using System.Collections.Generic;
+using System.Diagnostics;
 using System.Text;
+#if !XB1
 using System.Text.RegularExpressions;
+#endif // !XB1
 using System.Threading;
+#if !XB1
 using System.Windows.Forms;
+#endif
 using VRage;
+using VRage.Game;
 using VRage.Input;
 using VRage.Library.Utils;
 using VRage.Utils;
@@ -18,38 +23,9 @@ namespace Sandbox.Graphics.GUI
     [MyGuiControlType(typeof(MyObjectBuilder_GuiControlMultilineLabel))]
     public class MyGuiControlMultilineText : MyGuiControlBase
     {
-        protected enum MyMultilineTextKeys
-        {
-            UP = 0,
-            DOWN = 1,
-            LEFT = 2,
-            RIGHT = 3,
-            C = 4,
-            A = 5,
-            V = 6,
-            X=  7,
-            HOME = 8,
-            END = 9,
-            DELETE = 10,
-        }
-        private class MyMultilineKeyTimeController
-        {
-            public Keys Key;
-
-            /// <summary>
-            /// This is not for converting key to string, but for controling repeated key input with delay
-            /// </summary>
-            public int LastKeyPressTime;
-
-            public MyMultilineKeyTimeController(Keys key)
-            {
-                Key = key;
-                LastKeyPressTime = MyGuiManager.FAREST_TIME_IN_PAST;
-            }
-        }
-
         #region Fields
 
+        private MyGuiBorderThickness m_textPadding;
         private float m_textScale;
         private float m_textScaleWithLanguage;
         private static readonly StringBuilder m_letterA = new StringBuilder("A");
@@ -62,14 +38,16 @@ namespace Sandbox.Graphics.GUI
 
         private bool m_drawScrollbar;
         private float m_scrollbarOffset;
+        private bool m_showTextShadow;
 
         private bool m_selectable;
+
+        protected MyKeyThrottler m_keyThrottler;
 
         //Carriage data for selectable texts
         private int m_carriageBlinkerTimer;
         protected int m_carriagePositionIndex;
         protected MyGuiControlMultilineSelection m_selection;
-        private static MyMultilineKeyTimeController[] m_keys;
 
         protected int CarriagePositionIndex
         {
@@ -80,7 +58,7 @@ namespace Sandbox.Graphics.GUI
                 if (m_carriagePositionIndex != newPos)
                 {
                     m_carriagePositionIndex = newPos;
-                    if(!CarriageVisible())
+                    if (!CarriageVisible())
                         ScrollToShowCarriage();
                 }
             }
@@ -123,7 +101,7 @@ namespace Sandbox.Graphics.GUI
 
         public event LinkClicked OnLinkClicked;
 
-        public MyFontEnum Font
+        public string Font
         {
             get { return m_font; }
             set
@@ -135,7 +113,7 @@ namespace Sandbox.Graphics.GUI
                 }
             }
         }
-        private MyFontEnum m_font;
+        private string m_font;
 
         /// <summary>
         /// Gets or sets the color of the text.
@@ -144,17 +122,22 @@ namespace Sandbox.Graphics.GUI
 
         public Vector2 TextSize
         {
-            get { return m_label.GetSize(); }
+            get { return m_label.Size; }
+        }
+
+        public int NumberOfRows
+        {
+            get { return m_label.NumberOfRows; }
         }
 
         public float ScrollbarOffset
         {
             get { return m_scrollbarOffset; }
-            set 
+            set
             {
                 m_scrollbarOffset = value;
                 m_scrollbar.ChangeValue(m_scrollbarOffset);
-                RecalculateScrollBar(); 
+                RecalculateScrollBar();
             }
         }
 
@@ -168,17 +151,23 @@ namespace Sandbox.Graphics.GUI
             Vector2? position = null,
             Vector2? size = null,
             Vector4? backgroundColor = null,
-            MyFontEnum font = MyFontEnum.Blue,
+            string font = MyFontEnum.Blue,
             float textScale = MyGuiConstants.DEFAULT_TEXT_SCALE,
             MyGuiDrawAlignEnum textAlign = MyGuiDrawAlignEnum.HORISONTAL_LEFT_AND_VERTICAL_TOP,
             StringBuilder contents = null,
             bool drawScrollbar = true,
             MyGuiDrawAlignEnum textBoxAlign = MyGuiDrawAlignEnum.HORISONTAL_CENTER_AND_VERTICAL_CENTER,
-            bool selectable = false)
-            : base( position: position,
+            int? visibleLinesCount = null,
+            bool selectable = false,
+            bool showTextShadow = false,
+            MyGuiCompositeTexture backgroundTexture = null,
+            MyGuiBorderThickness? textPadding = null
+        )
+            : base(position: position,
                     size: size,
                     colorMask: backgroundColor,
-                    toolTip: null)
+                    toolTip: null,
+                    backgroundTexture: backgroundTexture)
         {
             Font = font;
             TextScale = textScale;
@@ -187,11 +176,13 @@ namespace Sandbox.Graphics.GUI
             TextBoxAlign = textBoxAlign;
             m_selectable = selectable;
 
+            m_textPadding = textPadding ?? new MyGuiBorderThickness(0, 0, 0, 0);
             m_scrollbar = new MyVScrollbar(this);
             m_scrollbarSize = new Vector2(0.0334f, MyGuiConstants.COMBOBOX_VSCROLLBAR_SIZE.Y);
             m_scrollbarSize = MyGuiConstants.COMBOBOX_VSCROLLBAR_SIZE;
             float minLineHeight = MyGuiManager.MeasureString(Font, m_lineHeightMeasure, TextScaleWithLanguage).Y;
-            m_label = new MyRichLabel(ComputeRichLabelWidth(), minLineHeight);
+            m_label = new MyRichLabel(this, ComputeRichLabelWidth(), minLineHeight, visibleLinesCount) { ShowTextShadow = showTextShadow };
+            m_label.AdjustingScissorRectangle += AdjustScissorRectangleLabel;
             m_label.TextAlign = textAlign;
             m_text = new StringBuilder();
             m_selection = new MyGuiControlMultilineSelection();
@@ -199,19 +190,7 @@ namespace Sandbox.Graphics.GUI
             if (contents != null && contents.Length > 0)
                 Text = contents;
 
-            m_keys = new MyMultilineKeyTimeController[11];
-            m_keys[(int)MyMultilineTextKeys.UP] = new MyMultilineKeyTimeController(Keys.Up);
-            m_keys[(int)MyMultilineTextKeys.DOWN] = new MyMultilineKeyTimeController(Keys.Down);
-            m_keys[(int)MyMultilineTextKeys.LEFT] = new MyMultilineKeyTimeController(Keys.Left);
-            m_keys[(int)MyMultilineTextKeys.RIGHT] = new MyMultilineKeyTimeController(Keys.Right);
-            
-            m_keys[(int)MyMultilineTextKeys.C] = new MyMultilineKeyTimeController(Keys.C);
-            m_keys[(int)MyMultilineTextKeys.A] = new MyMultilineKeyTimeController(Keys.A);
-            m_keys[(int)MyMultilineTextKeys.V] = new MyMultilineKeyTimeController(Keys.V);
-            m_keys[(int)MyMultilineTextKeys.X] = new MyMultilineKeyTimeController(Keys.X);
-            m_keys[(int)MyMultilineTextKeys.HOME] = new MyMultilineKeyTimeController(Keys.Home);
-            m_keys[(int)MyMultilineTextKeys.END] = new MyMultilineKeyTimeController(Keys.End);
-            m_keys[(int)MyMultilineTextKeys.DELETE] = new MyMultilineKeyTimeController(Keys.Delete);
+            m_keyThrottler = new MyKeyThrottler();
         }
 
         public override void Init(MyObjectBuilder_GuiControlBase objectBuilder)
@@ -221,11 +200,11 @@ namespace Sandbox.Graphics.GUI
             m_label.MaxLineWidth = ComputeRichLabelWidth();
             var ob = (MyObjectBuilder_GuiControlMultilineLabel)objectBuilder;
 
-            this.TextAlign    = (MyGuiDrawAlignEnum)ob.TextAlign;
+            this.TextAlign = (MyGuiDrawAlignEnum)ob.TextAlign;
             this.TextBoxAlign = (MyGuiDrawAlignEnum)ob.TextBoxAlign;
-            this.TextScale    = ob.TextScale;
-            this.TextColor    = new Color(ob.TextColor);
-            this.Font         = ob.Font;
+            this.TextScale = ob.TextScale;
+            this.TextColor = new Color(ob.TextColor);
+            this.Font = ob.Font;
 
             MyStringId textEnum;
             if (Enum.TryParse<MyStringId>(ob.Text, out textEnum))
@@ -238,11 +217,11 @@ namespace Sandbox.Graphics.GUI
         {
             var ob = (MyObjectBuilder_GuiControlMultilineLabel)base.GetObjectBuilder();
 
-            ob.TextScale    = TextScale;
-            ob.TextColor    = TextColor.ToVector4();
-            ob.TextAlign    = (int)TextAlign;
+            ob.TextScale = TextScale;
+            ob.TextColor = TextColor.ToVector4();
+            ob.TextAlign = (int)TextAlign;
             ob.TextBoxAlign = (int)TextBoxAlign;
-            ob.Font         = Font;
+            ob.Font = Font;
             if (m_useEnum)
                 ob.Text = TextEnum.ToString();
             else
@@ -277,7 +256,7 @@ namespace Sandbox.Graphics.GUI
             AppendText(text, Font, TextScaleWithLanguage, TextColor.ToVector4());
         }
 
-        public void AppendText(StringBuilder text, MyFontEnum font, float scale, Vector4 color)
+        public void AppendText(StringBuilder text, string font, float scale, Vector4 color)
         {
             m_label.Append(text, font, scale, color);
             RecalculateScrollBar();
@@ -288,7 +267,7 @@ namespace Sandbox.Graphics.GUI
             AppendText(text, Font, TextScaleWithLanguage, TextColor.ToVector4());
         }
 
-        public void AppendText(string text, MyFontEnum font, float scale, Vector4 color)
+        public void AppendText(string text, string font, float scale, Vector4 color)
         {
             m_label.Append(text, font, scale, color);
             RecalculateScrollBar();
@@ -308,7 +287,7 @@ namespace Sandbox.Graphics.GUI
 
         private void OnLinkClickedInternal(string url)
         {
-            if(OnLinkClicked != null)
+            if (OnLinkClicked != null)
                 OnLinkClicked(this, url);
         }
 
@@ -321,32 +300,33 @@ namespace Sandbox.Graphics.GUI
         public void Clear()
         {
             m_label.Clear();
+            m_scrollbar.SetPage(0);
             RecalculateScrollBar();
-        }        
+        }
 
         private void RecalculateScrollBar()
         {
-            float realHeight = m_label.GetSize().Y;
+            float realHeight = m_label.Size.Y;
 
             bool vScrollbarVisible = Size.Y < realHeight;
 
             m_scrollbar.Visible = vScrollbarVisible;
             m_scrollbar.Init(realHeight, Size.Y);
-            m_scrollbar.Layout(new Vector2(0.5f * Size.X  - m_scrollbar.Size.X, -0.5f * Size.Y), Size.Y);
+            m_scrollbar.Layout(new Vector2(0.5f * Size.X - m_scrollbar.Size.X, -0.5f * Size.Y), Size.Y);
 
             if (!m_drawScrollbar)
             {
                 if (TextAlign == MyGuiDrawAlignEnum.HORISONTAL_LEFT_AND_VERTICAL_BOTTOM ||
                     TextAlign == MyGuiDrawAlignEnum.HORISONTAL_CENTER_AND_VERTICAL_BOTTOM ||
                     TextAlign == MyGuiDrawAlignEnum.HORISONTAL_RIGHT_AND_VERTICAL_BOTTOM)
-                        //m_scrollbar.Value = realHeight;
-                        m_scrollbar.Value = 0;
+                    //m_scrollbar.Value = realHeight;
+                    m_scrollbar.Value = 0;
                 else
-                if (TextAlign == MyGuiDrawAlignEnum.HORISONTAL_LEFT_AND_VERTICAL_TOP ||
-                   TextAlign == MyGuiDrawAlignEnum.HORISONTAL_CENTER_AND_VERTICAL_TOP ||
-                   TextAlign == MyGuiDrawAlignEnum.HORISONTAL_RIGHT_AND_VERTICAL_TOP)
-                    //m_scrollbar.Value = 0;
-                    m_scrollbar.Value = realHeight;
+                    if (TextAlign == MyGuiDrawAlignEnum.HORISONTAL_LEFT_AND_VERTICAL_TOP ||
+                       TextAlign == MyGuiDrawAlignEnum.HORISONTAL_CENTER_AND_VERTICAL_TOP ||
+                       TextAlign == MyGuiDrawAlignEnum.HORISONTAL_RIGHT_AND_VERTICAL_TOP)
+                        //m_scrollbar.Value = 0;
+                        m_scrollbar.Value = realHeight;
             }
         }
 
@@ -366,21 +346,28 @@ namespace Sandbox.Graphics.GUI
                         MyGuiDrawAlignEnum.HORISONTAL_LEFT_AND_VERTICAL_TOP
                    );
 
-                currentPos += line.Length +1 ; //+1 because of \n that split cuts out
+                currentPos += line.Length + 1; //+1 because of \n that split cuts out
             }
         }
 
-        public override void Draw(float transitionAlpha)
+        public override void Draw(float transitionAlpha, float backgroundTransitionAlpha)
         {
-            base.Draw(transitionAlpha);
-            var textArea = new MyRectangle2D(Vector2.Zero, Size);
-            textArea.LeftTop += GetPositionAbsoluteTopLeft();
+            base.Draw(transitionAlpha, backgroundTransitionAlpha);
+            var textArea = new MyRectangle2D(m_textPadding.TopLeftOffset, Size - m_textPadding.SizeChange);
+            textArea.LeftTop += GetPositionAbsoluteTopLeft() + m_textPadding.TopLeftOffset;
             Vector2 carriageOffset = GetCarriageOffset(CarriagePositionIndex);
 
             var scissor = new RectangleF(textArea.LeftTop, textArea.Size);
+
+            // Adjust the scissor a little bit, because currently it's hiding the carriage at its left side, and it's
+            // too far out on the edges.
+            scissor.X -= 0.001f;
+            scissor.Y -= 0.001f;
+
+            AdjustScissorRectangle(ref scissor);
             using (MyGuiManager.UsingScissorRectangle(ref scissor))
             {
-                DrawSelectionBackgrounds(textArea, transitionAlpha);
+                DrawSelectionBackgrounds(textArea, backgroundTransitionAlpha);
                 DrawText(m_scrollbar.Value);
 
 
@@ -409,6 +396,38 @@ namespace Sandbox.Graphics.GUI
             //m_scrollbar.DebugDraw();
         }
 
+        private void AdjustScissorRectangle(ref RectangleF rectangle)
+        {
+            // TODO: Consider making this moddable
+            if (Name == "MyHudControlChat")
+                AdjustScissorRectangle(ref rectangle, 1.2f, 1.4f);
+        }
+
+        private void AdjustScissorRectangleLabel(ref RectangleF rectangle)
+        {
+            // TODO: Consider making this moddable
+            if (Name == "MyHudControlChat")
+                AdjustScissorRectangle(ref rectangle, 1.4f, 2.1f);
+        }
+
+        /// <summary>
+        /// Adjust rectangle for shadows
+        /// </summary>
+        private void AdjustScissorRectangle(ref RectangleF rectangle, float multWidth, float multHeight)
+        {
+            float width = rectangle.Width;
+            float height = rectangle.Height;
+
+            rectangle.Width *= multWidth;
+            rectangle.Height *= multHeight;
+
+            float diffWidth = rectangle.Width - width;
+            float diffHeight = rectangle.Height - height;
+
+            rectangle.Position.X -= diffWidth / 2;
+            rectangle.Position.Y -= diffHeight / 2;
+        }
+
         public override MyGuiControlBase HandleInput()
         {
             MyGuiControlBase baseResult = base.HandleInput();
@@ -416,81 +435,80 @@ namespace Sandbox.Graphics.GUI
             if (HasFocus && Selectable)
             {
                 //  Move left
-                if ((MyInput.Static.IsKeyPress(MyKeys.Left)))
+                switch (m_keyThrottler.GetKeyStatus(MyKeys.Left))
                 {
-                    if ((IsEnoughDelay(MyMultilineTextKeys.LEFT, MyGuiConstants.TEXTBOX_MOVEMENT_DELAY)))
-                    {
+                    case ThrottledKeyStatus.PRESSED_AND_WAITING:
+                        return this;
+
+                    case ThrottledKeyStatus.PRESSED_AND_READY:
                         if (MyInput.Static.IsAnyCtrlKeyPressed())
                             CarriagePositionIndex = GetPreviousSpace();
                         else
                             CarriagePositionIndex--;
 
-                        UpdateLastKeyPressTimes(MyMultilineTextKeys.LEFT);
                         if (MyInput.Static.IsAnyShiftKeyPressed())
                             m_selection.SetEnd(this);
                         else
                             m_selection.Reset(this);
-                    }
-                    return this;
+                        return this;
                 }
 
                 //  Move right
-                if ((MyInput.Static.IsKeyPress(MyKeys.Right)))
+                switch (m_keyThrottler.GetKeyStatus(MyKeys.Right))
                 {
-                    if ((IsEnoughDelay(MyMultilineTextKeys.RIGHT, MyGuiConstants.TEXTBOX_MOVEMENT_DELAY)))
-                    {
+                    case ThrottledKeyStatus.PRESSED_AND_WAITING:
+                        return this;
+
+                    case ThrottledKeyStatus.PRESSED_AND_READY:
                         if (MyInput.Static.IsAnyCtrlKeyPressed())
                             CarriagePositionIndex = GetNextSpace();
                         else
                             ++CarriagePositionIndex;
-                        UpdateLastKeyPressTimes(MyMultilineTextKeys.RIGHT);
                         if (MyInput.Static.IsAnyShiftKeyPressed())
                             m_selection.SetEnd(this);
                         else
                             m_selection.Reset(this);
-                    }
-                    return this;
+                        return this;
                 }
 
                 //  Move Down
-                if ((MyInput.Static.IsKeyPress(MyKeys.Down)))
+                switch (m_keyThrottler.GetKeyStatus(MyKeys.Down))
                 {
-                    if ((IsEnoughDelay(MyMultilineTextKeys.DOWN, MyGuiConstants.TEXTBOX_MOVEMENT_DELAY)))
-                    {
+                    case ThrottledKeyStatus.PRESSED_AND_WAITING:
+                        return this;
+
+                    case ThrottledKeyStatus.PRESSED_AND_READY:
                         CarriagePositionIndex = GetIndexUnderCarriage(CarriagePositionIndex);
-                        UpdateLastKeyPressTimes(MyMultilineTextKeys.DOWN);
                         if (MyInput.Static.IsAnyShiftKeyPressed())
                             m_selection.SetEnd(this);
                         else
                             m_selection.Reset(this);
-                    }
-                    return this;
+                        return this;
                 }
 
                 //  Move Up
-                if ((MyInput.Static.IsKeyPress(MyKeys.Up)))
+                switch (m_keyThrottler.GetKeyStatus(MyKeys.Up))
                 {
-                    if ((IsEnoughDelay(MyMultilineTextKeys.UP, MyGuiConstants.TEXTBOX_MOVEMENT_DELAY)))
-                    {
+                    case ThrottledKeyStatus.PRESSED_AND_WAITING:
+                        return this;
+
+                    case ThrottledKeyStatus.PRESSED_AND_READY:
                         CarriagePositionIndex = GetIndexOverCarriage(CarriagePositionIndex);
-                        UpdateLastKeyPressTimes(MyMultilineTextKeys.UP);
                         if (MyInput.Static.IsAnyShiftKeyPressed())
                             m_selection.SetEnd(this);
                         else
                             m_selection.Reset(this);
-                    }
-                    return this;
+                        return this;
                 }
-              
+
                 //Copy
-                if (MyInput.Static.IsNewKeyPressed(MyKeys.C) && IsEnoughDelay(MyMultilineTextKeys.C, MyGuiConstants.TEXTBOX_MOVEMENT_DELAY) && MyInput.Static.IsAnyCtrlKeyPressed())
+                if (m_keyThrottler.IsNewPressAndThrottled(MyKeys.C) && MyInput.Static.IsAnyCtrlKeyPressed())
                 {
-                    UpdateLastKeyPressTimes(MyMultilineTextKeys.C);
                     m_selection.CopyText(this);
                 }
 
                 //Select All
-                if (MyInput.Static.IsNewKeyPressed(MyKeys.A) && IsEnoughDelay(MyMultilineTextKeys.A, MyGuiConstants.TEXTBOX_MOVEMENT_DELAY) && MyInput.Static.IsAnyCtrlKeyPressed())
+                if (m_keyThrottler.IsNewPressAndThrottled(MyKeys.A) && MyInput.Static.IsAnyCtrlKeyPressed())
                 {
                     m_selection.SelectAll(this);
                     return this;
@@ -507,7 +525,6 @@ namespace Sandbox.Graphics.GUI
                 captured = true;
             }
 
-
             if (m_drawScrollbar)
             {
                 bool capturedScrollbar = m_scrollbar.HandleInput();
@@ -515,6 +532,7 @@ namespace Sandbox.Graphics.GUI
                 if (capturedScrollbar || captured)
                     return this;
             }
+
             if (IsMouseOver && m_label.HandleInput(GetPositionAbsoluteTopLeft(), m_scrollbar.Value))
                 return this;
 
@@ -566,15 +584,15 @@ namespace Sandbox.Graphics.GUI
 
             return baseResult;
         }
-       
+
         /// <summary>
         /// Draws the text with the offset given by the scrollbar.
         /// </summary>
         /// <param name="offset">Indicates how low is the scrollbar (and how many beginning lines are skipped)</param>
         private void DrawText(float offset)
         {
-            Vector2 position = GetPositionAbsoluteTopLeft();
-            Vector2 drawSizeMax = Size;
+            Vector2 position = GetPositionAbsoluteTopLeft() + m_textPadding.TopLeftOffset;
+            Vector2 drawSizeMax = Size - m_textPadding.SizeChange;
             if (m_drawScrollbar && m_scrollbar.Visible)
                 drawSizeMax.X -= m_scrollbar.Size.X;
 
@@ -646,6 +664,11 @@ namespace Sandbox.Graphics.GUI
             private set { m_textScaleWithLanguage = value; }
         }
 
+        public bool ShowTextShadow
+        {
+            get { return m_showTextShadow; }
+        }
+
         /// <summary>
         /// Alignment of text as if you were specifying it in MS Word. This controls the appearance of text itself.
         /// </summary>
@@ -692,7 +715,7 @@ namespace Sandbox.Graphics.GUI
         {
             Vector2 offset = GetCarriageOffset(CarriagePositionIndex);
             float height = GetCarriageHeight();
-            return (offset.Y >= 0 && offset.Y +  height <= Size.Y);
+            return (offset.Y >= 0 && offset.Y + height <= Size.Y);
         }
 
         virtual protected int GetCarriagePositionFromMouseCursor()
@@ -717,7 +740,7 @@ namespace Sandbox.Graphics.GUI
 
         protected virtual Vector2 GetCarriageOffset(int idx)
         {
-            Vector2 output = new Vector2(0, -m_scrollbar.Value);
+            Vector2 output = new Vector2(0, -m_scrollbar.Value) + m_textPadding.TopLeftOffset;
             int start = GetLineStartIndex(idx);
             if (idx - start > 0)
             {
@@ -819,27 +842,6 @@ namespace Sandbox.Graphics.GUI
             return CarriagePositionIndex + Math.Min(nextSpace, nextLine) + 1;
         }
 
-        protected bool IsEnoughDelay(MyMultilineTextKeys key, int forcedDelay)
-        {
-            MyMultilineKeyTimeController keyEx = m_keys[(int)key];
-            if (keyEx == null) return true;
-
-            return ((MyGuiManager.TotalTimeInMilliseconds - keyEx.LastKeyPressTime) > forcedDelay);
-        }
-
-        protected void UpdateLastKeyPressTimes(MyMultilineTextKeys key)
-        {
-            //  This will reset the counter so it starts blinking whenever we enter the textbox
-            //  And also when user presses a lot of keys, it won't blink for a while
-            m_carriageBlinkerTimer = 0;
-
-            //  Making delays between one long key press
-            MyMultilineKeyTimeController keyEx = m_keys[(int)key];
-            if (keyEx != null)
-            {
-                keyEx.LastKeyPressTime = MyGuiManager.TotalTimeInMilliseconds;
-            }
-        }
         #endregion
         #region selection
         protected class MyGuiControlMultilineSelection
@@ -904,11 +906,19 @@ namespace Sandbox.Graphics.GUI
 
             public void CopyText(MyGuiControlMultilineText sender)
             {
+#if !XB1
                 ClipboardText = Regex.Replace(sender.Text.ToString().Substring(Start, Length), "\n", "\r\n");
-                Thread myth;
-                myth = new Thread(new System.Threading.ThreadStart(CopyToClipboard));
-                myth.ApartmentState = ApartmentState.STA;
-                myth.Start();
+
+                if (!string.IsNullOrEmpty(ClipboardText))
+                {
+                    Thread thread = new Thread(() => System.Windows.Forms.Clipboard.SetText(ClipboardText));
+                    thread.SetApartmentState(ApartmentState.STA);
+                    thread.Start();
+                    thread.Join();
+                }
+#else
+                Debug.Assert(false, "Clipboard not supported on XB1.");
+#endif
             }
 
             public void CutText(MyGuiControlMultilineText sender)
@@ -924,39 +934,52 @@ namespace Sandbox.Graphics.GUI
             {
                 //First we erase the selection
                 EraseText(sender);
+
                 var prefix = sender.Text.ToString().Substring(0, sender.CarriagePositionIndex);
                 var suffix = sender.Text.ToString().Substring(sender.CarriagePositionIndex);
-                Thread myth;
 
-                myth = new Thread(new System.Threading.ThreadStart(PasteFromClipboard));
+                Thread myth = new Thread(new System.Threading.ThreadStart(PasteFromClipboard));
                 myth.ApartmentState = ApartmentState.STA;
                 myth.Start();
 
                 //We have to wait for the thread to end to make sure we got the text
                 myth.Join();
 
+#if !XB1
                 sender.Text = new StringBuilder(prefix).Append(Regex.Replace(ClipboardText, "\r\n", " \n")).Append(suffix);
+#else
+                sender.Text = new StringBuilder(prefix).Append( ClipboardText.Replace("\r\n", " \n") ).Append(suffix);
+#endif
                 sender.CarriagePositionIndex = prefix.Length + ClipboardText.Length;
                 Reset(sender);
             }
 
             void PasteFromClipboard()
             {
+#if !XB1
                 ClipboardText = Clipboard.GetText();
+#else
+                Debug.Assert(false, "Not Clipboard support on XB1!");
+#endif
+
             }
 
             void CopyToClipboard()
             {
+#if !XB1
                 if (ClipboardText != "")
                     Clipboard.SetText(ClipboardText);
+#else
+                Debug.Assert(false, "Not Clipboard support on XB1!");
+#endif
             }
 
         }
         #endregion
 
-        protected float ScrollbarValue 
+        protected float ScrollbarValue
         {
-            get 
+            get
             {
                 return m_scrollbar.Value;
             }

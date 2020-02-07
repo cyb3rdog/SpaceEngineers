@@ -1,30 +1,32 @@
 ﻿
+using System.Diagnostics;
 using Sandbox.Engine.Utils;
 using Sandbox.Game.Entities.Blocks;
-using Sandbox.Game.Entities.UseObject;
+using Sandbox.Game.Entities.Character;
 using Sandbox.Game.Gui;
 using Sandbox.Game.Localization;
 using Sandbox.Game.Screens.Helpers;
 using Sandbox.Graphics.GUI;
-using System;
-using System.Diagnostics;
-using VRage;
+using VRage.Game;
+using VRage.Game.Entity.UseObject;
 using VRage.Import;
 using VRage.Input;
+using VRage.ModAPI;
 using VRage.Utils;
 using VRageMath;
 
 namespace Sandbox.Game.Entities.Cube
 {
     [MyUseObject("panel")]
-    class MyUseObjectPanelButton : IMyUseObject
+    public class MyUseObjectPanelButton : MyUseObjectBase
     {
         private readonly MyButtonPanel m_buttonPanel;
         private readonly Matrix m_localMatrix;
         private int m_index;
         MyGps m_buttonDesc = null;
 
-        public MyUseObjectPanelButton(MyCubeBlock owner, string dummyName, MyModelDummy dummyData, int key)
+        public MyUseObjectPanelButton(IMyEntity owner, string dummyName, MyModelDummy dummyData, uint key)
+            : base(owner, dummyData)
         {
             m_buttonPanel = owner as MyButtonPanel;
             m_localMatrix = dummyData.Matrix;
@@ -41,22 +43,22 @@ namespace Sandbox.Game.Entities.Cube
             }
         }
 
-        public float InteractiveDistance
+        public override float InteractiveDistance
         {
             get { return MyConstants.DEFAULT_INTERACTIVE_DISTANCE; }
         }
 
-        public MatrixD ActivationMatrix
+        public override MatrixD ActivationMatrix
         {
             get { return m_localMatrix * m_buttonPanel.WorldMatrix; }
         }
 
-        MatrixD IMyUseObject.WorldMatrix
+        public override MatrixD WorldMatrix
         {
             get { return m_buttonPanel.WorldMatrix; }
         }
 
-        int IMyUseObject.RenderObjectID
+        public override int RenderObjectID
         {
             get
             {
@@ -64,23 +66,29 @@ namespace Sandbox.Game.Entities.Cube
             }
         }
 
-        public bool ShowOverlay
+        public override int InstanceID
+        {
+            get { return -1; }
+        }
+
+        public override bool ShowOverlay
         {
             get { return true; }
         }
 
-        public UseActionEnum SupportedActions
+        public override UseActionEnum SupportedActions
         {
             get { return UseActionEnum.Manipulate | UseActionEnum.OpenTerminal; }
         }
 
-        public bool ContinuousUsage
+        public override bool ContinuousUsage
         {
             get { return false; }
         }
 
-        public void Use(UseActionEnum actionEnum, Character.MyCharacter user)
+        public override void Use(UseActionEnum actionEnum, IMyEntity entity)
         {
+            var user = entity as MyCharacter;
             switch(actionEnum)
             {
                 case UseActionEnum.Manipulate:
@@ -111,7 +119,7 @@ namespace Sandbox.Game.Entities.Cube
             }
         }
 
-        public MyActionDescription GetActionInfo(UseActionEnum actionEnum)
+        public override MyActionDescription GetActionInfo(UseActionEnum actionEnum)
         {
             m_buttonPanel.Toolbar.UpdateItem(m_index);
             var slot = m_buttonPanel.Toolbar.GetItemAtIndex(m_index);
@@ -137,7 +145,7 @@ namespace Sandbox.Game.Entities.Cube
                     {
                         return new MyActionDescription()
                         {
-                            Text = MySpaceTexts.NotificationHintPressToUse,
+                            Text = MyCommonTexts.NotificationHintPressToUse,
                             FormatParams = new object[] { MyInput.Static.GetGameControl(MyControlsSpace.USE), slot.DisplayName },
                             IsTextControlHint = true,
                             JoystickFormatParams = new object[] { MyControllerHelper.GetCodeForControl(MySpaceBindingCreator.CX_CHARACTER, MyControlsSpace.USE), slot.DisplayName },
@@ -168,9 +176,14 @@ namespace Sandbox.Game.Entities.Cube
             }
         }
 
-        bool IMyUseObject.HandleInput() 
+        public override bool HandleInput() 
         {             
             return false; 
+        }
+
+        public override bool PlayIndicatorSound
+        {
+            get { return true; }
         }
 
         public void RemoveButtonMarker()
@@ -181,14 +194,14 @@ namespace Sandbox.Game.Entities.Cube
             }
         }
 
-        public void OnSelectionLost()
+        public override void OnSelectionLost()
         {
             RemoveButtonMarker();
         }
 
         void SetButtonName(string name)
         {
-            if (m_buttonPanel.IsFunctional && m_buttonPanel.IsWorking&&m_buttonPanel.HasLocalPlayerAccess())
+            if (m_buttonPanel.IsFunctional && m_buttonPanel.IsWorking && (m_buttonPanel.HasLocalPlayerAccess() || m_buttonPanel.AnyoneCanUse))
             {
                 m_buttonDesc.Name = name;
             }

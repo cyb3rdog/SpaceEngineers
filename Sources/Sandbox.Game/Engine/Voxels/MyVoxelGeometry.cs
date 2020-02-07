@@ -1,18 +1,15 @@
-﻿
-using Sandbox.Common;
-using Sandbox.Engine.Physics;
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Threading;
 using VRage;
 using VRage.Collections;
-using VRage;
 using VRage.Utils;
-using VRage.Voxels;
 using VRageMath;
-using VRageRender;
 using MyGridIntersection = Sandbox.Engine.Utils.MyGridIntersection;
+using VRage.Game.Components;
+using Sandbox.Engine.Utils;
+using VRage.Profiler;
+using VRage.Voxels;
 
 namespace Sandbox.Engine.Voxels
 {
@@ -98,7 +95,7 @@ namespace Sandbox.Engine.Voxels
                         {
                             MyVoxelTriangle voxelTriangle = cachedData.VoxelTriangles[i];
 
-                            MyTriangle_Vertexes triangle;
+                            MyTriangle_Vertices triangle;
                             cachedData.GetUnpackedPosition(voxelTriangle.VertexIndex0, out triangle.Vertex0);
                             cachedData.GetUnpackedPosition(voxelTriangle.VertexIndex1, out triangle.Vertex1);
                             cachedData.GetUnpackedPosition(voxelTriangle.VertexIndex2, out triangle.Vertex2);
@@ -128,7 +125,7 @@ namespace Sandbox.Engine.Voxels
             return false;
         }
 
-        public bool Intersect(ref Line localLine, out MyIntersectionResultLineTriangle result, IntersectionFlags flags)
+        public bool Intersect(ref Line localLine, out VRage.Game.Models.MyIntersectionResultLineTriangle result, IntersectionFlags flags)
         {
             MyPrecalcComponent.AssertUpdateThread();
 
@@ -148,7 +145,7 @@ namespace Sandbox.Engine.Voxels
             float? minDistanceUntilNow = null;
             BoundingBox cellBoundingBox;
             MyCellCoord cell = new MyCellCoord();
-            MyIntersectionResultLineTriangle? tmpResult = null;
+            VRage.Game.Models.MyIntersectionResultLineTriangle? tmpResult = null;
             for (int index = 0; index < m_sweepResultCache.Count; index++)
             {
                 cell.CoordInLod = m_sweepResultCache[index];
@@ -175,7 +172,7 @@ namespace Sandbox.Engine.Voxels
 
             ProfilerShort.End();
 
-            result = tmpResult ?? default(MyIntersectionResultLineTriangle);
+            result = tmpResult ?? default(VRage.Game.Models.MyIntersectionResultLineTriangle);
             return tmpResult.HasValue;
         }
 
@@ -276,7 +273,7 @@ namespace Sandbox.Engine.Voxels
                 {
                     MyCellCoord cell = new MyCellCoord();
                     cell.CoordInLod = minCellChanged;
-                    for (var it = new Vector3I.RangeIterator(ref minCellChanged, ref maxCellChanged); it.IsValid(); it.GetNext(out cell.CoordInLod))
+                    for (var it = new Vector3I_RangeIterator(ref minCellChanged, ref maxCellChanged); it.IsValid(); it.GetNext(out cell.CoordInLod))
                     {
                         var key = cell.PackId64();
                         m_cellsByCoordinate.Remove(key);
@@ -289,7 +286,7 @@ namespace Sandbox.Engine.Voxels
             ProfilerShort.End();
         }
 
-        private void GetCellLineIntersectionOctree(ref MyIntersectionResultLineTriangle? result, ref Line modelSpaceLine, ref float? minDistanceUntilNow, CellData cachedDataCell, IntersectionFlags flags)
+        private void GetCellLineIntersectionOctree(ref VRage.Game.Models.MyIntersectionResultLineTriangle? result, ref Line modelSpaceLine, ref float? minDistanceUntilNow, CellData cachedDataCell, IntersectionFlags flags)
         {
             m_overlapElementCache.Clear();
             if (cachedDataCell.Octree != null)
@@ -317,7 +314,7 @@ namespace Sandbox.Engine.Voxels
 
                 MyVoxelTriangle voxelTriangle = cachedDataCell.VoxelTriangles[i];
 
-                MyTriangle_Vertexes triangleVertices;
+                MyTriangle_Vertices triangleVertices;
                 cachedDataCell.GetUnpackedPosition(voxelTriangle.VertexIndex0, out triangleVertices.Vertex0);
                 cachedDataCell.GetUnpackedPosition(voxelTriangle.VertexIndex1, out triangleVertices.Vertex1);
                 cachedDataCell.GetUnpackedPosition(voxelTriangle.VertexIndex2, out triangleVertices.Vertex2);
@@ -337,7 +334,7 @@ namespace Sandbox.Engine.Voxels
                 if ((distance != null) && ((result == null) || (distance.Value < result.Value.Distance)))
                 {
                     minDistanceUntilNow = distance.Value;
-                    result = new MyIntersectionResultLineTriangle(ref triangleVertices, ref calculatedTriangleNormal, distance.Value);
+                    result = new VRage.Game.Models.MyIntersectionResultLineTriangle(i, ref triangleVertices, ref calculatedTriangleNormal, distance.Value);
                 }
             }
         }
@@ -363,11 +360,23 @@ namespace Sandbox.Engine.Voxels
             if (!TryGetMesh(cell, out isEmpty, out mesh))
             {
                 ProfilerShort.Begin("Cell precalc");
-                mesh = MyPrecalcComponent.IsoMesher.Precalc(new MyIsoMesherArgs()
+                if (true)
                 {
-                    Storage = m_storage,
-                    GeometryCell = cell,
-                });
+                    var min = cell.CoordInLod << MyVoxelConstants.GEOMETRY_CELL_SIZE_IN_VOXELS_BITS;
+                    var max = min + MyVoxelConstants.GEOMETRY_CELL_SIZE_IN_VOXELS;
+                    // overlap to neighbor; introduces extra data but it makes logic for raycasts simpler (no need to check neighbor cells)
+                    min -= 1;
+                    max += 2;
+                    mesh = MyPrecalcComponent.IsoMesher.Precalc(m_storage, 0, min, max, false, MyFakes.ENABLE_VOXEL_COMPUTED_OCCLUSION, true);
+                }
+                else
+                {
+                    mesh = MyPrecalcComponent.IsoMesher.Precalc(new MyIsoMesherArgs()
+                    {
+                        Storage = m_storage,
+                        GeometryCell = cell,
+                    });
+                }
                 ProfilerShort.End();
             }
 
@@ -432,6 +441,5 @@ namespace Sandbox.Engine.Voxels
 
             Debug.Assert(IsEmpty(ref cell) == value);
         }
-
     }
 }

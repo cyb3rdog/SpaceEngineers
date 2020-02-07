@@ -1,11 +1,9 @@
 ﻿#region Using
 
 
-using Sandbox.Common.ObjectBuilders;
 using Sandbox.Engine.Networking;
 using Sandbox.Engine.Utils;
 using Sandbox.Game.Gui;
-using Sandbox.Game.Localization;
 using Sandbox.Game.Multiplayer;
 using Sandbox.Game.World;
 using Sandbox.Graphics.GUI;
@@ -14,11 +12,13 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
-using System.IO;
 using VRage;
+using VRage.Game;
 using VRage.Utils;
 using VRage.Trace;
-
+using VRage.Library.Utils;
+using VRage.Network;
+using VRage.Profiler;
 
 #endregion
 
@@ -27,21 +27,21 @@ namespace Sandbox.Engine.Multiplayer
     /// <summary>
     /// Container of multiplayer classes
     /// </summary>
-    public class MyMultiplayerLobby : MyMultiplayerBase
+    public class MyMultiplayerLobby : MyMultiplayerServerBase
     {
         public readonly Lobby Lobby;
 
-        public override bool IsServer { get { return ServerId == MySteam.UserId; } }
+        public override bool IsServer { get { return ServerId == Sync.MyId; } }
 
         public override string WorldName
         {
             get { return GetLobbyWorldName(Lobby); }
-            set { Lobby.SetLobbyData(MyMultiplayer.WorldNameTag, value); }
+            set { Lobby.SetLobbyData(MyMultiplayer.WorldNameTag, value ?? "Unnamed"); }
         }
 
         public override MyGameModeEnum GameMode
         {
-            get 
+            get
             {
                 return GetLobbyGameMode(Lobby);
             }
@@ -143,77 +143,142 @@ namespace Sandbox.Engine.Multiplayer
             set { Lobby.SetLobbyData(MyMultiplayer.ViewDistanceTag, value.ToString()); }
         }
 
-        public override bool Battle
+
+        public override bool Scenario
         {
-            get { return GetLobbyBool(MyMultiplayer.BattleTag, Lobby, false); }
-            set { Lobby.SetLobbyData(MyMultiplayer.BattleTag, value.ToString()); }
+            get { return GetLobbyBool(MyMultiplayer.ScenarioTag, Lobby, false); }
+            set { Lobby.SetLobbyData(MyMultiplayer.ScenarioTag, value.ToString()); }
         }
 
-        public override int MaxBattleBlueprintPoints
+        public override string ScenarioBriefing
         {
-            get { return GetLobbyInt(MyMultiplayer.MaxBattleBlueprintPointsTag, Lobby, 0); }
-            set { Lobby.SetLobbyData(MyMultiplayer.MaxBattleBlueprintPointsTag, value.ToString()); }
+            get { return Lobby.GetLobbyData(MyMultiplayer.ScenarioBriefingTag); }
+            set { Lobby.SetLobbyData(MyMultiplayer.ScenarioBriefingTag, (value == null || value.Length < 1 ? " " : value)); }
         }
 
-        public override int BattleMapAttackerSlotsCount
+        public override DateTime ScenarioStartTime
         {
-            get { return GetLobbyInt(MyMultiplayer.BattleMapAttackerSlotsCountTag, Lobby, 0); }
-            set { Lobby.SetLobbyData(MyMultiplayer.BattleMapAttackerSlotsCountTag, value.ToString()); }
+            get { return GetLobbyDateTime(MyMultiplayer.ScenarioStartTimeTag, Lobby, DateTime.MinValue); }
+            set { Lobby.SetLobbyData(MyMultiplayer.ScenarioStartTimeTag, value.ToString(CultureInfo.InvariantCulture)); }
         }
 
-        public override long BattleFaction1Id
+        //public override bool Battle
+        //{
+        //    get { return GetLobbyBool(MyMultiplayer.BattleTag, Lobby, false); }
+        //    set { Lobby.SetLobbyData(MyMultiplayer.BattleTag, value.ToString()); }
+        //}
+
+        //public override float BattleRemainingTime
+        //{
+        //    get { return GetLobbyFloat(MyMultiplayer.BattleRemainingTimeTag, Lobby, 0); }
+        //    set { Lobby.SetLobbyData(MyMultiplayer.BattleRemainingTimeTag, value.ToString(CultureInfo.InvariantCulture)); }
+        //}
+
+        //public override bool BattleCanBeJoined
+        //{
+        //    get { return GetLobbyBool(MyMultiplayer.BattleCanBeJoinedTag, Lobby, false); }
+        //    set { Lobby.SetLobbyData(MyMultiplayer.BattleCanBeJoinedTag, value.ToString()); }
+        //}
+
+        //public override ulong BattleWorldWorkshopId
+        //{
+        //    get { return GetLobbyULong(MyMultiplayer.BattleWorldWorkshopIdTag, Lobby, 0); }
+        //    set { Lobby.SetLobbyData(MyMultiplayer.BattleWorldWorkshopIdTag, value.ToString()); }
+        //}
+
+        //public override int BattleFaction1MaxBlueprintPoints
+        //{
+        //    get { return GetLobbyInt(MyMultiplayer.BattleFaction1MaxBlueprintPointsTag, Lobby, 0); }
+        //    set { Lobby.SetLobbyData(MyMultiplayer.BattleFaction1MaxBlueprintPointsTag, value.ToString()); }
+        //}
+
+        //public override int BattleFaction2MaxBlueprintPoints
+        //{
+        //    get { return GetLobbyInt(MyMultiplayer.BattleFaction2MaxBlueprintPointsTag, Lobby, 0); }
+        //    set { Lobby.SetLobbyData(MyMultiplayer.BattleFaction2MaxBlueprintPointsTag, value.ToString()); }
+        //}
+
+        //public override int BattleFaction1BlueprintPoints
+        //{
+        //    get { return GetLobbyInt(MyMultiplayer.BattleFaction1BlueprintPointsTag, Lobby, 0); }
+        //    set { Lobby.SetLobbyData(MyMultiplayer.BattleFaction1BlueprintPointsTag, value.ToString()); }
+        //}
+
+        //public override int BattleFaction2BlueprintPoints
+        //{
+        //    get { return GetLobbyInt(MyMultiplayer.BattleFaction2BlueprintPointsTag, Lobby, 0); }
+        //    set { Lobby.SetLobbyData(MyMultiplayer.BattleFaction2BlueprintPointsTag, value.ToString()); }
+        //}
+
+        //public override int BattleMapAttackerSlotsCount
+        //{
+        //    get { return GetLobbyInt(MyMultiplayer.BattleMapAttackerSlotsCountTag, Lobby, 0); }
+        //    set { Lobby.SetLobbyData(MyMultiplayer.BattleMapAttackerSlotsCountTag, value.ToString()); }
+        //}
+
+        //public override long BattleFaction1Id
+        //{
+        //    get { return GetLobbyLong(MyMultiplayer.BattleFaction1IdTag, Lobby, 0); }
+        //    set { Lobby.SetLobbyData(MyMultiplayer.BattleFaction1IdTag, value.ToString()); }
+        //}
+
+        //public override long BattleFaction2Id
+        //{
+        //    get { return GetLobbyLong(MyMultiplayer.BattleFaction2IdTag, Lobby, 0); }
+        //    set { Lobby.SetLobbyData(MyMultiplayer.BattleFaction2IdTag, value.ToString()); }
+        //}
+
+        //public override int BattleFaction1Slot
+        //{
+        //    get { return GetLobbyInt(MyMultiplayer.BattleFaction1SlotTag, Lobby, 0); }
+        //    set { Lobby.SetLobbyData(MyMultiplayer.BattleFaction1SlotTag, value.ToString()); }
+        //}
+
+        //public override int BattleFaction2Slot
+        //{
+        //    get { return GetLobbyInt(MyMultiplayer.BattleFaction2SlotTag, Lobby, 0); }
+        //    set { Lobby.SetLobbyData(MyMultiplayer.BattleFaction2SlotTag, value.ToString()); }
+        //}
+
+        //public override bool BattleFaction1Ready
+        //{
+        //    get { return GetLobbyBool(MyMultiplayer.BattleFaction1ReadyTag, Lobby, false); }
+        //    set { Lobby.SetLobbyData(MyMultiplayer.BattleFaction1ReadyTag, value.ToString()); }
+        //}
+
+        //public override bool BattleFaction2Ready
+        //{
+        //    get { return GetLobbyBool(MyMultiplayer.BattleFaction2ReadyTag, Lobby, false); }
+        //    set { Lobby.SetLobbyData(MyMultiplayer.BattleFaction2ReadyTag, value.ToString()); }
+        //}
+
+        //public override int BattleTimeLimit
+        //{
+        //    get { return GetLobbyInt(MyMultiplayer.BattleTimeLimitTag, Lobby, 0); }
+        //    set { Lobby.SetLobbyData(MyMultiplayer.BattleTimeLimitTag, value.ToString()); }
+        //}
+
+        public ulong HostSteamId
         {
-            get { return GetLobbyLong(MyMultiplayer.BattleFaction1IdTag, Lobby, 0); }
-            set { Lobby.SetLobbyData(MyMultiplayer.BattleFaction1IdTag, value.ToString()); }
+            get { return GetLobbyULong(MyMultiplayer.HostSteamIdTag, Lobby, 0); }
+            set { Lobby.SetLobbyData(MyMultiplayer.HostSteamIdTag, value.ToString()); }
         }
 
-        public override long BattleFaction2Id
-        {
-            get { return GetLobbyLong(MyMultiplayer.BattleFaction2IdTag, Lobby, 0); }
-            set { Lobby.SetLobbyData(MyMultiplayer.BattleFaction2IdTag, value.ToString()); }
-        }
-
-        public override int BattleFaction1Slot
-        {
-            get { return GetLobbyInt(MyMultiplayer.BattleFaction1SlotTag, Lobby, 0); }
-            set { Lobby.SetLobbyData(MyMultiplayer.BattleFaction1SlotTag, value.ToString()); }
-        }
-
-        public override int BattleFaction2Slot
-        {
-            get { return GetLobbyInt(MyMultiplayer.BattleFaction2SlotTag, Lobby, 0); }
-            set { Lobby.SetLobbyData(MyMultiplayer.BattleFaction2SlotTag, value.ToString()); }
-        }
-
-        public override bool BattleFaction1Ready
-        {
-            get { return GetLobbyBool(MyMultiplayer.BattleFaction1ReadyTag, Lobby, false); }
-            set { Lobby.SetLobbyData(MyMultiplayer.BattleFaction1ReadyTag, value.ToString()); }
-        }
-
-        public override bool BattleFaction2Ready
-        {
-            get { return GetLobbyBool(MyMultiplayer.BattleFaction2ReadyTag, Lobby, false); }
-            set { Lobby.SetLobbyData(MyMultiplayer.BattleFaction2ReadyTag, value.ToString()); }
-        }
+        private bool m_serverDataValid;
 
 
         internal MyMultiplayerLobby(Lobby lobby, MySyncLayer syncLayer)
-            : base(syncLayer)
+            : base(syncLayer, new EndpointId(Sync.MyId))
         {
             Lobby = lobby;
             ServerId = Lobby.GetOwner();
 
             SyncLayer.RegisterClientEvents(this);
 
-            if (IsServer)
-            {
-                HostName = MySteam.UserName;
-            }
-            else
-            {
-                SyncLayer.TransportLayer.IsBuffering = true;
-            }
+            HostName = MySteam.UserName;
+           
+            Debug.Assert(IsServer, "Wrong object created");
+
             MySteam.API.Matchmaking.LobbyChatUpdate += Matchmaking_LobbyChatUpdate;
             MySteam.API.Matchmaking.LobbyChatMsg += Matchmaking_LobbyChatMsg;
             ClientLeft += MyMultiplayerLobby_ClientLeft;
@@ -222,7 +287,10 @@ namespace Sandbox.Engine.Multiplayer
 
         void MyMultiplayerLobby_ClientLeft(ulong userId, ChatMemberStateChangeEnum stateChange)
         {
-            Peer2Peer.CloseSession(userId);
+            if (userId == ServerId)
+            {
+                Peer2Peer.CloseSession(userId);
+            }
 
             MySandboxGame.Log.WriteLineAndConsole("Player left: " + GetMemberName(userId) + " (" + userId + ")");
             MyTrace.Send(TraceWindow.Multiplayer, "Player left: " + stateChange.ToString());
@@ -245,28 +313,41 @@ namespace Sandbox.Engine.Multiplayer
                     MyTrace.Send(TraceWindow.Multiplayer, "Player entered");
                     Peer2Peer.AcceptSession(changedUser);
 
-                    RaiseClientJoined(changedUser);
+                    // When some clients connect at the same time then some of them can have already added clients 
+                    // (see function MySyncLayer.RegisterClientEvents which registers all Members in Lobby).
+                    if (Sync.Clients == null || !Sync.Clients.HasClient(changedUser))
+                    {
+                        RaiseClientJoined(changedUser);
+
+                        // Battles - send all clients, identities, players, factions as first message to client
+                        if ((Scenario) && changedUser != Sync.MyId)
+                        {
+                            SendAllMembersDataToClient(changedUser);
+                        }
+                    }
 
                     if (MySandboxGame.IsGameReady && changedUser != ServerId)
                     {
-                        var playerJoined = new MyHudNotification(MySpaceTexts.NotificationClientConnected, 5000, level: MyNotificationLevel.Important);
+                        var playerJoined = new MyHudNotification(MyCommonTexts.NotificationClientConnected, 5000, level: MyNotificationLevel.Important);
                         playerJoined.SetTextFormatArguments(MySteam.API.Friends.GetPersonaName(changedUser));
                         MyHud.Notifications.Add(playerJoined);
                     }
                 }
                 else
                 {
-                    RaiseClientLeft(changedUser, stateChange);
+                    // Kicked client can be already removed from Clients
+                    if (Sync.Clients == null || Sync.Clients.HasClient(changedUser))
+                        RaiseClientLeft(changedUser, stateChange);
 
                     if (changedUser == ServerId)
                     {
                         MyTrace.Send(TraceWindow.Multiplayer, "Host left: " + stateChange.ToString());
                         RaiseHostLeft();
 
-                        MyGuiScreenMainMenu.UnloadAndExitToMenu();
+                        MySessionLoader.UnloadAndExitToMenu();
                         MyGuiSandbox.AddScreen(MyGuiSandbox.CreateMessageBox(
-                            messageCaption: MyTexts.Get(MySpaceTexts.MessageBoxCaptionError),
-                            messageText: MyTexts.Get(MySpaceTexts.MultiplayerErrorServerHasLeft)));
+                            messageCaption: MyTexts.Get(MyCommonTexts.MessageBoxCaptionError),
+                            messageText: MyTexts.Get(MyCommonTexts.MultiplayerErrorServerHasLeft)));
 
                         // Set new server
                         //ServerId = Lobby.GetOwner();
@@ -278,7 +359,7 @@ namespace Sandbox.Engine.Multiplayer
                     }
                     else if (MySandboxGame.IsGameReady)
                     {
-                        var playerLeft = new MyHudNotification(MySpaceTexts.NotificationClientDisconnected, 5000, level: MyNotificationLevel.Important);
+                        var playerLeft = new MyHudNotification(MyCommonTexts.NotificationClientDisconnected, 5000, level: MyNotificationLevel.Important);
                         playerLeft.SetTextFormatArguments(MySteam.API.Friends.GetPersonaName(changedUser));
                         MyHud.Notifications.Add(playerLeft);
                     }
@@ -299,8 +380,10 @@ namespace Sandbox.Engine.Multiplayer
             for (int i = 0; i < Lobby.MemberCount; i++)
             {
                 var member = Lobby.GetLobbyMemberByIndex(i);
-                if (member != MySteam.UserId)
+                if (member != Sync.MyId && member == ServerId)
+                {
                     Peer2Peer.AcceptSession(member);
+                }
             }
         }
 
@@ -312,6 +395,13 @@ namespace Sandbox.Engine.Multiplayer
             MyControlWorldRequestMsg msg = new MyControlWorldRequestMsg();
             SendControlMessage(ServerId, ref msg);
             return ret;
+        }
+
+        public override void DisconnectClient(ulong userId)
+        {
+            MyLog.Default.WriteLineAndConsole("User forcibly disconnected " + GetMemberName(userId));
+
+            RaiseClientLeft(userId, ChatMemberStateChangeEnum.Disconnected);
         }
 
         public override void KickClient(ulong userId)
@@ -333,11 +423,22 @@ namespace Sandbox.Engine.Multiplayer
         {
             System.Diagnostics.Debug.Fail("Ban is not supported in lobbies");
         }
-       
+
         public override void Tick()
         {
             base.Tick();
-           
+
+            // TODO: Hack for invisible battle games - sometimes values are not written to Lobby so we try it again here
+            if (!m_serverDataValid)
+            {
+                ProfilerShort.Begin("Battle hack");
+                if (AppVersion == 0)
+                    MySession.Static.StartServer(this);
+
+                m_serverDataValid = true;
+                ProfilerShort.End();
+            }
+
             //var delta = TimeSpan.FromMilliseconds(SyncLayer.Interpolation.Timer.AverageDeltaMilliseconds);
             //Profiler.CustomValue("Average delta ", (float)delta.TotalMilliseconds + 10, delta + TimeSpan.FromMilliseconds(10));
 
@@ -382,7 +483,7 @@ namespace Sandbox.Engine.Multiplayer
             MySteam.API.Matchmaking.LobbyChatUpdate -= Matchmaking_LobbyChatUpdate;
             //MySteam.API.Matchmaking.LobbyDataUpdate -= Matchmaking_LobbyDataUpdate;
             MySteam.API.Matchmaking.LobbyChatMsg -= Matchmaking_LobbyChatMsg;
-            
+
             if (Lobby.IsValid)
             {
                 MyTrace.Send(TraceWindow.Multiplayer, "Leaving lobby");
@@ -416,7 +517,7 @@ namespace Sandbox.Engine.Multiplayer
         public override int MemberLimit
         {
             get { return Lobby.MemberLimit; }
-            set {  }
+            set { }
         }
 
         public override bool IsAdmin(ulong steamID)
@@ -451,7 +552,7 @@ namespace Sandbox.Engine.Multiplayer
 
         public static bool IsLobbyCorrectVersion(Lobby lobby)
         {
-            return GetLobbyAppVersion(lobby) == Sandbox.Common.MyFinalBuildConstants.APP_VERSION;
+            return GetLobbyAppVersion(lobby) == MyFinalBuildConstants.APP_VERSION;
         }
 
         public static MyGameModeEnum GetLobbyGameMode(Lobby lobby)
@@ -481,10 +582,28 @@ namespace Sandbox.Engine.Multiplayer
                 return defValue;
         }
 
+        public static DateTime GetLobbyDateTime(string key, Lobby lobby, DateTime defValue)
+        {
+            DateTime val;
+            if (DateTime.TryParse(lobby.GetLobbyData(key), CultureInfo.InvariantCulture, DateTimeStyles.None, out val))
+                return val;
+            else
+                return defValue;
+        }
+
         public static long GetLobbyLong(string key, Lobby lobby, long defValue)
         {
             long val;
             if (long.TryParse(lobby.GetLobbyData(key), out val))
+                return val;
+            else
+                return defValue;
+        }
+
+        public static ulong GetLobbyULong(string key, Lobby lobby, ulong defValue)
+        {
+            ulong val;
+            if (ulong.TryParse(lobby.GetLobbyData(key), out val))
                 return val;
             else
                 return defValue;
@@ -522,6 +641,11 @@ namespace Sandbox.Engine.Multiplayer
         {
             int result;
             return int.TryParse(lobby.GetLobbyData(MyMultiplayer.AppVersionTag), out result) ? result : 0;
+        }
+
+        public static ulong GetLobbyHostSteamId(Lobby lobby)
+        {
+            return GetLobbyULong(MyMultiplayer.HostSteamIdTag, lobby, 0);
         }
 
         public static string GetDataHash(Lobby lobby)
@@ -576,11 +700,16 @@ namespace Sandbox.Engine.Multiplayer
             return GetLobbyInt(MyMultiplayer.ViewDistanceTag, lobby, 20000);
         }
 
-        public static bool GetLobbyBattle(Lobby lobby)
+        public static bool GetLobbyScenario(Lobby lobby)
         {
-            return GetLobbyBool(MyMultiplayer.BattleTag, lobby, false);
+            return GetLobbyBool(MyMultiplayer.ScenarioTag, lobby, false);
         }
 
+        public static string GetLobbyScenarioBriefing(Lobby lobby)
+        {
+            return lobby.GetLobbyData(MyMultiplayer.ScenarioBriefingTag);
+        }
+   
         public override string GetMemberName(ulong steamUserID)
         {
             return MySteam.API.Friends.GetPersonaName(steamUserID);
@@ -588,12 +717,14 @@ namespace Sandbox.Engine.Multiplayer
 
         protected override void OnClientKick(ref MyControlKickClientMsg data, ulong kicked)
         {
-            if (data.KickedClient == MySteam.UserId)
+            RaiseClientKicked(data.KickedClient);
+
+            if (data.KickedClient == Sync.MyId)
             {
-                MyGuiScreenMainMenu.ReturnToMainMenu();
+                MySessionLoader.UnloadAndExitToMenu();
                 MyGuiSandbox.AddScreen(MyGuiSandbox.CreateMessageBox(
-                    messageCaption: MyTexts.Get(MySpaceTexts.MessageBoxCaptionKicked),
-                    messageText: MyTexts.Get(MySpaceTexts.MessageBoxTextYouHaveBeenKicked)));
+                    messageCaption: MyTexts.Get(MyCommonTexts.MessageBoxCaptionKicked),
+                    messageText: MyTexts.Get(MyCommonTexts.MessageBoxTextYouHaveBeenKicked)));
             }
             else
             {
@@ -605,11 +736,6 @@ namespace Sandbox.Engine.Multiplayer
         protected override void OnClientBan(ref MyControlBanClientMsg data, ulong kicked)
         {
             System.Diagnostics.Debug.Fail("Ban is not supported in lobbies");
-        }
-
-        protected override void OnPing(ref MyControlPingMsg data, ulong sender)
-        {
-            SendControlMessage(sender, ref data);
         }
     }
 }

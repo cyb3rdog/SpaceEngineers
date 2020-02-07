@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using VRage;
+using VRage.Profiler;
 using VRageMath;
 
 namespace Sandbox.Engine.Utils
@@ -46,9 +47,9 @@ namespace Sandbox.Engine.Utils
         [ProtoContract]
         public struct Segment
         {
-            [ProtoMember(1)]
+            [ProtoMember]
             public Vector3I Min;
-            [ProtoMember(2)]
+            [ProtoMember]
             public Vector3I Max;
 
             public Vector3I Size { get { return Max - Min + Vector3I.One; } }

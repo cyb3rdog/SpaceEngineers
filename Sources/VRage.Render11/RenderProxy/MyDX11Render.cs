@@ -8,6 +8,10 @@ using VRageMath;
 using VRageRender.Profiler;
 using Vector2 = VRageMath.Vector2;
 using VRage.Library.Utils;
+using VRage.Profiler;
+using VRage.Render11.Shader;
+using VRage.Utils;
+using VRageRender.Messages;
 
 namespace VRageRender
 {
@@ -17,8 +21,8 @@ namespace VRageRender
         public string RootDirectoryEffects { get { return MyRender11.RootDirectoryEffects; } set { MyRender11.RootDirectoryEffects = value; } }
         public string RootDirectoryDebug { get { return MyRender11.RootDirectoryDebug; } set { MyRender11.RootDirectoryDebug = value; } }
 
+        public MyLog Log { get { return MyRender11.Log; } }
 
-        public MyRenderSettings Settings { get { return MyRender11.Settings; } }
         public MySharedData SharedData { get { return MyRender11.SharedData; } }
         public MyTimeSpan CurrentDrawTime
         {
@@ -60,11 +64,6 @@ namespace VRageRender
         {
         }
 
-        public MyAdapterInfo[] GetAdaptersList()
-        {
-            return MyRender11.GetAdaptersList();
-        }
-
         public bool SettingsChanged(MyRenderDeviceSettings settings)
         {
             return MyRender11.SettingsChanged(settings);
@@ -72,18 +71,12 @@ namespace VRageRender
 
         public void ApplySettings(MyRenderDeviceSettings settings)
         {
-            MyRender11.CheckAdapterChange(settings);
             MyRender11.ApplySettings(settings);
         }
 
         public void Present()
         {
             MyRender11.Present();
-        }
-
-        public void ClearBackbuffer(ColorBGRA clearColor)
-        {
-            MyRender11.ClearBackbuffer(clearColor);
         }
 
         public Vector2I BackBufferResolution { get { return MyRender11.BackBufferResolution; } }
@@ -116,7 +109,7 @@ namespace VRageRender
         public MyMessageQueue OutputQueue { get { return MyRender11.OutputQueue; } }
         public uint GlobalMessageCounter { get { return MyRender11.GlobalMessageCounter; } set { MyRender11.GlobalMessageCounter = value; } }
 
-        public void EnqueueMessage(IMyRenderMessage message, bool limitMaxQueueSize)
+        public void EnqueueMessage(MyRenderMessageBase message, bool limitMaxQueueSize)
         {
             MyRender11.EnqueueMessage(message, limitMaxQueueSize);
         }
@@ -125,7 +118,7 @@ namespace VRageRender
         {
         }
 
-        public void EnqueueOutputMessage(IMyRenderMessage message)
+        public void EnqueueOutputMessage(MyRenderMessageBase message)
         {
             MyRender11.EnqueueOutputMessage(message);
         }
@@ -137,17 +130,25 @@ namespace VRageRender
 
         public void Draw(bool draw = true)
         {
+#if DEBUG
+            try
+            {
+                MyRender11.Draw(draw);
+            }
+            catch (Exception ex)
+            {
+                MyRender11.ProcessDebugOutput();
+                System.Diagnostics.Debug.WriteLine(ex);
+                MyRenderProxy.Assert(false, "Exception in render!\n" + ex);
+            }
+#else
             MyRender11.Draw(draw);
+#endif
         }
 
         public MyRenderProfiler GetRenderProfiler()
         {
             return MyRender11.GetRenderProfiler();
-        }
-
-        public void RestoreDXGISwapchainFullscreenMode()
-        {
-            MyRender11.RestoreFullscreenMode();
         }
 
         public bool IsVideoValid(uint id)
@@ -169,6 +170,48 @@ namespace VRageRender
             }
             MyVideoFactory.VideoMutex.ReleaseMutex();
             return result;
+        }
+
+        public void HandleFocusMessage(MyWindowFocusMessage msg)
+        {
+            if (msg == MyWindowFocusMessage.Activate && MyRenderProxy.RenderThread.CurrentSettings.WindowMode == MyWindowModeEnum.Fullscreen)
+            {
+                MyRenderProxy.RenderThread.UpdateSize(MyWindowModeEnum.FullscreenWindow);
+            }
+
+            if (msg == MyWindowFocusMessage.SetFocus && MyRenderProxy.RenderThread.CurrentSettings.WindowMode == MyWindowModeEnum.Fullscreen)
+            {
+                MyRenderProxy.RenderThread.UpdateSize(MyWindowModeEnum.Fullscreen);
+                MyRender11.RestoreFullscreenMode();
+            }
+        }
+
+        public bool IsSupported
+        {
+            get
+            {
+                try
+                {
+                    var adapters = MyRender11.GetAdaptersList();
+
+                    foreach(var adapter in adapters) {
+                        if (adapter.IsDx11Supported)
+                        { 
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+                catch
+                {
+                    return false;
+                }
+            }
+        }
+
+        public void GenerateShaderCache(bool clean, OnShaderCacheProgressDelegate onShaderCacheProgress)
+        {
+            MyShaderCacheGenerator.Generate(clean, onShaderCacheProgress);
         }
     }
 }

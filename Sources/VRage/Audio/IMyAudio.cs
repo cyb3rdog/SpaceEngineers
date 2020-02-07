@@ -1,4 +1,5 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 using System.Text;
 using VRage.Collections;
 using VRage.Data.Audio;
@@ -10,9 +11,10 @@ namespace VRage.Audio
 {
     public interface IMyAudio 
     {
-        Dictionary<MyStringId, MySoundData>.ValueCollection CueDefinitions { get; }
+        Dictionary<MyCueId, MySoundData>.ValueCollection CueDefinitions { get; }
         List<MyStringId> GetCategories();
-        MySoundData GetCue(MyStringId cue);
+        MySoundData GetCue(MyCueId cue);
+        Dictionary<MyStringId, List<MyCueId>> GetAllMusicCues();
 
         //IMyCueBank CueBank { get; }
         MySoundData SoloCue
@@ -26,6 +28,7 @@ namespace VRage.Audio
             get;
             set;
         }
+        void SetReverbParameters(float diffusion, float roomSize);
 
         //  Set/get master volume for all sounds/cues for "Music" category.
         //  Interval <0..1..2>
@@ -60,6 +63,12 @@ namespace VRage.Audio
             set;
         }
 
+        float VolumeVoiceChat
+        {
+            get;
+            set;
+        }
+
         void Pause();
         void Resume();
         void PauseGameSounds();
@@ -82,11 +91,49 @@ namespace VRage.Audio
             get;
         }
 
-        void PlayMusic(MyMusicTrack? track = null);
+        bool EnableVoiceChat
+        {
+            get;
+            set;
+        }
+
+        bool UseVolumeLimiter
+        {
+            get;
+            set;
+        }
+
+        bool UseSameSoundLimiter
+        {
+            get;
+            set;
+        }
+
+        bool EnableReverb
+        {
+            get;
+            set;
+        }
+
+        int SampleRate
+        {
+            get;
+        }
+
+        void SetSameSoundLimiter();
+        void EnableMasterLimiter(bool enable);
+        void ChangeGlobalVolume(float level, float time);
+
+        event Action<bool> VoiceChatEnabled;
+
+        void PlayMusic(MyMusicTrack? track = null, int priorityForRandom = 0);
+        IMySourceVoice PlayMusicCue(MyCueId musicCue, bool overrideMusicAllowed);
         void StopMusic();
         void MuteHud(bool mute);
         
         bool HasAnyTransition();
+
+        bool IsValidTransitionCategory(MyStringId transitionCategory, MyStringId musicCategory);
 
         void LoadData(MyAudioInitParams initParams, ListReader<MySoundData> cues, ListReader<MyAudioEffect> effects);
         void UnloadData();
@@ -98,9 +145,11 @@ namespace VRage.Audio
 
         //  Add new cue and starts playing it. This can be used for one-time or for looping cues.
         //  Method returns reference to the cue, so if it's looping cue, we can update its position. Or we can stop playing it.
-        IMySourceVoice PlaySound(MyStringId cueId, IMy3DSoundEmitter source = null, MySoundDimensions type = MySoundDimensions.D2, bool skipIntro = false, bool skipToEnd = false);
-        
-        IMySourceVoice GetSound(MyStringId cueId, IMy3DSoundEmitter source = null, MySoundDimensions type = MySoundDimensions.D2);
+        IMySourceVoice PlaySound(MyCueId cueId, IMy3DSoundEmitter source = null, MySoundDimensions type = MySoundDimensions.D2, bool skipIntro = false, bool skipToEnd = false);
+
+        IMySourceVoice GetSound(MyCueId cueId, IMy3DSoundEmitter source = null, MySoundDimensions type = MySoundDimensions.D2);
+
+        IMySourceVoice GetSound(IMy3DSoundEmitter source, int sampleRate, int channels, MySoundDimensions dimension);
 
         float SemitonesToFrequencyRatio(float semitones);
         
@@ -109,10 +158,8 @@ namespace VRage.Audio
         int GetSoundInstancesTotal3D();
         
         void StopUpdatingAll3DCues();
-        bool SourceIsCloseEnoughToPlaySound(IMy3DSoundEmitter source, MyStringId cueEnum);
-        bool IsLoopable(MyStringId cueId);
-
-        IMySourceVoice PlayTestSound(MyStringId cue);
+        bool SourceIsCloseEnoughToPlaySound(Vector3 position, MyCueId cueId, float? customMaxDistance = 0);
+        bool IsLoopable(MyCueId cueId);
 
         object CalculateDspSettingsDebug(IMy3DSoundEmitter source);
 
@@ -127,8 +174,8 @@ namespace VRage.Audio
         /// </summary>
         /// <param name="input">Emitter to work with</param>
         /// <param name="effect"></param>
-        /// <param name="cues">additional cues if effect mixes them (ie. crossfade)</param>
+        /// <param name="cueIds">additional cues if effect mixes them (ie. crossfade)</param>
         /// <returns>effect output sound</returns>
-        IMyAudioEffect ApplyEffect(IMySourceVoice input, MyStringId effect, MyStringId[] cues = null, float? duration = null);
+        IMyAudioEffect ApplyEffect(IMySourceVoice input, MyStringHash effect, MyCueId[] cueIds = null, float? duration = null, bool musicEffect = false);
     }
 }

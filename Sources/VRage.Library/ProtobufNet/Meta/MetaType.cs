@@ -1,4 +1,5 @@
-﻿#if !NO_RUNTIME
+﻿#if !XB1 // XB1_NOPROTOBUF
+#if !NO_RUNTIME
 using System;
 using System.Collections;
 using System.Text;
@@ -1030,7 +1031,7 @@ namespace ProtoBuf.Meta
                 if (GetAttribute(attribs, "System.NonSerializedAttribute") != null) ignore = true;
             }
             if (ignore || (fieldNumber < minAcceptFieldNumber && !forced)) return null;
-            ProtoMemberAttribute result = new ProtoMemberAttribute(fieldNumber, forced || inferByTagName);
+            ProtoMemberAttribute result = new ProtoMemberAttribute(forced || inferByTagName, fieldNumber);
             result.AsReference = asReference;
             result.AsReferenceHasValue = asReferenceHasValue;
             result.DataFormat = dataFormat;
@@ -1817,3 +1818,4 @@ namespace ProtoBuf.Meta
     }
 }
 #endif
+#endif // !XB1

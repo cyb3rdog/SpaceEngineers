@@ -1,12 +1,8 @@
 ﻿#region Using
 
-using Sandbox.Common;
-using Sandbox.Common.ObjectBuilders.Definitions;
 using Sandbox.Definitions;
-using Sandbox.Engine.Physics;
 using Sandbox.Engine.Utils;
 using Sandbox.Engine.Voxels;
-using Sandbox.Game.Decals;
 using Sandbox.Game.Entities;
 using Sandbox.Game.Entities.Character;
 using Sandbox.Game.Entities.Cube;
@@ -14,18 +10,22 @@ using Sandbox.Game.Entities.Debris;
 using Sandbox.Game.Lights;
 using Sandbox.Game.Multiplayer;
 using Sandbox.Game.Weapons;
-using Sandbox.Game.Weapons.Guns;
 using Sandbox.Game.World;
-using Sandbox.Graphics.TransparentGeometry.Particles;
-using Sandbox.ModAPI.Interfaces;
+using Sandbox.Game.GameSystems;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-
 using VRage.Audio;
 using VRage.Utils;
 using VRageMath;
 using VRageRender;
+using VRage.Game.Components;
+using VRage.Game.Entity;
+using VRage.Game;
+using VRage.Game.ModAPI;
+using VRage.Game.ModAPI.Interfaces;
+using VRage.Profiler;
+using VRage.Voxels;
 
 #endregion
 
@@ -33,7 +33,7 @@ namespace Sandbox.Game
 {  
 
     //  This tells us what exploded. It doesn't say what was hit, just what exploded so then explosion can be made for that exploded thing.
-    internal enum MyExplosionTypeEnum : byte
+    public enum MyExplosionTypeEnum : byte
     {
         MISSILE_EXPLOSION,          //  When missile explodes. By collision or by itself (e.g. timer).
         BOMB_EXPLOSION,             //  When mine/bomb explodes
@@ -48,14 +48,14 @@ namespace Sandbox.Game
     }
 
     //  How will look explosion particles
-    internal enum MyExplosionParticlesTypeEnum
+    public enum MyExplosionParticlesTypeEnum
     {
         EXPLOSIVE_AND_DIRTY,        //  When rocks (voxels or static asteroids) aare involved in explosion
         EXPLOSIVE_ONLY              //  When metalic only... usually just missile explosion
     }
 
     [Flags]
-    internal enum MyExplosionFlags
+    public enum MyExplosionFlags
     {
         CREATE_DEBRIS = 1 << 0,
         AFFECT_VOXELS = 1 << 1,
@@ -67,7 +67,7 @@ namespace Sandbox.Game
         APPLY_DEFORMATION = 1 << 7,
     }
 
-    internal struct MyExplosionInfo
+    public struct MyExplosionInfo
     {
         public MyExplosionInfo(float playerDamage, float damage, BoundingSphereD explosionSphere, MyExplosionTypeEnum type, bool playSound, bool checkIntersection = true)
         {
@@ -132,15 +132,6 @@ namespace Sandbox.Game
         public bool CreateShrapnels { get { return HasFlag(MyExplosionFlags.CREATE_SHRAPNELS); } set { SetFlag(MyExplosionFlags.CREATE_SHRAPNELS, value); } }
     }
 
-    internal struct MyDamageInfo
-    {
-        public bool GridWasHit;
-        public MyExplosionDamage ExplosionDamage;
-        public HashSet<MyCubeGrid> AffectedCubeGrids;
-        public HashSet<MySlimBlock> AffectedCubeBlocks;
-        public BoundingSphereD Sphere;
-    }
-
     class MyExplosion
     {
         //  IMPORTANT: This class isn't realy inicialized by constructor, but by Start()
@@ -160,6 +151,7 @@ namespace Sandbox.Game
         HashSet<MySlimBlock> m_explodedBlocksExact = new HashSet<MySlimBlock>();
         HashSet<MySlimBlock> m_explodedBlocksOuter = new HashSet<MySlimBlock>();
 
+        MyGridExplosion m_gridExplosion = new MyGridExplosion();
         MyExplosionInfo m_explosionInfo;
         private bool m_explosionTriggered = false;
 
@@ -171,8 +163,6 @@ namespace Sandbox.Game
             new Vector2(1.2f, 0.2f),
         };
         HashSet<MyEntity> m_pushedEntities = new HashSet<MyEntity>();
-
-        private MyEntity3DSoundEmitter m_soundEmitter;
 
         //Use this bool to enable debug draw and better support for debugging explosions
         public static bool DEBUG_EXPLOSIONS = false;
@@ -194,8 +184,7 @@ namespace Sandbox.Game
             SHRAPNEL_DATA.ProjectileTrailColor = MyProjectilesConstants.GetProjectileTrailColorByType(MyAmmoType.HighSpeed);
             SHRAPNEL_DATA.AmmoType = MyAmmoType.HighSpeed;
             SHRAPNEL_DATA.ProjectileTrailScale = 0.1f;
-            SHRAPNEL_DATA.ProjectileOnHitMaterialParticles = MyParticleEffects.GetCustomHitMaterialMethodById((int)MyCustomHitMaterialMethodType.Small);
-            SHRAPNEL_DATA.ProjectileOnHitParticles = MyParticleEffects.GetCustomHitParticlesMethodById((int)MyCustomHitParticlesMethodType.BasicSmall);
+            SHRAPNEL_DATA.ProjectileOnHitEffectName = "Hit_BasicAmmoSmall";
         }
 
         public void Start(MyExplosionInfo explosionInfo)
@@ -214,22 +203,19 @@ namespace Sandbox.Game
         {
             VRageRender.MyRenderProxy.GetRenderProfiler().StartProfilingBlock("MyExplosion.StartInternal");
 
-            if (m_soundEmitter == null)
-                m_soundEmitter = new MyEntity3DSoundEmitter(null);
-
             m_velocity = m_explosionInfo.Velocity;
             m_explosionSphere = m_explosionInfo.ExplosionSphere;
 
             if (m_explosionInfo.PlaySound)
             {
-                VRageRender.MyRenderProxy.GetRenderProfiler().StartProfilingBlock("Sound");
                 //  Play explosion sound
+                VRageRender.MyRenderProxy.GetRenderProfiler().StartProfilingBlock("Sound");
                 PlaySound();
                 VRageRender.MyRenderProxy.GetRenderProfiler().EndProfilingBlock();
             }
 
-            VRageRender.MyRenderProxy.GetRenderProfiler().StartProfilingBlock("Light");
             //  Light of explosion
+            VRageRender.MyRenderProxy.GetRenderProfiler().StartProfilingBlock("Light");
             m_light = MyLights.AddLight();
             if (m_light != null)
             {
@@ -240,8 +226,38 @@ namespace Sandbox.Game
             } 
             VRageRender.MyRenderProxy.GetRenderProfiler().EndProfilingBlock();
 
-            MyParticleEffectsIDEnum newParticlesType;
+            // Particles
+            if (m_explosionInfo.CreateParticleEffect)
+            {
+                CreateParticleEffectInternal();
+            }
 
+            m_explosionTriggered = false;
+
+            VRageRender.MyRenderProxy.GetRenderProfiler().EndProfilingBlock();
+        }
+
+        private void PerformCameraShake(float intensityWeight)
+        {
+            if (MySector.MainCamera == null)
+                return;
+
+            const float maxShake = 8;
+            float intensityMultiplier = 10 * intensityWeight;
+
+            Vector3D dirToCamera = MySector.MainCamera.Position - m_explosionSphere.Center;
+            double invLengthSqDirToCamera = 1.0 / dirToCamera.LengthSquared();
+            float intensity = (float)(m_explosionSphere.Radius * m_explosionSphere.Radius * invLengthSqDirToCamera);
+            if (intensity > MyMathConstants.EPSILON)
+            {
+                MySector.MainCamera.CameraShake.AddShake(Math.Min(intensityMultiplier * intensity, maxShake));
+                MySector.MainCamera.CameraSpring.AddCurrentCameraControllerVelocity(intensityMultiplier * dirToCamera * invLengthSqDirToCamera);
+            }
+        }
+
+        private void CreateParticleEffectInternal()
+        {
+            MyParticleEffectsIDEnum newParticlesType;
             switch (m_explosionInfo.ExplosionType)
             {
                 case MyExplosionTypeEnum.MISSILE_EXPLOSION:
@@ -284,32 +300,26 @@ namespace Sandbox.Game
                     throw new System.NotImplementedException();
                     break;
             }
-
-            if (m_explosionInfo.CreateParticleEffect)
-            {
-                VRageRender.MyRenderProxy.GetRenderProfiler().StartProfilingBlock("Particles");
-
-
-                //  Explosion particles
-                GenerateExplosionParticles(newParticlesType, m_explosionSphere, m_explosionInfo.ParticleScale);
-
-
-                VRageRender.MyRenderProxy.GetRenderProfiler().EndProfilingBlock();
-            }
-
-            m_explosionTriggered = false;
-
+            //  Explosion particles
+            VRageRender.MyRenderProxy.GetRenderProfiler().StartProfilingBlock("Particles");
+            GenerateExplosionParticles(newParticlesType, m_explosionSphere, m_explosionInfo.ParticleScale);
             VRageRender.MyRenderProxy.GetRenderProfiler().EndProfilingBlock();
         }
 
         private void PlaySound()
         {
             MySoundPair cueEnum = GetCueByExplosionType(m_explosionInfo.ExplosionType);
-            m_soundEmitter.SetPosition(m_explosionSphere.Center);
-            m_soundEmitter.SetVelocity(Vector3.Zero);
-            //m_soundEmitter.Entity = m_explosionInfo.OwnerEntity;
-            m_soundEmitter.PlaySingleSound(cueEnum, true);
-            if (m_explosionInfo.HitEntity == MySession.ControlledEntity)
+            if (cueEnum != MySoundPair.Empty)
+            {
+                MyEntity3DSoundEmitter emitter = MyAudioComponent.TryGetSoundEmitter();
+                if (emitter != null)
+                {
+                    emitter.SetPosition(m_explosionSphere.Center);
+                    emitter.Entity = m_explosionInfo.HitEntity;
+                    emitter.PlaySound(cueEnum);
+                }
+            }
+            if (m_explosionInfo.HitEntity == MySession.Static.ControlledEntity)
                 MyAudio.Static.PlaySound(m_explPlayer.SoundId);
         }
 
@@ -356,7 +366,7 @@ namespace Sandbox.Game
                 {
                     MyProjectiles.AddShrapnel(
                         SHRAPNEL_DATA,
-                        (m_explosionInfo.HitEntity is MyWarhead) ? m_explosionInfo.HitEntity : null, // do not play bullet sound when coming from warheads
+                        (m_explosionInfo.HitEntity is MyWarhead) ? new[] { m_explosionInfo.HitEntity } : null, // do not play bullet sound when coming from warheads, // MZ unfortunatelly this is the place where we need to allocate array of ignored entities (and the array is necessary)
                         m_explosionSphere.Center,
                         Vector3.Zero,
                         MyUtils.GetRandomVector3Normalized(),
@@ -370,6 +380,7 @@ namespace Sandbox.Game
             VRageRender.MyRenderProxy.GetRenderProfiler().EndProfilingBlock();
         }
 
+        // Doesn't get called anymore?
         private bool ApplyExplosion(ref MyExplosionInfo m_explosionInfo, ref BoundingSphereD influenceExplosionSphere, List<MyEntity> entities)
         {
             bool gridWasHit = false;
@@ -378,7 +389,7 @@ namespace Sandbox.Game
 
             ApplyExplosionOnEntities(ref m_explosionInfo, entities);
 
-            if (((m_explosionInfo.ExplosionFlags & MyExplosionFlags.APPLY_DEFORMATION) == MyExplosionFlags.APPLY_DEFORMATION) && MySession.Static.DestructibleBlocks)
+            if (((m_explosionInfo.ExplosionFlags & MyExplosionFlags.APPLY_DEFORMATION) == MyExplosionFlags.APPLY_DEFORMATION))
             {
                 gridWasHit = ApplyExplosionOnGrid(ref m_explosionInfo, ref influenceExplosionSphere, entities);
             }
@@ -425,7 +436,7 @@ namespace Sandbox.Game
                                 var character = entity as Sandbox.Game.Entities.Character.MyCharacter;
                                 if (character != null && !(character.IsUsing is MyCockpit))
                                 {
-                                    character.DoDamage(m_explosionInfo.Damage * m_explosionForceSlices[s].Y, MyDamageType.Explosion, true);
+                                    character.DoDamage(m_explosionInfo.Damage * m_explosionForceSlices[s].Y, MyDamageType.Explosion, true, m_explosionInfo.OwnerEntity != null ? m_explosionInfo.OwnerEntity.EntityId : 0);
                                 }
 
                                 var ammoBase = entity as MyAmmoBase;
@@ -457,20 +468,21 @@ namespace Sandbox.Game
             ApplyExplosionOnVoxel(ref m_explosionInfo);
 
             var damageInfo = ApplyVolumetricExplosionOnGrid(ref m_explosionInfo, ref influenceExplosionSphere, entities);
-            if (MySession.Static.DestructibleBlocks)
+            if ((m_explosionInfo.ExplosionFlags & MyExplosionFlags.APPLY_DEFORMATION) == MyExplosionFlags.APPLY_DEFORMATION)
             {
-                if ((m_explosionInfo.ExplosionFlags & MyExplosionFlags.APPLY_DEFORMATION) == MyExplosionFlags.APPLY_DEFORMATION)
-                {
-                    damageInfo.ExplosionDamage.ComputeDamagedBlocks();
-                    gridWasHit = damageInfo.GridWasHit;
-                    ApplyVolumetriDamageToGrid(damageInfo);
-                }
+                ProfilerShort.Begin("ComputeDamagedBlocks");
+                damageInfo.ComputeDamagedBlocks();
+                gridWasHit = damageInfo.GridWasHit;
+                ProfilerShort.BeginNextBlock("ApplyVolumetriDamageToGrid");
+                ApplyVolumetriDamageToGrid(damageInfo, m_explosionInfo.OwnerEntity != null ? m_explosionInfo.OwnerEntity.EntityId : 0);
+                ProfilerShort.End();
             }
-            else
+
+            if (m_explosionInfo.HitEntity is MyWarhead)
             {
-                if (m_explosionInfo.HitEntity is MyWarhead)
+                var warhead = (m_explosionInfo.HitEntity as MyWarhead).SlimBlock;
+                if (!warhead.CubeGrid.BlocksDestructionEnabled)
                 {
-                    var warhead = (m_explosionInfo.HitEntity as MyWarhead).SlimBlock;
                     warhead.CubeGrid.RemoveDestroyedBlock(warhead);
                     foreach (var neighbour in warhead.Neighbours)
                     {
@@ -479,12 +491,15 @@ namespace Sandbox.Game
                     warhead.CubeGrid.Physics.AddDirtyBlock(warhead);
                 }
             }
+            ProfilerShort.Begin("ApplyVolumetricExplosionOnEntities");
             ApplyVolumetricExplosionOnEntities(ref m_explosionInfo, entities, damageInfo);
+            ProfilerShort.End();
 
             entities.Clear();
             return gridWasHit;
         }
 
+        // Doesn't get called anymore?
         private void ApplyExplosionOnEntities(ref MyExplosionInfo m_explosionInfo,List<MyEntity> entities)
         {
             Debug.Assert(Sync.IsServer);
@@ -500,15 +515,21 @@ namespace Sandbox.Game
                 if (damage == 0)
                     continue;
                 var destroyableObj = entity as IMyDestroyableObject;
-                destroyableObj.DoDamage(damage, MyDamageType.Explosion, true);
+                destroyableObj.DoDamage(damage, MyDamageType.Explosion, true, attackerId: m_explosionInfo.OwnerEntity != null ? m_explosionInfo.OwnerEntity.EntityId : 0);
             }
         }
 
-        private void ApplyVolumetricExplosionOnEntities(ref MyExplosionInfo m_explosionInfo, List<MyEntity> entities, MyDamageInfo explosionDamageInfo)
+        private void ApplyVolumetricExplosionOnEntities(ref MyExplosionInfo m_explosionInfo, List<MyEntity> entities, MyGridExplosion explosionDamageInfo)
         {
             Debug.Assert(Sync.IsServer);
+            float explosionRadiusR = (float)(1/explosionDamageInfo.Sphere.Radius);
             foreach (var entity in entities)
             {
+                if (entity is MyCubeGrid) //we already have blocks
+                    continue;
+                var ammoBase = entity as MyAmmoBase;
+                if (!(entity is IMyDestroyableObject) && ammoBase == null && !m_explosionInfo.ApplyForceAndDamage)
+                    continue;
                 //Special case for characters in cockpits
                 var character = entity as MyCharacter;
                 if (character != null)
@@ -516,36 +537,37 @@ namespace Sandbox.Game
                     var cockpit = character.IsUsing as MyCockpit;
                     if (cockpit != null)
                     {
-                        if (explosionDamageInfo.ExplosionDamage.DamagedBlocks.ContainsKey(cockpit.SlimBlock))
+                        if (explosionDamageInfo.DamagedBlocks.ContainsKey(cockpit.SlimBlock))
                         {
-                            float damageRemaining = explosionDamageInfo.ExplosionDamage.DamageRemaining[cockpit.SlimBlock].DamageRemaining;
-                            character.DoDamage(damageRemaining, MyDamageType.Explosion, true);
+                            float damageRemaining = explosionDamageInfo.DamageRemaining[cockpit.SlimBlock].DamageRemaining;
+                            character.DoDamage(damageRemaining, MyDamageType.Explosion, true, attackerId: m_explosionInfo.OwnerEntity != null ? m_explosionInfo.OwnerEntity.EntityId : 0);
                         }
                         continue;
                     }
                 }
 
-                var raycastDamageInfo = explosionDamageInfo.ExplosionDamage.ComputeDamageForEntity(entity.PositionComp.WorldAABB.Center);
-                float damage = raycastDamageInfo.DamageRemaining;
+                //ProfilerShort.Begin("ComputeDamageForEntity");
+                //var raycastDamageInfo = explosionDamageInfo.ExplosionDamage.ComputeDamageForEntity(entity.PositionComp.WorldAABB.Center);
+                //ProfilerShort.End();
+
+                //float damage = raycastDamageInfo.DamageRemaining;
 
                 float entityDistanceToExplosion = (float)(entity.PositionComp.WorldAABB.Center - explosionDamageInfo.Sphere.Center).Length();
-                damage *= (float)(1 - (entityDistanceToExplosion - raycastDamageInfo.DistanceToExplosion) / (explosionDamageInfo.Sphere.Radius - raycastDamageInfo.DistanceToExplosion));
+                //damage *= (float)(1 - (entityDistanceToExplosion - raycastDamageInfo.DistanceToExplosion) / (explosionDamageInfo.Sphere.Radius - raycastDamageInfo.DistanceToExplosion));
+                float damage = explosionDamageInfo.Damage * (1 - (entityDistanceToExplosion * explosionRadiusR));
 
                 if (damage <= 0f)
                     continue;
 
+                if (ammoBase != null)
+                {
+                    Debug.Assert(Vector3.DistanceSquared(m_explosionSphere.Center, ammoBase.PositionComp.GetPosition()) < 4 * m_explosionSphere.Radius * m_explosionSphere.Radius);
+                    ammoBase.MarkedToDestroy = true;
+                    ammoBase.Explode();
+                }
+
                 if (entity.Physics != null && entity.Physics.Enabled)
                 {
-                    var ammoBase = entity as MyAmmoBase;
-                    if (ammoBase != null)
-                    {
-                        if (Vector3.DistanceSquared(m_explosionSphere.Center, ammoBase.PositionComp.GetPosition()) < 4 * m_explosionSphere.Radius * m_explosionSphere.Radius)
-                        {
-                            ammoBase.MarkedToDestroy = true;
-                        }
-                        ammoBase.Explode();
-                    }
-
                     float forceMultiplier = damage / 50000f;
 
                     //  Throws surrounding objects away from centre of the explosion.
@@ -570,48 +592,69 @@ namespace Sandbox.Game
                     }
                 }
 
-                if (!(entity is IMyDestroyableObject))
-                    continue;
-                
                 var destroyableObj = entity as IMyDestroyableObject;
-
-                destroyableObj.DoDamage(damage, MyDamageType.Explosion, true);
+                if (destroyableObj == null)
+                    continue;
+                ProfilerShort.Begin("DoDamage");
+                destroyableObj.DoDamage(damage, MyDamageType.Explosion, true, attackerId: m_explosionInfo.OwnerEntity != null ? m_explosionInfo.OwnerEntity.EntityId : 0);
+                ProfilerShort.End();
             }
         }
 
+        private static readonly HashSet<MyVoxelBase> m_rootVoxelsToCutTmp = new HashSet<MyVoxelBase>(); 
+        private static readonly List<MyVoxelBase> m_overlappingVoxelsTmp = new List<MyVoxelBase>(); 
+
         void ApplyExplosionOnVoxel(ref MyExplosionInfo explosionInfo)
         {
+            if (MySession.Static.EnableVoxelDestruction == false)
+            {
+                return;
+            }
+
             VRageRender.MyRenderProxy.GetRenderProfiler().StartProfilingBlock("ApplyExplosionOnVoxel");
 
             if (explosionInfo.Damage > 0)
             {
                 VRageRender.MyRenderProxy.GetRenderProfiler().StartProfilingBlock("Voxel or collision");
 
-                //  If explosion sphere intersects a voxel map, we need to cut out a sphere, spawn debrises, etc
-                MyVoxelBase voxelMap = explosionInfo.AffectVoxels ? MySession.Static.VoxelMaps.GetOverlappingWithSphere(ref m_explosionSphere) : null;
-                if (voxelMap != null)
-                {
-                    bool createDebris = true; // We want to create debris
+                bool first = true;
 
+                //  If explosion sphere intersects a voxel map, we need to cut out a sphere, spawn debrises, etc
+                MySession.Static.VoxelMaps.GetAllOverlappingWithSphere(ref m_explosionSphere, m_overlappingVoxelsTmp);
+
+                for (int i = m_overlappingVoxelsTmp.Count - 1; i >= 0; --i)
+                {
+                    m_rootVoxelsToCutTmp.Add(m_overlappingVoxelsTmp[i].RootVoxel);
+                }
+                m_overlappingVoxelsTmp.Clear();
+
+                foreach (var voxelMap in m_rootVoxelsToCutTmp)
+                {
+                    bool createDebris = first; // We want to create debris
+                    /*
                     if (explosionInfo.HitEntity != null) // but not when we hit prefab
                     {
-                        createDebris &= explosionInfo.HitEntity is MyVoxelMap;
-                    }
+                        createDebris &= explosionInfo.HitEntity is MyVoxelBase;
+                    }*/
 
                     createDebris &= explosionInfo.CreateDebris && (createDebris || explosionInfo.ForceDebris);
 
                     CutOutVoxelMap((float)m_explosionSphere.Radius * explosionInfo.VoxelCutoutScale, explosionInfo.VoxelExplosionCenter, voxelMap, createDebris);
 
                     //Sync
-                    voxelMap.SyncObject.RequestVoxelCutoutSphere(explosionInfo.VoxelExplosionCenter, (float)m_explosionSphere.Radius * explosionInfo.VoxelCutoutScale, createDebris);
+                    voxelMap.RequestVoxelCutoutSphere(explosionInfo.VoxelExplosionCenter, (float)m_explosionSphere.Radius * explosionInfo.VoxelCutoutScale, createDebris, false);
+
+                    first = false;
                 }
+
+                m_rootVoxelsToCutTmp.Clear();
                 VRageRender.MyRenderProxy.GetRenderProfiler().EndProfilingBlock();
             }
 
             VRageRender.MyRenderProxy.GetRenderProfiler().EndProfilingBlock();
         }
 
-        public static void CutOutVoxelMap(float radius, Vector3D center, MyVoxelBase voxelMap, bool createDebris)
+        public static void CutOutVoxelMap(float radius, Vector3D center, MyVoxelBase voxelMap, bool createDebris, bool damage = false)
         {
             MyVoxelMaterialDefinition voxelMaterial = null;
             float voxelContentRemovedInPercent = 0;
@@ -622,16 +665,13 @@ namespace Sandbox.Game
                 Center = center,
                 Radius = radius
             };
-            MyVoxelGenerator.CutOutShapeWithProperties(voxelMap, sphereShape, out voxelContentRemovedInPercent, out voxelMaterial, null, false);
+            MyVoxelGenerator.CutOutShapeWithProperties(voxelMap, sphereShape, out voxelContentRemovedInPercent, out voxelMaterial, null, false, applyDamageMaterial: damage);
 
             //  Only if at least something was removed from voxel map
             //  If voxelContentRemovedInPercent is more than zero than also voxelMaterial shouldn't be null, but I rather check both of them.
             if ((voxelContentRemovedInPercent > 0) && (voxelMaterial != null))
             {
                 BoundingSphereD voxelExpSphere = new BoundingSphereD(center, radius);
-
-                //remove decals
-                MyDecals.HideTrianglesAfterExplosion(voxelMap, ref voxelExpSphere);
 
                 VRageRender.MyRenderProxy.GetRenderProfiler().StartProfilingBlock("CreateDebris");
 
@@ -653,6 +693,7 @@ namespace Sandbox.Game
                     {
                         explosionEffect.WorldMatrix = MatrixD.CreateTranslation(voxelExpSphere.Center);
                         explosionEffect.UserRadiusMultiplier = (float)voxelExpSphere.Radius;
+                        explosionEffect.UserScale = 0.2f;
                     }
                 }
 
@@ -660,6 +701,7 @@ namespace Sandbox.Game
             }
         }
 
+        // Doesn't get called anymore?
         bool ApplyExplosionOnGrid(ref MyExplosionInfo explosionInfo, ref BoundingSphereD sphere, List<MyEntity> entities)
         {
             Debug.Assert(Sandbox.Game.Multiplayer.Sync.IsServer, "This is supposed to be only server method");
@@ -669,7 +711,7 @@ namespace Sandbox.Game
             foreach (var entity in entities)
             {
                 MyCubeGrid grid = entity as MyCubeGrid;
-                if (grid != null)
+                if (grid != null && grid.BlocksDestructionEnabled)
                 {
                     var detectionHalfSize = grid.GridSize / 2 / 1.25f;
                     var invWorldGrid = MatrixD.Invert(grid.WorldMatrix);
@@ -778,23 +820,21 @@ namespace Sandbox.Game
             return gridWasHit;
         }
 
-        MyDamageInfo ApplyVolumetricExplosionOnGrid(ref MyExplosionInfo explosionInfo, ref BoundingSphereD sphere, List<MyEntity> entities)
+        MyGridExplosion ApplyVolumetricExplosionOnGrid(ref MyExplosionInfo explosionInfo, ref BoundingSphereD sphere, List<MyEntity> entities)
         {
             Debug.Assert(Sandbox.Game.Multiplayer.Sync.IsServer, "This is supposed to be only server method");
             VRageRender.MyRenderProxy.GetRenderProfiler().StartProfilingBlock("ApplyExplosionOnGrid");
 
             bool gridWasHit = false;
 
-            HashSet<MySlimBlock> explodedBlocks = new HashSet<MySlimBlock>();
-            Dictionary<MySlimBlock, float> damagedBlocks = new Dictionary<MySlimBlock, float>();
-            HashSet<MyCubeGrid> explodedGrids = new HashSet<MyCubeGrid>();
+            m_gridExplosion.Init(explosionInfo.ExplosionSphere, explosionInfo.Damage);
 
             foreach (var entity in entities)
             {
                 MyCubeGrid grid = entity as MyCubeGrid;
                 if (grid != null && grid.CreatePhysics)
                 {
-                    explodedGrids.Add(grid);
+                    m_gridExplosion.AffectedCubeGrids.Add(grid);
 
                     var detectionHalfSize = grid.GridSize / 2 / 1.25f;
                     var invWorldGrid = MatrixD.Invert(grid.WorldMatrix);
@@ -815,7 +855,7 @@ namespace Sandbox.Game
 
                     m_explodedBlocksInner.UnionWith(m_explodedBlocksExact);
 
-                    explodedBlocks.UnionWith(m_explodedBlocksInner);
+                    m_gridExplosion.AffectedCubeBlocks.UnionWith(m_explodedBlocksInner);
 
                     VRageRender.MyRenderProxy.GetRenderProfiler().StartProfilingBlock("outerSphere2");
 
@@ -835,24 +875,13 @@ namespace Sandbox.Game
             }
             VRageRender.MyRenderProxy.GetRenderProfiler().EndProfilingBlock();
 
-            var damage = new MyExplosionDamage(explodedBlocks, sphere, explosionInfo.Damage);
-            
 
-            var damageInfo = new MyDamageInfo
-            {
-                GridWasHit = gridWasHit,
-                ExplosionDamage = damage,
-                AffectedCubeBlocks = explodedBlocks,
-                AffectedCubeGrids = explodedGrids,
-                Sphere = sphere
-            };
-
-            return damageInfo;
+            return m_gridExplosion;
         }
 
-        private void ApplyVolumetriDamageToGrid(MyDamageInfo damageInfo)
+        private void ApplyVolumetriDamageToGrid(MyGridExplosion damageInfo, long attackerId)
         {
-            var damagedBlocks = damageInfo.ExplosionDamage.DamagedBlocks;
+            var damagedBlocks = damageInfo.DamagedBlocks;
             var explodedBlocks = damageInfo.AffectedCubeBlocks;
             var explodedGrids = damageInfo.AffectedCubeGrids;
 
@@ -866,7 +895,7 @@ namespace Sandbox.Game
                 }
                 foreach (var damagedBlock in damagedBlocks)
                 {
-                    float hue = 1f - damagedBlock.Value / damageInfo.ExplosionDamage.Damage;
+                    float hue = 1f - damagedBlock.Value / damageInfo.Damage;
                     damagedBlock.Key.CubeGrid.ChangeColor(damagedBlock.Key, new Vector3(hue / 3f, 1.0f, 0.5f));
                 }
             }
@@ -878,7 +907,15 @@ namespace Sandbox.Game
                     if (cubeBlock.FatBlock != null && cubeBlock.FatBlock.MarkedForClose)
                         continue;
 
-                    if (cubeBlock.FatBlock == null && cubeBlock.Integrity / cubeBlock.DeformationRatio < damagedBlock.Value)
+                    if (!cubeBlock.CubeGrid.BlocksDestructionEnabled)
+                        continue;
+
+                    // Allow mods to modify damage.  This will cause a double call.  Once here and once in the DoDamage, but only real way to do a check here
+                    MyDamageInformation checkInfo = new MyDamageInformation(false, damagedBlock.Value, MyDamageType.Explosion, attackerId);
+                    if (cubeBlock.UseDamageSystem)
+                        MyDamageSystem.Static.RaiseBeforeDamageApplied(cubeBlock, ref checkInfo);
+
+                    if (cubeBlock.FatBlock == null && cubeBlock.Integrity / cubeBlock.DeformationRatio < checkInfo.Amount)
                     {
                         VRageRender.MyRenderProxy.GetRenderProfiler().StartProfilingBlock("RemoveBlock");
                         cubeBlock.CubeGrid.RemoveDestroyedBlock(cubeBlock);
@@ -915,9 +952,9 @@ namespace Sandbox.Game
             {
                 foreach (var grid in explodedGrids)
                 {
-                    VRageRender.MyRenderProxy.GetRenderProfiler().StartProfilingBlock("UpdateDirty");
+                    /*VRageRender.MyRenderProxy.GetRenderProfiler().StartProfilingBlock("UpdateDirty");
                     grid.UpdateDirty();
-                    VRageRender.MyRenderProxy.GetRenderProfiler().EndProfilingBlock();
+                    VRageRender.MyRenderProxy.GetRenderProfiler().EndProfilingBlock();*/
 
                     VRageRender.MyRenderProxy.GetRenderProfiler().StartProfilingBlock("CreateExplosionDebris");
                     if (m_explosionInfo.HitEntity == grid)
@@ -931,11 +968,12 @@ namespace Sandbox.Game
             }
         }
 
-        static MySoundPair m_explPlayer = new MySoundPair("WepExplOnPlay");
-        static MySoundPair m_smMissileShip = new MySoundPair("WepSmallMissileExplShip");
-        static MySoundPair m_smMissileExpl = new MySoundPair("WepSmallMissileExpl");
-        static MySoundPair m_bombExpl = new MySoundPair("WepBombExplosion");
-        static MySoundPair m_missileExpl = new MySoundPair("WepMissileExplosion");
+        static MySoundPair m_explPlayer = new MySoundPair("WepExplOnPlay", false);//currently missing
+        static MySoundPair m_smMissileShip = new MySoundPair("WepSmallMissileExplShip", false);
+        static MySoundPair m_smMissileExpl = new MySoundPair("WepSmallMissileExpl", false);
+        static MySoundPair m_lrgWarheadExpl = new MySoundPair("WepLrgWarheadExpl", false);
+        static MySoundPair m_smWarheadExpl = new MySoundPair("WepSmallWarheadExpl", false);
+        static MySoundPair m_missileExpl = new MySoundPair("WepMissileExplosion", false);//currently missing
 
         MySoundPair GetCueByExplosionType(MyExplosionTypeEnum explosionType)
         {
@@ -954,7 +992,7 @@ namespace Sandbox.Game
                                     if (slimBlock.FatBlock is MyCockpit)
                                     {
                                         MyCockpit cockpit = slimBlock.FatBlock as MyCockpit;
-                                        if (cockpit.Pilot == MySession.ControlledEntity)
+                                        if (cockpit.Pilot == MySession.Static.ControlledEntity)
                                         {
                                             // player's ship hit
                                             cueEnum = m_smMissileShip;
@@ -972,9 +1010,21 @@ namespace Sandbox.Game
 
                         break;
                     }
+                case MyExplosionTypeEnum.WARHEAD_EXPLOSION_02:
+                case MyExplosionTypeEnum.WARHEAD_EXPLOSION_15:
+                    {
+                        cueEnum = m_smWarheadExpl;
+                        break;
+                    }
+                case MyExplosionTypeEnum.WARHEAD_EXPLOSION_30:
+                case MyExplosionTypeEnum.WARHEAD_EXPLOSION_50:
+                    {
+                        cueEnum = m_lrgWarheadExpl;
+                        break;
+                    }
                 case MyExplosionTypeEnum.BOMB_EXPLOSION:
                     {
-                        cueEnum = m_bombExpl;
+                        cueEnum = m_lrgWarheadExpl;
                         break;
                     }
                 default:
@@ -1001,7 +1051,12 @@ namespace Sandbox.Game
                 StartInternal();
             }
 
-            ElapsedMiliseconds += MyEngineConstants.UPDATE_STEP_SIZE_IN_MILLISECONDS;
+            ElapsedMiliseconds += VRage.Game.MyEngineConstants.UPDATE_STEP_SIZE_IN_MILLISECONDS;
+
+            if (ElapsedMiliseconds < MyExplosionsConstants.CAMERA_SHAKE_TIME_MS)
+            {
+                PerformCameraShake(1.0f - (float)ElapsedMiliseconds / MyExplosionsConstants.CAMERA_SHAKE_TIME_MS);
+            }
 
             if (ElapsedMiliseconds > m_explosionInfo.ObjectsRemoveDelayInMiliseconds)
             {
@@ -1028,7 +1083,7 @@ namespace Sandbox.Game
 
             if (m_explosionEffect != null)
             {
-                m_explosionSphere.Center += m_velocity * MyEngineConstants.UPDATE_STEP_SIZE_IN_SECONDS;
+                m_explosionSphere.Center += m_velocity * VRage.Game.MyEngineConstants.UPDATE_STEP_SIZE_IN_SECONDS;
                 m_explosionEffect.WorldMatrix = CalculateEffectMatrix(m_explosionSphere);
             }
             //Added flag because explosion particles are not played reliably on DS
@@ -1070,8 +1125,6 @@ namespace Sandbox.Game
                 MyLights.RemoveLight(m_light);
                 m_light = null;
             }
-
-            m_soundEmitter.StopSound(true);
         }
 
         MatrixD CalculateEffectMatrix(BoundingSphereD explosionSphere)

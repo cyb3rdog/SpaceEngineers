@@ -7,7 +7,7 @@ using VRageMath;
 
 namespace Sandbox.Game.GameSystems
 {
-    static class MyOxygenProviderSystem
+    public static class MyOxygenProviderSystem
     {
         static List<IMyOxygenProvider> m_oxygenGenerators = new List<IMyOxygenProvider>();
 
@@ -23,7 +23,7 @@ namespace Sandbox.Game.GameSystems
                 }
             }
 
-            return resultOxygen;
+            return MathHelper.Saturate(resultOxygen);
         }
      
         public static void AddOxygenGenerator(IMyOxygenProvider gravityGenerator)

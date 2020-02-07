@@ -8,6 +8,9 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using VRageMath;
+using VRage.ModAPI;
+using Sandbox.Game.Replication;
+using VRage.Game;
 
 namespace Sandbox
 {
@@ -57,6 +60,15 @@ namespace Sandbox
             }
 
             return localBb;
+        }
+
+        public static void HookMultiplayer(this MyCubeBlock cubeBlock)
+        {
+            if (cubeBlock != null)
+            {
+                MyEntities.RaiseEntityCreated(cubeBlock);
+                cubeBlock.IsReadyForReplication = true;
+            }
         }
     }
 }

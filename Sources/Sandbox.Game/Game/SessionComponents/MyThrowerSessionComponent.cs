@@ -1,6 +1,7 @@
 ﻿using Sandbox.Common;
 using Sandbox.Common.ObjectBuilders;
 using Sandbox.Definitions;
+using Sandbox.Engine.Multiplayer;
 using Sandbox.Engine.Utils;
 using Sandbox.Game.Entities;
 using Sandbox.Game.Gui;
@@ -10,12 +11,17 @@ using Sandbox.Game.World;
 using Sandbox.Graphics.GUI;
 using System;
 using VRage;
+using VRage.Audio;
+using VRage.Game;
+using VRage.Game.Components;
 using VRage.Input;
-using VRage.Library.Utils;
+using VRage.Network;
+using VRage.Utils;
 using VRageMath;
 
 namespace Sandbox.Game.Components
 {
+    [StaticEventOwner]
     [MySessionComponentDescriptor(MyUpdateOrder.AfterSimulation)]
     class MySessionComponentThrower : MySessionComponentBase
     {
@@ -32,7 +38,7 @@ namespace Sandbox.Game.Components
         {
             get
             {
-                return MyFakes.ENABLE_PREFAB_THROWER;
+                return false;
             }
         }
 
@@ -56,6 +62,10 @@ namespace Sandbox.Game.Components
             if (!(MyScreenManager.GetScreenWithFocus() is MyGuiScreenGamePlay))
                 return;
 
+            if (!(VRage.Input.MyInput.Static.ENABLE_DEVELOPER_KEYS || !MySession.Static.SurvivalMode || MySession.Static.LocalHumanPlayer.IsAdmin))
+                return;
+
+
             base.HandleInput();
 
             if (MyControllerHelper.IsControl(MySpaceBindingCreator.CX_CHARACTER, MyControlsSpace.PRIMARY_TOOL_ACTION, MyControlStateType.NEW_PRESSED))
@@ -77,13 +87,13 @@ namespace Sandbox.Game.Components
                 }
                 else
                 {
-                    if (MySession.GetCameraControllerEnum() == Common.ObjectBuilders.MyCameraControllerEnum.ThirdPersonSpectator || MySession.GetCameraControllerEnum() == Common.ObjectBuilders.MyCameraControllerEnum.Entity)
+                    if (MySession.Static.GetCameraControllerEnum() == MyCameraControllerEnum.ThirdPersonSpectator || MySession.Static.GetCameraControllerEnum() == MyCameraControllerEnum.Entity)
                     {
-                        if (MySession.ControlledEntity == null)
+                        if (MySession.Static.ControlledEntity == null)
                             return;
 
-                        cameraPos = MySession.ControlledEntity.GetHeadMatrix(true, true).Translation;
-                        cameraDir = MySession.ControlledEntity.GetHeadMatrix(true, true).Forward;
+                        cameraPos = MySession.Static.ControlledEntity.GetHeadMatrix(true, true).Translation;
+                        cameraDir = MySession.Static.ControlledEntity.GetHeadMatrix(true, true).Forward;
                     }
                     else
                     {
@@ -97,7 +107,7 @@ namespace Sandbox.Game.Components
                 float deltaSeconds = (MySandboxGame.TotalGamePlayTimeInMilliseconds - m_startTime) / 1000.0f;
                 float velocity = deltaSeconds / CurrentDefinition.PushTime * CurrentDefinition.MaxSpeed;
                 velocity = MathHelper.Clamp(velocity, CurrentDefinition.MinSpeed, CurrentDefinition.MaxSpeed);
-                var linearVelocity = cameraDir * velocity;
+                var linearVelocity = cameraDir * velocity + MySession.Static.ControlledEntity.Entity.Physics.LinearVelocity;
                 float mass = 0;
                 if (CurrentDefinition.Mass.HasValue)
                 {
@@ -105,14 +115,19 @@ namespace Sandbox.Game.Components
                 }
 
                 gridBuilders[0].EntityId = MyEntityIdentifier.AllocateId();
-                MySyncThrower.RequestThrow(gridBuilders[0], position, linearVelocity, mass, CurrentDefinition.ThrowSound);
+                MyMultiplayer.RaiseStaticEvent(s => MySessionComponentThrower.OnThrowMessageSuccess, gridBuilders[0], position, linearVelocity, mass, CurrentDefinition.ThrowSound);
 
                 m_startTime = 0;
             }
         }
 
-        public void Throw(MyObjectBuilder_CubeGrid grid, Vector3D position, Vector3D linearVelocity, float mass, MyStringId throwSound)
+        public void Throw(MyObjectBuilder_CubeGrid grid, Vector3D position, Vector3D linearVelocity, float mass, MyCueId throwSound)
         {
+            if (!Sync.IsServer)
+            {
+                return;
+            }
+
             var entity = MyEntities.CreateFromObjectBuilder(grid);
             if (entity == null)
             {
@@ -122,20 +137,20 @@ namespace Sandbox.Game.Components
             entity.PositionComp.SetPosition(position);
             entity.Physics.LinearVelocity = linearVelocity;
 
-            if (mass > 0 && Sync.IsServer)
+            if (mass > 0)
             {
                 entity.Physics.RigidBody.Mass = mass;
             }
 
             MyEntities.Add(entity);
 
-            if (throwSound != MyStringId.NullOrEmpty)
+            if (!throwSound.IsNull)
             {
                 var emitter = MyAudioComponent.TryGetSoundEmitter();
                 if (emitter != null)
                 {
                     emitter.SetPosition(position);
-                    emitter.PlaySound(throwSound);
+                    emitter.PlaySoundWithDistance(throwSound);
                 }
             }
         }
@@ -186,6 +201,12 @@ namespace Sandbox.Game.Components
         private void CurrentToolbar_Unselected(MyToolbar toolbar)
         {
             Enabled = false;
+        }
+
+        [Event, Reliable, Server, Broadcast]
+        static void OnThrowMessageSuccess(MyObjectBuilder_CubeGrid grid, Vector3D position, Vector3D linearVelocity, float mass, MyCueId throwSound)
+        {
+            MySessionComponentThrower.Static.Throw(grid, position, linearVelocity, mass, throwSound);
         }
     }
 }

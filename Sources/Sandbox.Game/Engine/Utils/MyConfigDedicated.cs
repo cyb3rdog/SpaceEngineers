@@ -9,11 +9,13 @@ using VRage.Utils;
 using System.Runtime.CompilerServices;
 using VRage.Library.Utils;
 using VRage.FileSystem;
+using VRage.Game;
+using VRage.Game.ModAPI;
 
 
 namespace Sandbox.Engine.Utils
 {
-    public class MyConfigDedicated<T> : Sandbox.ModAPI.IMyConfigDedicated where T : MyObjectBuilder_SessionSettings, new()
+    public class MyConfigDedicated<T> : IMyConfigDedicated where T : MyObjectBuilder_SessionSettings, new()
     {
         XmlSerializer m_serializer;
         string m_fileName;
@@ -65,12 +67,6 @@ namespace Sandbox.Engine.Utils
             set { m_data.ServerPort = value; }
         }
 
-        public MyDefinitionId Scenario
-        {
-            get { return new MyDefinitionId(m_data.Scenario.TypeId, m_data.Scenario.SubtypeId); }
-            set { m_data.Scenario = value; }
-        }
-
         public int AsteroidAmount
         {
             get { return m_data.AsteroidAmount; }
@@ -111,6 +107,12 @@ namespace Sandbox.Engine.Utils
         {
             get { return m_data.WorldName; }
             set { m_data.WorldName = value; }
+        }
+
+        public string PremadeCheckpointPath
+        {
+            get { return m_data.PremadeCheckpointPath; }
+            set { m_data.PremadeCheckpointPath = value; }
         }
 
         public bool PauseGameWhenEmpty
@@ -169,7 +171,7 @@ namespace Sandbox.Engine.Utils
         }
 
 
-        List<string> ModAPI.IMyConfigDedicated.Administrators
+        List<string> IMyConfigDedicated.Administrators
         {
             get
             {
@@ -181,7 +183,7 @@ namespace Sandbox.Engine.Utils
             }
         }
 
-        int ModAPI.IMyConfigDedicated.AsteroidAmount
+        int IMyConfigDedicated.AsteroidAmount
         {
             get
             {
@@ -193,7 +195,7 @@ namespace Sandbox.Engine.Utils
             }
         }
 
-        List<ulong> ModAPI.IMyConfigDedicated.Banned
+        List<ulong> IMyConfigDedicated.Banned
         {
             get
             {
@@ -205,12 +207,12 @@ namespace Sandbox.Engine.Utils
             }
         }
 
-        string ModAPI.IMyConfigDedicated.GetFilePath()
+        string IMyConfigDedicated.GetFilePath()
         {
             return GetFilePath();
         }
 
-        ulong ModAPI.IMyConfigDedicated.GroupID
+        ulong IMyConfigDedicated.GroupID
         {
             get
             {
@@ -222,7 +224,7 @@ namespace Sandbox.Engine.Utils
             }
         }
 
-        string ModAPI.IMyConfigDedicated.LoadWorld
+        string IMyConfigDedicated.LoadWorld
         {
             get
             {
@@ -230,7 +232,7 @@ namespace Sandbox.Engine.Utils
             }
         }
 
-        List<ulong> ModAPI.IMyConfigDedicated.Mods
+        List<ulong> IMyConfigDedicated.Mods
         {
             get
             {
@@ -238,7 +240,7 @@ namespace Sandbox.Engine.Utils
             }
         }
 
-        bool ModAPI.IMyConfigDedicated.PauseGameWhenEmpty
+        bool IMyConfigDedicated.PauseGameWhenEmpty
         {
             get
             {
@@ -250,24 +252,12 @@ namespace Sandbox.Engine.Utils
             }
         }
 
-        void ModAPI.IMyConfigDedicated.Save(string path = null)
+        void IMyConfigDedicated.Save(string path = null)
         {
             Save(path);
         }
 
-        MyDefinitionId ModAPI.IMyConfigDedicated.Scenario
-        {
-            get
-            {
-                return Scenario;
-            }
-            set
-            {
-                Scenario = value;
-            }
-        }
-
-        string ModAPI.IMyConfigDedicated.ServerName
+        string IMyConfigDedicated.ServerName
         {
             get
             {
@@ -279,7 +269,7 @@ namespace Sandbox.Engine.Utils
             }
         }
 
-        MyObjectBuilder_SessionSettings ModAPI.IMyConfigDedicated.SessionSettings
+        MyObjectBuilder_SessionSettings IMyConfigDedicated.SessionSettings
         {
             get
             {
@@ -291,7 +281,7 @@ namespace Sandbox.Engine.Utils
             }
         }
 
-        string ModAPI.IMyConfigDedicated.WorldName
+        string IMyConfigDedicated.WorldName
         {
             get
             {

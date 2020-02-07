@@ -3,6 +3,9 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using VRage.Game.Entity;
+using VRage.ModAPI;
+using VRage.ObjectBuilders;
 
 namespace Sandbox.ModAPI
 {
@@ -25,6 +28,19 @@ namespace Sandbox.ModAPI
             return retVal;
         }
 
+        bool IMyEntities.TryGetEntityById(long? id, out IMyEntity entity)
+        {
+            entity = null;
+            bool retVal = false;
+            if (id.HasValue)
+            {
+                MyEntity baseEntity;
+                retVal = MyEntities.TryGetEntityById(id.Value, out baseEntity);
+                entity = baseEntity;
+            }
+            return retVal;
+        }
+
         bool IMyEntities.TryGetEntityByName(string name, out IMyEntity entity)
         {
             MyEntity baseEntity;
@@ -44,12 +60,12 @@ namespace Sandbox.ModAPI
                 MyEntities.Add(entity as MyEntity, insertIntoScene);
         }
 
-        IMyEntity IMyEntities.CreateFromObjectBuilder(Common.ObjectBuilders.MyObjectBuilder_EntityBase objectBuilder)
+        IMyEntity IMyEntities.CreateFromObjectBuilder(MyObjectBuilder_EntityBase objectBuilder)
         {
             return (IMyEntity)MyEntities.CreateFromObjectBuilder(objectBuilder);
         }
 
-        IMyEntity IMyEntities.CreateFromObjectBuilderAndAdd(Common.ObjectBuilders.MyObjectBuilder_EntityBase objectBuilder)
+        IMyEntity IMyEntities.CreateFromObjectBuilderAndAdd(MyObjectBuilder_EntityBase objectBuilder)
         {
             return (IMyEntity)MyEntities.CreateFromObjectBuilderAndAdd(objectBuilder);
         }
@@ -145,6 +161,7 @@ namespace Sandbox.ModAPI
             var result = new List<IMyEntity>(lst.Count);
             foreach (var entity in lst)
                 result.Add(entity);
+			lst.Clear();
             return result;
         }
 
@@ -158,10 +175,30 @@ namespace Sandbox.ModAPI
             return result;
         }
 
+        List<IMyEntity> IMyEntities.GetTopMostEntitiesInSphere(ref VRageMath.BoundingSphereD boundingSphere)
+        {
+            var lst = MyEntities.GetTopMostEntitiesInSphere( ref boundingSphere );
+            var result = new List<IMyEntity>(lst.Count);
+            foreach (var entity in lst)
+                result.Add(entity);
+            lst.Clear();
+            return result;
+        }
+
         List<IMyEntity> IMyEntities.GetElementsInBox(ref VRageMath.BoundingBoxD boundingBox)
         {
             m_entityList.Clear();
             MyEntities.GetElementsInBox(ref boundingBox, m_entityList);
+            var result = new List<IMyEntity>(m_entityList.Count);
+            foreach (var entity in m_entityList)
+                result.Add(entity);
+            return result;
+        }
+
+        List<IMyEntity> IMyEntities.GetTopMostEntitiesInBox(ref VRageMath.BoundingBoxD boundingBox)
+        {
+            m_entityList.Clear();
+            MyEntities.GetTopMostEntitiesInBox(ref boundingBox, m_entityList);
             var result = new List<IMyEntity>(m_entityList.Count);
             foreach (var entity in m_entityList)
                 result.Add(entity);
@@ -263,12 +300,22 @@ namespace Sandbox.ModAPI
 
         IMyEntity IMyEntities.GetEntityById(long entityId)
         {
-            return MyEntities.GetEntityById(entityId);
+            return MyEntities.EntityExists(entityId) ? MyEntities.GetEntityById(entityId) : null;
+        }
+
+        IMyEntity IMyEntities.GetEntityById(long? entityId)
+        {
+            return entityId.HasValue ? MyEntities.GetEntityById(entityId.Value) : null;
         }
 
         bool IMyEntities.EntityExists(long entityId)
         {
             return MyEntities.EntityExists(entityId);
+        }
+
+        bool IMyEntities.EntityExists(long? entityId)
+        {
+            return entityId.HasValue && MyEntities.EntityExists(entityId.Value);
         }
 
         //bool TryGetEntityById<T>(long entityId, out T entity)
@@ -279,21 +326,6 @@ namespace Sandbox.ModAPI
         IMyEntity IMyEntities.GetEntityByName(string name)
         {
             return MyEntities.GetEntityByName(name);
-        }
-
-        void IMyEntities.SetTypeSelectable(Type type, bool selectable)
-        {
-            MyEntities.SetTypeSelectable(type, selectable);
-        }
-
-        bool IMyEntities.IsTypeSelectable(Type type)
-        {
-            return MyEntities.IsTypeSelectable(type);
-        }
-
-        bool IMyEntities.IsSelectable(IMyEntity entity)
-        {
-            return (this as IMyEntities).IsTypeSelectable(entity.GetType());
         }
 
         void IMyEntities.SetTypeHidden(Type type, bool hidden)
@@ -316,17 +348,17 @@ namespace Sandbox.ModAPI
             MyEntities.UnhideAllTypes();
         }
 
-        void IMyEntities.RemapObjectBuilderCollection(IEnumerable<Common.ObjectBuilders.MyObjectBuilder_EntityBase> objectBuilders)
+        void IMyEntities.RemapObjectBuilderCollection(IEnumerable<MyObjectBuilder_EntityBase> objectBuilders)
         {
             MyEntities.RemapObjectBuilderCollection(objectBuilders);
         }
 
-        void IMyEntities.RemapObjectBuilder(Common.ObjectBuilders.MyObjectBuilder_EntityBase objectBuilder)
+        void IMyEntities.RemapObjectBuilder(MyObjectBuilder_EntityBase objectBuilder)
         {
             MyEntities.RemapObjectBuilder(objectBuilder);
         }
 
-        IMyEntity IMyEntities.CreateFromObjectBuilderNoinit(Common.ObjectBuilders.MyObjectBuilder_EntityBase objectBuilder)
+        IMyEntity IMyEntities.CreateFromObjectBuilderNoinit(MyObjectBuilder_EntityBase objectBuilder)
         {
             return MyEntities.CreateFromObjectBuilderNoinit(objectBuilder);
         }

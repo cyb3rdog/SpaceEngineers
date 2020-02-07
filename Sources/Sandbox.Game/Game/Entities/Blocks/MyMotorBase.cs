@@ -1,39 +1,48 @@
 ﻿using Havok;
-using Sandbox.Common;
 using Sandbox.Common.ObjectBuilders;
 using Sandbox.Definitions;
 using Sandbox.Engine.Models;
 using Sandbox.Engine.Physics;
 using Sandbox.Engine.Utils;
-using Sandbox.Game.GameSystems.Electricity;
-using Sandbox.Game.Gui;
 using Sandbox.Game.GUI;
 using Sandbox.Game.Multiplayer;
-using Sandbox.Game.Weapons;
 using Sandbox.Game.World;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Linq;
-using System.Text;
+using Sandbox.Game.EntityComponents;
+using VRage;
 using VRage.Audio;
+using VRage.ModAPI;
+using VRage.ObjectBuilders;
+using VRage.Utils;
 using VRageMath;
+using System.Text;
+using Sandbox.Game.Localization;
+using Sandbox.Engine.Multiplayer;
+using VRage.Game;
+using VRage.Game.Entity;
+using VRage.Network;
+using Sandbox.Game.Replication;
+using Sandbox.Game.Entities.Blocks;
+using VRage.Sync;
 
 namespace Sandbox.Game.Entities.Cube
 {
-    abstract class MyMotorBase : MyFunctionalBlock, IMyPowerConsumer
+    public abstract partial class MyMotorBase : MyMechanicalConnectionBlockBase
     {
-        private static List<HkRigidBody> m_penetrations = new List<HkRigidBody>();
         private const string ROTOR_DUMMY_KEY = "electric_motor";
 
-        public HkConstraint DebugConstraint { get { return m_constraint; } }
-        protected HkConstraint m_constraint;
-        protected MyCubeGrid m_rotorGrid;
-        protected MyMotorRotor m_rotorBlock;
-        protected long m_rotorBlockId;
+        private static List<HkBodyCollision> m_penetrations = new List<HkBodyCollision>();
 
-        // Use the property instead of the field, because the block's transformation has to be applied
-        protected Vector3 m_dummyPos;
+        private Vector3 m_dummyPos;
+
+#if XB1 // XB1_SYNC_NOREFLECTION
+        protected /*readonly*/ Sync<float> m_dummyDisplacement;
+#else // !XB1
+        protected readonly Sync<float> m_dummyDisplacement;
+#endif // !XB1
+
         public Vector3 DummyPosition
         {
             get
@@ -53,104 +62,80 @@ namespace Sandbox.Game.Entities.Cube
             }
         }
 
-        protected float m_dummyDisplacement;
         public float DummyDisplacement
         {
-            // 0.2f is here because of backwards compatibility: default position in old saves is m_dummyDisplacement = 0.0f, which corresponds to DummyDisplacement = 0.2f
-            get { return m_dummyDisplacement + GetModelDummyDisplacement(); }
+            get { return m_dummyDisplacement + ModelDummyDisplacement; }
             set
             {
-                m_dummyDisplacement = value - GetModelDummyDisplacement();
-                if (m_constraint != null)
-                {
-                    Reattach();
-                }             
-                RaisePropertiesChanged();
+                if (m_dummyDisplacement.Value.IsEqual(value - ModelDummyDisplacement))
+                    return;
+                m_dummyDisplacement.Value = value - ModelDummyDisplacement;
+                if(SafeConstraint != null)
+                    CubeGrid.Physics.RigidBody.Activate();
             }
         }
 
-        public MyMotorRotor Rotor { get { return m_rotorBlock; } }
+        public MyCubeGrid RotorGrid { get { return TopGrid; } }
+
+        public MyCubeBlock Rotor { get { return TopBlock; } }
+
+        public float RequiredPowerInput { get { return MotorDefinition.RequiredPowerInput; } }
+
+        protected MyMotorStatorDefinition MotorDefinition { get { return (MyMotorStatorDefinition)BlockDefinition; } }
+
+        protected virtual float ModelDummyDisplacement { get { return 0.0f; } }
 
         public Vector3 RotorAngularVelocity
         {
-            get { return CubeGrid.Physics.RigidBody.AngularVelocity - m_rotorGrid.Physics.RigidBody.AngularVelocity; }
+            // TODO: Imho it would be better to read velocity from constraint
+            get { return CubeGrid.Physics.RigidBody.AngularVelocity - TopGrid.Physics.RigidBody.AngularVelocity; }
         }
 
         public float MaxRotorAngularVelocity
         {
-            get { return (CubeGrid.GridSizeEnum == MyCubeSize.Large) ? MyGridPhysics.GetLargeShipMaxAngularVelocity() : MyGridPhysics.GetSmallShipMaxAngularVelocity(); }
+            get { return MyGridPhysics.GetShipMaxAngularVelocity(CubeGrid.GridSizeEnum); }
         }
 
-        protected MyMotorStatorDefinition MotorDefinition
-        {
-            get { return (MyMotorStatorDefinition)BlockDefinition; }
-        }
-
-        protected HkConstraint SafeConstraint
-        {
-            get
-            {
-                if (m_constraint != null && !m_constraint.InWorld)
-                {
-                    Detach();
-                }
-                return m_constraint;
-            }
-        }
-
-        public float RequiredPowerInput
-        {
-            get { return MotorDefinition.RequiredPowerInput; }
-        }
-
-        public MyPowerReceiver PowerReceiver
-        {
-            get;
-            private set;
-        }
-
-        public new MySyncMotorBase SyncObject { get { return (MySyncMotorBase)base.SyncObject; } }
-
-        protected override MySyncEntity OnCreateSync()
-        {
-            return new MySyncMotorBase(this);
-        }
-
+   
         protected override bool CheckIsWorking()
         {
-            return PowerReceiver.IsPowered && base.CheckIsWorking();
+            return ResourceSink.IsPoweredByType(MyResourceDistributorComponent.ElectricityId) && base.CheckIsWorking();
         }
 
         public override void Init(MyObjectBuilder_CubeBlock objectBuilder, MyCubeGrid cubeGrid)
         {
             SyncFlag = true;
+
+            var sinkComp = new MyResourceSinkComponent();
+            sinkComp.Init(
+                MotorDefinition.ResourceSinkGroup,
+                MotorDefinition.RequiredPowerInput,
+                () => (Enabled && IsFunctional) ? sinkComp.MaxRequiredInputByType(MyResourceDistributorComponent.ElectricityId) : 0.0f);
+            sinkComp.IsPoweredChanged += Receiver_IsPoweredChanged;
+            ResourceSink = sinkComp;
+
             base.Init(objectBuilder, cubeGrid);
 
             SlimBlock.ComponentStack.IsFunctionalChanged += ComponentStack_IsFunctionalChanged;
+         
+            ResourceSink.Update();
 
-            PowerReceiver = new MyPowerReceiver(
-                MyConsumerGroupEnum.Utility,
-                false,
-                MotorDefinition.RequiredPowerInput,
-                () => (Enabled && IsFunctional) ? PowerReceiver.MaxRequiredInput : 0.0f);
-            PowerReceiver.IsPoweredChanged += Receiver_IsPoweredChanged;
-            PowerReceiver.Update();
-
-            m_dummyDisplacement = 0.0f;
+            m_dummyDisplacement.Value = 0.0f;
             LoadDummyPosition();
 
             var ob = objectBuilder as MyObjectBuilder_MotorBase;
-            m_rotorBlockId = ob.RotorEntityId;
+
+            //Backward compatibility 1.8.2016
+            if (ob.RotorEntityId.HasValue && ob.RotorEntityId.Value != 0)
+            {
+                MyDeltaTransform? deltaTransform = ob.MasterToSlaveTransform.HasValue ? ob.MasterToSlaveTransform.Value : (MyDeltaTransform?)null;
+                m_connectionState.Value = new State() { TopBlockId = ob.RotorEntityId, MasterToSlave = deltaTransform, Welded = ob.WeldedEntityId.HasValue || ob.ForceWeld };
+            }
+
             AddDebugRenderComponent(new Components.MyDebugRenderComponentMotorBase(this));
+            NeedsUpdate |= MyEntityUpdateEnum.EACH_100TH_FRAME;
         }
-
-        public override MyObjectBuilder_CubeBlock GetObjectBuilderCubeBlock(bool copy = false)
-        {
-            var ob = base.GetObjectBuilderCubeBlock(copy) as MyObjectBuilder_MotorBase;
-            ob.RotorEntityId = m_rotorBlockId;
-            return ob;
-        }
-
+        
         private void Receiver_IsPoweredChanged()
         {
             UpdateIsWorking();
@@ -158,18 +143,18 @@ namespace Sandbox.Game.Entities.Cube
 
         private void ComponentStack_IsFunctionalChanged()
         {
-            PowerReceiver.Update();
+            ResourceSink.Update();
         }
 
         protected override void OnEnabledChanged()
         {
-            PowerReceiver.Update();
+            ResourceSink.Update();
             base.OnEnabledChanged();
         }
 
         private void LoadDummyPosition()
         {
-            var model = MyModels.GetModelOnlyDummies(BlockDefinition.Model);
+            var model = VRage.Game.Models.MyModels.GetModelOnlyDummies(BlockDefinition.Model);
 
             foreach (var dummy in model.Dummies)
             {
@@ -182,269 +167,18 @@ namespace Sandbox.Game.Entities.Cube
             }
         }
 
-        public override void OnBuildSuccess(long builtBy)
+        protected override MatrixD GetTopGridMatrix()
         {
-            Debug.Assert(m_constraint == null);
-
-            CreateRotorGrid(out m_rotorGrid, out m_rotorBlock, builtBy);
-            if (Sync.IsServer)
-            {
-                //var world = WorldMatrix;
-                //var pos = Vector3.Transform(m_dummyPos, CubeGrid.WorldMatrix);
-
-                if (MyFakes.REPORT_INVALID_ROTORS)
-                {
-                    // Simulate lag in rotor creation message sending.
-                    System.Threading.Thread.Sleep(100);
-                }
-                Attach(m_rotorBlock, updateSync: true);
-            }
-
-            NeedsUpdate &= ~MyEntityUpdateEnum.BEFORE_NEXT_FRAME;
-
-            base.OnBuildSuccess(builtBy);
+            return MatrixD.CreateWorld(Vector3D.Transform(DummyPosition, CubeGrid.WorldMatrix), WorldMatrix.Forward, WorldMatrix.Up);
         }
 
-        public override void OnAddedToScene(object source)
+        public override void UpdateBeforeSimulation100()
         {
-            base.OnAddedToScene(source);
-
-            NeedsUpdate |= MyEntityUpdateEnum.BEFORE_NEXT_FRAME;
+            base.UpdateBeforeSimulation100();
+            UpdateSoundState();
         }
 
-        public override void OnRemovedFromScene(object source)
-        {
-            base.OnRemovedFromScene(source);
-            Detach();
-        }
-
-        public override void OnRemovedByCubeBuilder()
-        {
-            if (m_rotorGrid != null && m_rotorBlock != null)
-                m_rotorGrid.RemoveBlock(m_rotorBlock.SlimBlock, updatePhysics: true);
-            base.OnRemovedByCubeBuilder();
-        }
-
-        protected override void Closing()
-        {
-            Detach();
-            base.Closing();
-        }
-
-        protected virtual void CreateRotorGrid(out MyCubeGrid rotorGrid, out MyMotorRotor rotorBlock, long builtBy)
-        {
-            CreateRotorGrid(out rotorGrid, out rotorBlock, builtBy, MyDefinitionManager.Static.TryGetDefinitionGroup(MotorDefinition.RotorPart));
-        }
-
-        protected void CreateRotorGrid(out MyCubeGrid rotorGrid, out MyMotorRotor rotorBlock, long builtBy, MyCubeBlockDefinitionGroup rotorGroup)
-        {
-            if (rotorGroup == null)
-            {
-                CreateRotorGridFailed(builtBy, out rotorGrid, out rotorBlock);
-                return;
-            }
-
-            var gridSize = CubeGrid.GridSizeEnum;
-
-            float size = MyDefinitionManager.Static.GetCubeSize(gridSize);
-            var matrix = MatrixD.CreateWorld(Vector3D.Transform(DummyPosition,CubeGrid.WorldMatrix), WorldMatrix.Forward, WorldMatrix.Up);
-            var definition = rotorGroup[gridSize];
-            Debug.Assert(definition != null);
-
-            var block = MyCubeGrid.CreateBlockObjectBuilder(definition, Vector3I.Zero, MyBlockOrientation.Identity, MyEntityIdentifier.AllocateId(), OwnerId, fullyBuilt: MySession.Static.CreativeMode);
-
-            var gridBuilder = Sandbox.Common.ObjectBuilders.Serializer.MyObjectBuilderSerializer.CreateNewObject<MyObjectBuilder_CubeGrid>();
-            gridBuilder.GridSizeEnum = gridSize;
-            gridBuilder.IsStatic = false;
-            gridBuilder.PositionAndOrientation = new MyPositionAndOrientation(matrix);
-            gridBuilder.CubeBlocks.Add(block);
-
-            var grid = MyEntityFactory.CreateEntity<MyCubeGrid>(gridBuilder);
-            grid.Init(gridBuilder);
-
-            rotorGrid = grid;
-            rotorBlock = (MyMotorRotor)rotorGrid.GetCubeBlock(Vector3I.Zero).FatBlock;
-            rotorGrid.PositionComp.SetPosition(rotorGrid.WorldMatrix.Translation - (Vector3D.Transform(rotorBlock.DummyPosLoc, rotorGrid.WorldMatrix) - rotorGrid.WorldMatrix.Translation));
-
-            if (!CanPlaceRotor(rotorBlock, builtBy))
-            {
-                CreateRotorGridFailed(builtBy, out rotorGrid, out rotorBlock);
-                grid.Close();
-                return;
-            }
-
-            if (Sync.IsServer)
-            {
-                MyEntities.Add(grid);
-
-                MySyncCreate.SendEntityCreated(grid.GetObjectBuilder());
-            }
-            else
-                grid.Close();
-        }
-
-        private static void CreateRotorGridFailed(long builtBy, out MyCubeGrid rotorGrid, out MyMotorRotor rotorBlock)
-        {
-            if (builtBy == MySession.LocalPlayerId)
-                MyGuiAudio.PlaySound(MyGuiSounds.HudUnable);
-            rotorGrid = null;
-            rotorBlock = null;
-        }
-
-        protected virtual bool CanPlaceRotor(MyMotorRotor rotorBlock, long builtBy)
-        {
-            return true;
-        }
-
-        public virtual bool Detach(bool updateGroup = true,bool reattach = true)
-        {
-            if (m_constraint == null)
-                return false;
-
-            Debug.Assert(m_constraint != null);
-            Debug.Assert(m_rotorGrid != null);
-            Debug.Assert(m_rotorBlock != null);
-
-            var tmpRotorGrid = m_rotorGrid;
-
-            CubeGrid.Physics.RemoveConstraint(m_constraint);
-            m_constraint.Dispose();
-            m_constraint = null;
-            m_rotorGrid = null;
-            if (m_rotorBlock != null)
-                m_rotorBlock.Detach();
-            m_rotorBlock = null;
-            // The following line is commented out on purpose! If you move the motor between grids (e.g. after splitting),
-            // you have to remember the attached rotor somehow. This rotorBlockId is how it's remembered.
-            //m_rotorBlockId = 0;
-
-            if (updateGroup)
-            {
-                OnConstraintRemoved(GridLinkTypeEnum.Physical, tmpRotorGrid);
-                OnConstraintRemoved(GridLinkTypeEnum.Logical, tmpRotorGrid);
-            }
-
-            if (reattach)
-            {
-                // Try to reattach, if the block will still live next frame. This fixes missing attachments when splitting grids
-                NeedsUpdate |= MyEntityUpdateEnum.BEFORE_NEXT_FRAME;
-            }
-
-            return true;
-        }
-
-        protected virtual float GetModelDummyDisplacement() { return 0.0f; }
-
-        public override void UpdateOnceBeforeFrame()
-        {
-            base.UpdateOnceBeforeFrame();
-
-            // CH:TODO: This will need to be done only on the server, but then, joining clients would get disconnected rotors.
-            // That will have to be synchronized somewhere extra. Until then, Attach is done on both client and server and
-            // this causes an assert when the stator is buil
-            //if (Sync.IsServer)
-            //{
-            //    Attach(FindMatchingRotor(), true);
-            //}
-            MyMotorRotor rotor;
-            if (m_rotorBlock == null)
-            {
-                if (m_rotorBlockId != 0 && MyEntities.TryGetEntityById<MyMotorRotor>(m_rotorBlockId, out rotor) && !rotor.MarkedForClose)
-                    Attach(rotor, false);
-                else
-                {
-                    m_rotorBlockId = 0;
-                    if (Sync.IsServer)
-                        Attach(FindMatchingRotor(), true);
-                    NeedsUpdate &= ~MyEntityUpdateEnum.BEFORE_NEXT_FRAME;
-                }
-                return;
-            }
-
-            if (SafeConstraint == null)
-                NeedsUpdate |= MyEntityUpdateEnum.BEFORE_NEXT_FRAME;
-        }
-
-        protected MyMotorRotor FindMatchingRotor()
-        {
-            Debug.Assert(CubeGrid != null);
-            Debug.Assert(m_penetrations != null);
-            Debug.Assert(CubeGrid.Physics != null);
-            if (CubeGrid == null)
-            {
-                MySandboxGame.Log.WriteLine("MyMotorStator.FindMatchingRotor(): Cube grid == null!");
-                return null;
-            }
-
-            if (m_penetrations == null)
-            {
-                MySandboxGame.Log.WriteLine("MyMotorStator.FindMatchingRotor(): penetrations cache == null!");
-                return null;
-            }
-
-            if (CubeGrid.Physics == null)
-            {
-                MySandboxGame.Log.WriteLine("MyMotorStator.FindMatchingRotor(): Cube grid physics == null!");
-                return null;
-            }
-
-            Quaternion orientation;
-            Vector3D pos;
-            Vector3 halfExtents;
-            ComputeRotorQueryBox(out pos, out halfExtents, out orientation);
-            try
-            {
-                MyPhysics.GetPenetrationsBox(ref halfExtents, ref pos, ref orientation, m_penetrations, MyPhysics.DefaultCollisionLayer);
-                foreach (var obj in m_penetrations)
-                {
-                    if (obj == null)
-                        continue;
-
-                    if (obj == CubeGrid.Physics.RigidBody || obj == CubeGrid.Physics.RigidBody2)
-                        continue;
-
-                    var entity = obj.GetEntity();
-                    if (entity == null)
-                        continue;
-
-                    var grid = entity as MyCubeGrid;
-                    if (grid == null)
-                        continue;
-
-                    // Rotor should always be on position [0,0,0];
-                    var pos2 = Vector3.Transform(DummyPosition, CubeGrid.WorldMatrix);
-                    var blockPos = grid.RayCastBlocks(pos2, pos2 + WorldMatrix.Up);
-                    if (blockPos.HasValue)
-                    {
-                        var slimBlock = grid.GetCubeBlock(blockPos.Value);
-                        if (slimBlock == null || slimBlock.FatBlock == null)
-                            continue;
-
-                        var rotor = slimBlock.FatBlock as MyMotorRotor;
-                        if (rotor != null)
-                            return rotor;
-                    }
-                }
-            }
-            finally
-            {
-                m_penetrations.Clear();
-            }
-            return null;
-        }
-
-        public abstract bool Attach(MyMotorRotor rotor, bool updateSync = false, bool updateGroup = true);
-
-        public void Reattach()
-        {
-            var rotor = m_rotorBlock;
-            bool detached = Detach(updateGroup: false);
-            bool attached = Attach(rotor, updateSync: false, updateGroup: false);
-            Debug.Assert(detached && attached);
-            rotor.CubeGrid.Physics.ForceActivate();
-        }
-
-        public virtual void ComputeRotorQueryBox(out Vector3D pos, out Vector3 halfExtents, out Quaternion orientation)
+        public override void ComputeTopQueryBox(out Vector3D pos, out Vector3 halfExtents, out Quaternion orientation)
         {
             var world = this.WorldMatrix;
             orientation = Quaternion.CreateFromRotationMatrix(world);
@@ -453,24 +187,18 @@ namespace Sandbox.Game.Entities.Cube
             pos = world.Translation + 0.35f * CubeGrid.GridSize * WorldMatrix.Up;
         }
 
-        public override void UpdateBeforeSimulation100()
-        {
-            UpdateSoundState();
-            base.UpdateBeforeSimulation100();
-        }
-
         protected virtual void UpdateSoundState()
         {
-            if (!MySandboxGame.IsGameReady)
+            if (!MySandboxGame.IsGameReady || m_soundEmitter == null || IsWorking == false)
                 return;
 
-            if (m_rotorGrid == null || m_rotorGrid.Physics == null)
+            if (TopGrid == null || TopGrid.Physics == null)
             {
                 m_soundEmitter.StopSound(true);
                 return;
             }
 
-            if (IsWorking && Math.Abs(m_rotorGrid.Physics.RigidBody.DeltaAngle.W) > 0.00025f)
+            if (IsWorking && Math.Abs(TopGrid.Physics.RigidBody.DeltaAngle.W) > 0.00025f)
                 m_soundEmitter.PlaySingleSound(BlockDefinition.PrimarySound, true);
             else
                 m_soundEmitter.StopSound(false);
@@ -480,8 +208,21 @@ namespace Sandbox.Game.Entities.Cube
                 float semitones = 4f * (Math.Abs(RotorAngularVelocity.Length()) - 0.5f * MaxRotorAngularVelocity) / MaxRotorAngularVelocity;
                 m_soundEmitter.Sound.FrequencyRatio = MyAudio.Static.SemitonesToFrequencyRatio(semitones);
             }
-
         }
-        public MyCubeGrid RotorGrid { get { return m_rotorGrid;} }
-    }
+
+        protected override Vector3D TransformPosition(ref Vector3D position)
+        {
+            return Vector3D.Transform(DummyPosition, CubeGrid.WorldMatrix);
+        }
+
+        protected override void DisposeConstraint()
+        {
+            if (m_constraint != null)
+            {
+                CubeGrid.Physics.RemoveConstraint(m_constraint);
+                m_constraint.Dispose();
+                m_constraint = null;
+            }
+        }
+   }
 }

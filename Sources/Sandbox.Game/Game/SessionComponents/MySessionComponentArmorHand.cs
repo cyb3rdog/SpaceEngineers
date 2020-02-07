@@ -3,6 +3,7 @@ using Sandbox.Engine.Physics;
 using Sandbox.Engine.Utils;
 using Sandbox.Game.Entities;
 using Sandbox.Game.World;
+using VRage.Game.Components;
 using VRage.Input;
 using VRage.Utils;
 using VRageMath;
@@ -30,14 +31,11 @@ namespace Sandbox.Game.SessionComponents
             Vector3D origin = MySector.MainCamera.Position;
             Vector3D end = origin + forward * 100f;
 
-            Vector3D hitPosition;
-            Vector3 hitNormal;
-
             m_lastCubeGrid = null;
             m_lastBone = null;
 
-            var physTarget = MyPhysics.CastRay(origin, end, out hitPosition, out hitNormal, MyPhysics.ExplosionRaycastLayer);
-            var hitEntity = physTarget != null ? ((MyPhysicsBody)physTarget.UserObject).Entity : null;
+            var hitInfo = MyPhysics.CastRay(origin, end, MyPhysics.CollisionLayers.ExplosionRaycastLayer);
+            var hitEntity = hitInfo.HasValue ? ((MyPhysicsBody)hitInfo.Value.HkHitInfo.Body.UserObject).Entity : null;
 
             var grid = (hitEntity as MyCubeGrid);
             if (grid != null)
@@ -60,8 +58,8 @@ namespace Sandbox.Game.SessionComponents
 
                 foreach (var bone in grid.Skeleton.Bones)
                 {
-                    var bonePos = (Vector3D)(bone.Key / (float)grid.Skeleton.BoneDensity) * grid.GridSize + bone.Value;
-                    bonePos -= new Vector3D(grid.GridSize / grid.Skeleton.BoneDensity);
+                    var bonePos = (Vector3D)(bone.Key / (float)MyGridSkeleton.BoneDensity) * grid.GridSize + bone.Value;
+                    bonePos -= new Vector3D(grid.GridSize / MyGridSkeleton.BoneDensity);
                     Vector3D pos = Vector3D.Transform(bonePos, grid.PositionComp.WorldMatrix);
 
                     Color color = Color.Red;
@@ -101,11 +99,11 @@ namespace Sandbox.Game.SessionComponents
             {
                 if (m_lastCubeGrid != null && m_lastBone != null)
                 {
-                    var bonePos = (Vector3D)(m_lastBone / (float)m_lastCubeGrid.Skeleton.BoneDensity) * m_lastCubeGrid.GridSize + m_lastCubeGrid.Skeleton.Bones[m_lastBone.Value];
-                    bonePos -= new Vector3D(m_lastCubeGrid.GridSize / m_lastCubeGrid.Skeleton.BoneDensity);
+                    var bonePos = (Vector3D)(m_lastBone / (float)MyGridSkeleton.BoneDensity) * m_lastCubeGrid.GridSize + m_lastCubeGrid.Skeleton.Bones[m_lastBone.Value];
+                    bonePos -= new Vector3D(m_lastCubeGrid.GridSize / MyGridSkeleton.BoneDensity);
                     Vector3D pos = Vector3D.Transform(bonePos, m_lastCubeGrid.PositionComp.WorldMatrix);
 
-                    m_localBonePosition = Vector3.Transform(pos, MySession.LocalCharacter.PositionComp.WorldMatrixNormalizedInv);
+                    m_localBonePosition = Vector3.Transform(pos, MySession.Static.LocalCharacter.PositionComp.WorldMatrixNormalizedInv);
 
                     m_movingCubeGrid = m_lastCubeGrid;
                     m_movingBone = m_lastBone;
@@ -125,11 +123,11 @@ namespace Sandbox.Game.SessionComponents
                     }
                     else
                     {
-                        Vector3D m_worldBonePosition = Vector3D.Transform(m_localBonePosition, MySession.LocalCharacter.PositionComp.WorldMatrix);
+                        Vector3D m_worldBonePosition = Vector3D.Transform(m_localBonePosition, MySession.Static.LocalCharacter.PositionComp.WorldMatrix);
 
                         var bonePos = Vector3D.Transform(m_worldBonePosition, m_movingCubeGrid.PositionComp.WorldMatrixInvScaled);
-                        bonePos += new Vector3D(m_movingCubeGrid.GridSize / m_movingCubeGrid.Skeleton.BoneDensity);
-                        m_movingCubeGrid.Skeleton.Bones[m_movingBone.Value] = bonePos - (Vector3D)(m_movingBone / (float)m_movingCubeGrid.Skeleton.BoneDensity) * m_movingCubeGrid.GridSize;
+                        bonePos += new Vector3D(m_movingCubeGrid.GridSize / MyGridSkeleton.BoneDensity);
+                        m_movingCubeGrid.Skeleton.Bones[m_movingBone.Value] = bonePos - (Vector3D)(m_movingBone / (float)MyGridSkeleton.BoneDensity) * m_movingCubeGrid.GridSize;
 
                         Vector3I gridPos = m_movingCubeGrid.WorldToGridInteger(m_worldBonePosition);
                         for (int i = -1; i <= 1; i++)
@@ -149,8 +147,8 @@ namespace Sandbox.Game.SessionComponents
 
         Vector3D BoneToWorld(Vector3I bone, Vector3 offset, MyCubeGrid grid)
         {
-            var bonePos = (Vector3D)(bone / (float)grid.Skeleton.BoneDensity) * grid.GridSize + offset;
-            bonePos -= new Vector3D(grid.GridSize / grid.Skeleton.BoneDensity);
+            var bonePos = (Vector3D)(bone / (float)MyGridSkeleton.BoneDensity) * grid.GridSize + offset;
+            bonePos -= new Vector3D(grid.GridSize / MyGridSkeleton.BoneDensity);
             Vector3D pos = Vector3D.Transform(bonePos, grid.PositionComp.WorldMatrix);
 
             return pos;
@@ -172,8 +170,8 @@ namespace Sandbox.Game.SessionComponents
                 Vector3D onSphere = worldBone + direction * tmin;
 
                 var worldOnSphere = Vector3D.Transform(onSphere, grid.PositionComp.WorldMatrixInvScaled);
-                worldOnSphere += new Vector3D(grid.GridSize / grid.Skeleton.BoneDensity);
-                return (worldOnSphere - (Vector3D)(bonePos / (float)grid.Skeleton.BoneDensity) * grid.GridSize);
+                worldOnSphere += new Vector3D(grid.GridSize / MyGridSkeleton.BoneDensity);
+                return (worldOnSphere - (Vector3D)(bonePos / (float)MyGridSkeleton.BoneDensity) * grid.GridSize);
             }
             else
             {

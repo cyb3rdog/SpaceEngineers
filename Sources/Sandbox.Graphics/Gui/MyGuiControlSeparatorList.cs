@@ -1,8 +1,8 @@
-﻿using Sandbox.Common.ObjectBuilders.Gui;
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using VRage.Game;
 using VRageMath;
 
 namespace Sandbox.Graphics.GUI
@@ -65,7 +65,7 @@ namespace Sandbox.Graphics.GUI
 
         #endregion
 
-        public override void Draw(float transitionAlpha)
+        public override void Draw(float transitionAlpha, float backgroundTransitionAlpha)
         {
             var center = GetPositionAbsoluteCenter();
 

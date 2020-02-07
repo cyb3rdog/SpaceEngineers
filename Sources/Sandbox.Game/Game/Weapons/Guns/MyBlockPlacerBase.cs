@@ -22,30 +22,37 @@ using Sandbox.Graphics;
 using Sandbox.Definitions;
 using Sandbox.Game.GUI;
 using Sandbox.Game.Localization;
+using VRage.Game;
+using VRage.ObjectBuilders;
+using Sandbox.Game.Multiplayer;
+using Sandbox.ModAPI.Weapons;
+using VRage.Audio;
 
 #endregion
 
 namespace Sandbox.Game.Weapons
 {
-    abstract class MyBlockPlacerBase : MyEngineerToolBase
+    public abstract class MyBlockPlacerBase : MyEngineerToolBase, IMyBlockPlacerBase
     {
         public static MyHudNotificationBase MissingComponentNotification =
-             new MyHudNotification(MySpaceTexts.NotificationMissingComponentToPlaceBlockFormat, font: MyFontEnum.Red, priority: 1);
+             new MyHudNotification(MyCommonTexts.NotificationMissingComponentToPlaceBlockFormat, font: MyFontEnum.Red, priority: 1);
 
         protected abstract MyBlockBuilderBase BlockBuilder { get; }
 
         protected int m_lastKeyPress;
         protected bool m_firstShot;
         protected bool m_closeAfterBuild;
+        MyHandItemDefinition m_definition;
 
         protected MyBlockPlacerBase(MyHandItemDefinition definition)
-            : base(definition, 0.5f, 500)
+            : base(500)
         {
+            m_definition = definition;
         }
 
         public override void Init(MyObjectBuilder_EntityBase objectBuilder)
         {
-            base.Init(objectBuilder);
+            base.Init(objectBuilder, m_definition.PhysicalItemId);
 
             Init(null, null, null, null, null);
             Render.CastShadows = true;
@@ -54,8 +61,8 @@ namespace Sandbox.Game.Weapons
             HasSecondaryEffect = false;
             HasPrimaryEffect = false;
             m_firstShot = true;
-
-            //PhysicalObject.GunEntity = (MyObjectBuilder_EntityBase)objectBuilder.Clone();
+            if (PhysicalObject!=null)
+                PhysicalObject.GunEntity = (MyObjectBuilder_EntityBase)objectBuilder.Clone();
         }
 
         public override bool CanShoot(MyShootActionEnum action, long shooter, out MyGunStatusEnum status)
@@ -72,14 +79,14 @@ namespace Sandbox.Game.Weapons
             return retval;
         }
 
-        public override void Shoot(MyShootActionEnum action, Vector3 direction)
+        public override void Shoot(MyShootActionEnum action, Vector3 direction, Vector3D? overrideWeaponPos, string gunAction)
         {
             if (MySession.Static.CreativeMode)
                 return;
 
             m_closeAfterBuild = false;
 
-            base.Shoot(action, direction);
+            base.Shoot(action, direction, null, gunAction);
             ShakeAmount = 0.0f;
 
             if (action == MyShootActionEnum.PrimaryAction && m_firstShot)
@@ -88,28 +95,27 @@ namespace Sandbox.Game.Weapons
 
                 m_lastKeyPress = MySandboxGame.TotalGamePlayTimeInMilliseconds;
 
-                var definition = MyCubeBuilder.Static.HudBlockDefinition;
+                var definition = MyCubeBuilder.Static.CubeBuilderState.CurrentBlockDefinition;
                 if (definition == null)
                 {
                     return;
                 }
 
-                MyCharacter character = CharacterInventory.Owner as MyCharacter;
-                Debug.Assert(character != null, "Character inventory was not owned by a character");
-
-                if (character.ControllerInfo.IsRemotelyControlled())
-                    return;
+                if (!Owner.ControllerInfo.IsLocallyControlled())
+                {
+                    var val = Owner.IsUsing as MyCockpit;
+                    if (val != null && !val.ControllerInfo.IsLocallyControlled())
+                        return;
+                }
 
                 // Must have first component to start building
-                if (MyCubeBuilder.Static.CanStartConstruction(character))
+                if (MyCubeBuilder.Static.CanStartConstruction(Owner))
                 {
-                    bool placingGrid = MyCubeBuilder.Static.ShipCreationClipboard.IsActive;
-                    m_closeAfterBuild = MyCubeBuilder.Static.AddConstruction(character) && placingGrid;
-                    return;
+                    MyCubeBuilder.Static.AddConstruction(Owner);
                 }
                 else
                 {
-                    if (!MySession.Static.Battle)
+                    if (!MySession.Static.CreativeToolsEnabled(Sync.MyId))
                         OnMissingComponents(definition);
                 }
             }
@@ -128,20 +134,32 @@ namespace Sandbox.Game.Weapons
             base.EndShoot(action);
             m_firstShot = true;
 
+            if (CharacterInventory == null)
+            {
+                Debug.Fail("Character inventory was null !" );
+                return;
+            }
+
             MyCharacter character = CharacterInventory.Owner as MyCharacter;
+
+            if (character == null)
+            {
+                Debug.Fail("Character inventory was not owned by a character");
+                return;
+            }
+
             if (m_closeAfterBuild)
             {
-                Debug.Assert(character != null, "Character inventory was not owned by a character");
 
-                if (character.ControllerInfo.IsRemotelyControlled())
+                if (character.ControllerInfo != null && character.ControllerInfo.IsRemotelyControlled())
                     return;
 
                 character.SwitchToWeapon(null);
             }
             else
             {
-                if (MyPerGameSettings.UseAnimationInsteadOfIK)
-                    character.PlayCharacterAnimation("Building_pose", true, MyPlayAnimationMode.Immediate | MyPlayAnimationMode.Play, 0.2f);
+                //if (MyPerGameSettings.CheckUseAnimationInsteadOfIK())
+                //    character.PlayCharacterAnimation("Building_pose", MyBlendOption.Immediate, MyFrameOption.Loop, 0.2f);
             }
         }
 
@@ -151,7 +169,8 @@ namespace Sandbox.Game.Weapons
 
             if (Owner != null && Owner.ControllerInfo.IsLocallyHumanControlled())
             {
-                BlockBuilder.Deactivate();
+                //BlockBuilder.Deactivate();
+                MySession.Static.GameFocusManager.Clear();
             }
 
             base.OnControlReleased();
@@ -165,12 +184,19 @@ namespace Sandbox.Game.Weapons
 
             if (Owner != null)
             {
-                if (MyPerGameSettings.UseAnimationInsteadOfIK)
-                    Owner.PlayCharacterAnimation("Building_pose", true, MyPlayAnimationMode.Play, 0.2f); 
-                if (Owner.ControllerInfo.IsLocallyHumanControlled())
+                if (owner.UseNewAnimationSystem)
                 {
-                    BlockBuilder.Activate();
+                    Owner.TriggerCharacterAnimationEvent("building", false);
                 }
+                else
+                {
+                    Owner.PlayCharacterAnimation("Building_pose", MyBlendOption.Immediate, MyFrameOption.Loop, 0.2f);
+                }
+
+                //if (Owner.ControllerInfo.IsLocallyHumanControlled())
+                //{
+                //    BlockBuilder.Activate();
+                //}
             }
         }
 

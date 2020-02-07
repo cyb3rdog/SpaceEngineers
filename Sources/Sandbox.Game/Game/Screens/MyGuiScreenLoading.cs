@@ -2,6 +2,7 @@
 using Sandbox.Graphics.GUI;
 using System;
 using System.Text;
+using VRage.Game;
 using VRage.Utils;
 
 //using SharpDX.Direct3D9;
@@ -15,8 +16,9 @@ namespace Sandbox.Game.Gui
     using Sandbox.Game.Localization;
     using Sandbox.Game.Screens;
     using Sandbox.Game.Screens.Helpers;
+    using Sandbox.Game.World;
     using Sandbox.Graphics;
-    using VRage;
+    using System.Diagnostics;
     using VRage;
     using VRage.Audio;
     using VRage.Input;
@@ -25,7 +27,7 @@ namespace Sandbox.Game.Gui
     using Vector2 = VRageMath.Vector2;
     using Vector4 = VRageMath.Vector4;
     
-    class MyGuiScreenLoading : MyGuiScreenBase
+    public class MyGuiScreenLoading : MyGuiScreenBase
     {
         //We have to ensure there is always only one loading screen instance
         public static MyGuiScreenLoading Static;
@@ -35,6 +37,7 @@ namespace Sandbox.Game.Gui
 
         string m_backgroundScreenTexture;
         string m_backgroundTextureFromConstructor;
+        string m_customTextFromConstructor;
         string m_rotatingWheelTexture;
         string m_gameLogoTexture;
         private MyLoadingScreenQuote m_currentQuote;
@@ -57,9 +60,9 @@ namespace Sandbox.Game.Gui
 
         bool m_loadFinished;
 
-        private MyFontEnum m_fontId = MyFontEnum.LoadingScreen;
+        private string m_font = MyFontEnum.LoadingScreen;
 
-        public MyGuiScreenLoading(MyGuiScreenGamePlay screenToLoad, MyGuiScreenGamePlay screenToUnload, string textureFromConstructor)
+        public MyGuiScreenLoading(MyGuiScreenGamePlay screenToLoad, MyGuiScreenGamePlay screenToUnload, string textureFromConstructor, string customText = null)
             : base(Vector2.Zero, null, null)
         {
             MyLoadingPerformance.Instance.StartTiming();
@@ -79,8 +82,9 @@ namespace Sandbox.Game.Gui
             // Has to be done because of HW Cursor
             MyGuiSandbox.SetMouseCursorVisibility(false);
 
-            m_rotatingWheelTexture = MyGuiConstants.LOADING_TEXTURE;
+            m_rotatingWheelTexture = MyGuiConstants.LOADING_TEXTURE_LOADING_SCREEN;
             m_backgroundTextureFromConstructor = textureFromConstructor;
+            m_customTextFromConstructor = customText;
 
             m_loadFinished = false;
 
@@ -106,8 +110,8 @@ namespace Sandbox.Game.Gui
         {
             base.RecreateControls(constructor);
 
-            Vector2 loadingTextSize = MyGuiManager.MeasureString(m_fontId,
-                MyTexts.Get(MySpaceTexts.LoadingPleaseWaitUppercase), MyGuiConstants.LOADING_PLEASE_WAIT_SCALE);
+            Vector2 loadingTextSize = MyGuiManager.MeasureString(m_font,
+                MyTexts.Get(MyCommonTexts.LoadingPleaseWaitUppercase), MyGuiConstants.LOADING_PLEASE_WAIT_SCALE);
             m_wheel = new MyGuiControlRotatingWheel(
                 MyGuiConstants.LOADING_PLEASE_WAIT_POSITION - new Vector2(0, 0.06f + loadingTextSize.Y),
                 MyGuiConstants.ROTATING_WHEEL_COLOR,
@@ -117,19 +121,26 @@ namespace Sandbox.Game.Gui
                 false,
                 MyPerGameSettings.GUI.MultipleSpinningWheels);
 
+            StringBuilder contents;
+
+            if(!string.IsNullOrEmpty(m_customTextFromConstructor))
+                contents = new StringBuilder(m_customTextFromConstructor);
+            else
+                contents = MyTexts.Get(m_currentQuote.Text);
+
             m_quoteTextControl = new MyGuiControlMultilineText(
                 position: Vector2.One * 0.5f,
                 size: new Vector2(0.9f, 0.2f),
                 backgroundColor: Vector4.One,
-                font: m_fontId,
+                font: m_font,
                 textScale: 1.0f,
                 textAlign: MyGuiDrawAlignEnum.HORISONTAL_LEFT_AND_VERTICAL_BOTTOM,
-                contents: MyTexts.Get(m_currentQuote.Text),
+                contents: contents,
                 drawScrollbar: false);
             m_quoteTextControl.BorderEnabled = false;
             m_quoteTextControl.OriginAlign = MyGuiDrawAlignEnum.HORISONTAL_CENTER_AND_VERTICAL_BOTTOM;
             m_quoteTextControl.TextBoxAlign = MyGuiDrawAlignEnum.HORISONTAL_CENTER_AND_VERTICAL_BOTTOM;
-            Controls.Add(m_quoteTextControl);
+
             Controls.Add(m_wheel);
             RefreshQuote();
         }
@@ -231,8 +242,10 @@ namespace Sandbox.Game.Gui
             {
                 if (!m_loadFinished)
                 {
+                    MyHud.ScreenEffects.FadeScreen(0f, 0f);
                     MyAudio.Static.Mute = true;
                     MyAudio.Static.StopMusic();
+                    MyAudio.Static.ChangeGlobalVolume(0, 0);
                     VRageRender.MyRenderProxy.GetRenderProfiler().StartProfilingBlock("LoadInBackgroundThread");
 
                     DrawLoading();
@@ -261,12 +274,12 @@ namespace Sandbox.Game.Gui
 
             if (m_loadFinished && MySandboxGame.IsGameReady)
             {
+                MyHud.ScreenEffects.FadeScreen(1f, 5f);
                 if (!m_exceptionDuringLoad && OnScreenLoadingFinished != null)
                 {
                     OnScreenLoadingFinished();
                     OnScreenLoadingFinished = null;
                 }
-
                 CloseScreenNow();
                 DrawLoading();
             }
@@ -296,8 +309,9 @@ namespace Sandbox.Game.Gui
                 }
                 catch (Exception e)
                 {
-                    OnLoadException(e, MyTexts.Get(MySpaceTexts.WorldFileIsCorruptedAndCouldNotBeLoaded));
+                    OnLoadException(e, MyTexts.Get(MyCommonTexts.WorldFileIsCorruptedAndCouldNotBeLoaded));
                     m_exceptionDuringLoad = true;
+                    Debug.Fail("Exception raised during Session loading: " + e.ToString());
                 }
             }
         }
@@ -317,11 +331,21 @@ namespace Sandbox.Game.Gui
             // Reset this to true so we have sounds
             MySandboxGame.IsUpdateReady = true;
             MySandboxGame.AreClipmapsReady = true;
-            MyGuiScreenMainMenu.UnloadAndExitToMenu();
+
+            try
+            {
+                MySessionLoader.UnloadAndExitToMenu();
+            }
+            catch (Exception ex)
+            {
+                MySession.Static = null;
+                MySandboxGame.Log.WriteLine("ERROR: failed unload after exception in loading !");
+                MySandboxGame.Log.WriteLine(ex);
+            }
 
             var errorScreen = MyGuiSandbox.CreateMessageBox(
                 messageText: errorText,
-                messageCaption: MyTexts.Get(MySpaceTexts.MessageBoxCaptionError));
+                messageCaption: MyTexts.Get(MyCommonTexts.MessageBoxCaptionError));
 
             var size = errorScreen.Size.Value;
             size.Y *= heightMultiplier;
@@ -380,7 +404,7 @@ namespace Sandbox.Game.Gui
                 //  Random background texture
                 Rectangle backgroundRectangle;
                 MyGuiManager.GetSafeHeightFullScreenPictureSize(MyGuiConstants.LOADING_BACKGROUND_TEXTURE_REAL_SIZE, out backgroundRectangle);
-                MyGuiManager.DrawSpriteBatch(m_backgroundScreenTexture, backgroundRectangle, new Color(new Vector4(0.95f, 0.95f, 0.95f, m_transitionAlpha)));
+                MyGuiManager.DrawSpriteBatch(m_backgroundScreenTexture, backgroundRectangle, new Color(new Vector4(1f, 1f, 1f, m_transitionAlpha)));
                 MyGuiManager.DrawSpriteBatch(MyGuiConstants.TEXTURE_BACKGROUND_FADE, backgroundRectangle, new Color(new Vector4(1f, 1f, 1f, m_transitionAlpha)));
 
                 //  Game logo
@@ -390,18 +414,24 @@ namespace Sandbox.Game.Gui
             LastBackgroundTexture = m_backgroundScreenTexture;
 
             //  Loading Please Wait
-            MyGuiManager.DrawString(m_fontId, MyTexts.Get(MySpaceTexts.LoadingPleaseWaitUppercase),
+            MyGuiManager.DrawString(m_font, MyTexts.Get(MyCommonTexts.LoadingPleaseWaitUppercase),
                 MyGuiConstants.LOADING_PLEASE_WAIT_POSITION, MyGuiSandbox.GetDefaultTextScaleWithLanguage() * MyGuiConstants.LOADING_PLEASE_WAIT_SCALE, new Color(MyGuiConstants.LOADING_PLEASE_WAIT_COLOR * m_transitionAlpha),
                 MyGuiDrawAlignEnum.HORISONTAL_CENTER_AND_VERTICAL_BOTTOM);
 
             // Draw quote
             {
-                var font = m_fontId;
-                var controlBottomLeft = m_quoteTextControl.GetPositionAbsoluteBottomLeft();
-                var textSize = m_quoteTextControl.TextSize;
-                var controlSize = m_quoteTextControl.Size;
-                var authorTopLeft = controlBottomLeft + new Vector2((controlSize.X - textSize.X) * 0.5f + 0.025f, 0.025f);
-                MyGuiManager.DrawString(font, m_authorWithDash, authorTopLeft, MyGuiSandbox.GetDefaultTextScaleWithLanguage());
+                if (string.IsNullOrEmpty(m_customTextFromConstructor))
+                {
+                    var font = m_font;
+                    var controlBottomLeft = m_quoteTextControl.GetPositionAbsoluteBottomLeft();
+                    var textSize = m_quoteTextControl.TextSize;
+                    var controlSize = m_quoteTextControl.Size;
+                    var authorTopLeft = controlBottomLeft +
+                                        new Vector2((controlSize.X - textSize.X)*0.5f + 0.025f, 0.025f);
+                    MyGuiManager.DrawString(font, m_authorWithDash, authorTopLeft,
+                        MyGuiSandbox.GetDefaultTextScaleWithLanguage());
+                }
+                m_quoteTextControl.Draw(1, 1);
             }
         }
 
@@ -413,16 +443,17 @@ namespace Sandbox.Game.Gui
 
         private void RefreshQuote()
         {
-            m_quoteTextControl.TextEnum = m_currentQuote.Text;
-            m_authorWithDash.Clear().Append("- ").AppendStringBuilder(MyTexts.Get(m_currentQuote.Author)).Append(" -");
+            if(string.IsNullOrEmpty(m_customTextFromConstructor))
+            {
+                m_quoteTextControl.TextEnum = m_currentQuote.Text;
+                m_authorWithDash.Clear().Append("- ").AppendStringBuilder(MyTexts.Get(m_currentQuote.Author)).Append(" -");
+                
+            }
         }
 
         public override void OnRemoved()
         {
             base.OnRemoved();
-            MyAudio.Static.VolumeMusic = MySandboxGame.Config.MusicVolume;
-            MyAudio.Static.VolumeGame = MySandboxGame.Config.GameVolume;
-            MyAudio.Static.VolumeHud = MySandboxGame.Config.GameVolume;
         }
     }
 }

@@ -7,18 +7,23 @@ using VRage.Input;
 using VRage.Library.Utils;
 using VRage.Utils;
 using VRageMath;
+using Sandbox.Common.ObjectBuilders;
+using VRage.Game;
+using Sandbox.Game.Entities;
+using Sandbox.Engine.Physics;
+using Sandbox.Engine.Utils;
 
 namespace Sandbox.Game.Gui
 {
     class MyAsteroidsDebugInputComponent : MyDebugComponent
     {
-        private bool m_drawAsteroidSeeds = false;
-        private bool m_drawEncounterSeeds = false;
+        private bool m_drawSeeds = false;
         private bool m_drawTrackedEntities = false;
+        private bool m_drawAroundCamera = false;
         private bool m_drawRadius = false;
         private bool m_drawDistance = false;
         private bool m_drawCells = false;
-        
+
         private List<MyCharacter> m_plys = new List<MyCharacter>();
 
         private float m_originalFarPlaneDisatance = -1;
@@ -27,105 +32,134 @@ namespace Sandbox.Game.Gui
 
         public MyAsteroidsDebugInputComponent()
         {
-            AddShortcut(MyKeys.NumPad1, true, false, false, false,
-                () => "Debug draw procedural asteroid seeds: " + m_drawAsteroidSeeds,
-                delegate
-                {
-                    m_drawAsteroidSeeds = !m_drawAsteroidSeeds;
-                    return true;
-                });
+            //AddShortcut(MyKeys.NumPad1, true, false, false, false,
+            //    () => "Debug draw procedural asteroid seeds: " + m_drawSeeds,
+            //    delegate
+            //    {
+            //        m_drawSeeds = !m_drawSeeds;
+            //        return true;
+            //    });
 
-            AddShortcut(MyKeys.NumPad2, true, false, false, false,
-                () => "Debug draw procedural encounter seeds: " + m_drawEncounterSeeds,
-                delegate
-                {
-                    m_drawEncounterSeeds = !m_drawEncounterSeeds;
-                    return true;
-                });
+            //AddShortcut(MyKeys.NumPad2, true, false, false, false,
+            //    () => "Debug draw procedural tracked entities: " + m_drawTrackedEntities,
+            //    delegate
+            //    {
+            //        m_drawTrackedEntities = !m_drawTrackedEntities;
+            //        return true;
+            //    });
 
-            AddShortcut(MyKeys.NumPad3, true, false, false, false,
-                () => "Debug draw procedural tracked entities: " + m_drawTrackedEntities,
-                delegate
-                {
-                    m_drawTrackedEntities = !m_drawTrackedEntities;
-                    return true;
-                });
+            //AddShortcut(MyKeys.NumPad3, true, false, false, false,
+            //    () => "Debug draw around camera: " + m_drawAroundCamera,
+            //    delegate
+            //    {
+            //        m_drawAroundCamera = !m_drawAroundCamera;
+            //        return true;
+            //    });
 
-            AddShortcut(MyKeys.NumPad4, true, false, false, false,
-                () => "Toggle farplane distance: " + (MySector.MainCamera == null ? -1f : MySector.MainCamera.FarPlaneDistance),
-                delegate
-                {
-                    m_fakeFarPlaneDistance = !m_fakeFarPlaneDistance;
-                    if (m_originalFarPlaneDisatance == -1)
-                    {
-                        m_originalFarPlaneDisatance = MySector.MainCamera.FarPlaneDistance;
-                    }
-                    if (m_fakeFarPlaneDistance)
-                    {
-                        MySector.MainCamera.FarPlaneDistance = m_debugFarPlaneDistance;
-                    }
-                    else
-                    {
-                        MySector.MainCamera.FarPlaneDistance = m_originalFarPlaneDisatance;
-                    }
-                    return true;
-                });
+            //AddShortcut(MyKeys.NumPad4, true, false, false, false,
+            //    () => "Toggle farplane distance: " + (MySector.MainCamera == null ? -1f : MySector.MainCamera.FarPlaneDistance),
+            //    delegate
+            //    {
+            //        m_fakeFarPlaneDistance = !m_fakeFarPlaneDistance;
+            //        if (m_originalFarPlaneDisatance == -1)
+            //        {
+            //            m_originalFarPlaneDisatance = MySector.MainCamera.FarPlaneDistance;
+            //        }
+            //        if (m_fakeFarPlaneDistance)
+            //        {
+            //            MySector.MainCamera.FarPlaneDistance = m_debugFarPlaneDistance;
+            //        }
+            //        else
+            //        {
+            //            MySector.MainCamera.FarPlaneDistance = m_originalFarPlaneDisatance;
+            //        }
+            //        return true;
+            //    });
 
-            AddShortcut(MyKeys.NumPad5, true, false, false, false,
-                () => "Debug draw procedural seed radius: " + m_drawRadius,
-                delegate
-                {
-                    m_drawRadius = !m_drawRadius;
-                    return true;
-                });
+            //AddShortcut(MyKeys.NumPad5, true, false, false, false,
+            //    () => "Debug draw procedural seed radius: " + m_drawRadius,
+            //    delegate
+            //    {
+            //        m_drawRadius = !m_drawRadius;
+            //        return true;
+            //    });
 
-            AddShortcut(MyKeys.NumPad6, true, false, false, false,
-                () => "Debug draw procedural seed distance: " + m_drawDistance,
-                delegate
-                {
-                    m_drawDistance = !m_drawDistance;
-                    return true;
-                });
+            //AddShortcut(MyKeys.NumPad6, true, false, false, false,
+            //    () => "Debug draw procedural seed distance: " + m_drawDistance,
+            //    delegate
+            //    {
+            //        m_drawDistance = !m_drawDistance;
+            //        return true;
+            //    });
 
-            AddShortcut(MyKeys.NumPad7, true, false, false, false,
-                () => "Toggle fog: " + MySector.FogProperties.EnableFog,
-                delegate
-                {
-                    MySector.FogProperties.EnableFog = !MySector.FogProperties.EnableFog;
-                    return true;
-                });
 
-            AddShortcut(MyKeys.NumPad8, true, false, false, false,
-                () => "Debug draw procedural cells: " + m_drawCells,
-                delegate
-                {
-                    m_drawCells = !m_drawCells;
-                    return true;
-                });
+            //AddShortcut(MyKeys.NumPad8, true, false, false, false,
+            //    () => "Debug draw procedural cells: " + m_drawCells,
+            //    delegate
+            //    {
+            //        m_drawCells = !m_drawCells;
+            //        return true;
+            //    });
 
-            AddShortcut(MyKeys.NumPad9, true, false, false, false,
-                () => "Spawn new moving player somewhere: " + m_plys.Count,
-                delegate
-                {
-                    var pos = new Vector3D(MyRandom.Instance.NextFloat() * 2 - 1f, MyRandom.Instance.NextFloat() * 2 - 1f, MyRandom.Instance.NextFloat() * 2 - 1f) * 150000;
-                    var vel = new Vector3(MyRandom.Instance.NextFloat() * 2 - 1f, MyRandom.Instance.NextFloat() * 2 - 1f, MyRandom.Instance.NextFloat() * 2 - 1f);
-                    vel.Normalize();
-                    var ply = MyCharacter.CreateCharacter(MatrixD.CreateTranslation(pos), vel * 100 * (MyRandom.Instance.NextFloat() * 0.5f + 0.5f), "ALIEN SPACE NINJA", MyCharacter.DefaultModel, null, false);
-                    m_plys.Add(ply);
-                    return true;
-                });
+            //AddShortcut(MyKeys.NumPad9, true, false, false, false,
+            //    () => "Spawn new moving player somewhere: " + m_plys.Count,
+            //    delegate
+            //    {
+            //        var pos = new Vector3D(MyRandom.Instance.NextFloat() * 2 - 1f, MyRandom.Instance.NextFloat() * 2 - 1f, MyRandom.Instance.NextFloat() * 2 - 1f) * 150000;
+            //        var vel = new Vector3(MyRandom.Instance.NextFloat() * 2 - 1f, MyRandom.Instance.NextFloat() * 2 - 1f, MyRandom.Instance.NextFloat() * 2 - 1f);
+            //        vel.Normalize();
+            //        var ply = MyCharacter.CreateCharacter(MatrixD.CreateTranslation(pos), vel * 100 * (MyRandom.Instance.NextFloat() * 0.5f + 0.5f), "ALIEN SPACE NINJA", MyCharacter.DefaultModel, null, null, false);
+            //        m_plys.Add(ply);
+            //        return true;
+            //    });
 
-            AddShortcut(MyKeys.NumPad0, true, false, false, false,
-                () => "Remove one spawned player: " + m_plys.Count,
-                delegate
-                {
-                    if(m_plys.Count == 0)
-                        return false;
-                    var ply = m_plys[0];
-                    m_plys.Remove(ply);
-                    ply.Close();
-                    return true;
-                });
+            //AddShortcut(MyKeys.NumPad0, true, false, false, false,
+            //    () => "Remove one spawned player: " + m_plys.Count,
+            //    delegate
+            //    {
+            //        if (m_plys.Count == 0)
+            //            return false;
+            //        var ply = m_plys[0];
+            //        m_plys.Remove(ply);
+            //        ply.Close();
+            //        return true;
+            //    });
+
+            AddShortcut(MyKeys.NumPad3, true, false, false, false, () => "Enable Meteor Debug Draw", delegate
+            {
+                MyDebugDrawSettings.DEBUG_DRAW_METEORITS_DIRECTIONS = true;
+                return true;
+            });
+
+            AddShortcut(MyKeys.NumPad2, true, false, false, false, () => "Spawn meteor shower", delegate
+            {
+                MyMeteorShower.StartDebugWave(MySession.Static.LocalCharacter.WorldMatrix.Translation);
+                return true;
+            });
+
+            AddShortcut(MyKeys.NumPad1, true, false, false, false, () => "Spawn small asteroid", delegate
+            {
+                Vector3 charpos = MySession.Static.LocalCharacter.WorldMatrix.Translation;
+                Vector3 chardir = MySession.Static.LocalCharacter.WorldMatrix.Forward;
+                MyMeteor.SpawnRandom(charpos + chardir * 2, chardir);
+                return true;
+            });
+
+            AddShortcut(MyKeys.NumPad0, true, false, false, false, () => "Spawn crater", delegate
+            {
+                SpawnCrater();
+                return true;
+            });
+        }
+
+        private void SpawnCrater()
+        {
+            Vector3 myPosition = MySession.Static.LocalCharacter.WorldMatrix.Translation;
+            Vector3 myDirection = MySession.Static.LocalCharacter.WorldMatrix.Forward;
+
+            MyPhysics.CastRay(myPosition, myPosition + myDirection * 100);
+
+
         }
 
         public override bool HandleInput()
@@ -144,29 +178,26 @@ namespace Sandbox.Game.Gui
             if (MySector.MainCamera == null)
                 return;
 
-            int visibleCount = 0;
-            foreach (var voxelMap in MySession.Static.VoxelMaps.Instances)
+            if (MyProceduralWorldGenerator.Static == null)
+                return;
+
+            if (m_drawAroundCamera)
             {
-                if (MySector.MainCamera.IsInFrustum(voxelMap.PositionComp.WorldAABB))
-                {
-                    visibleCount++;
-                }
+                MyProceduralWorldGenerator.Static.OverlapAllPlanetSeedsInSphere(new BoundingSphereD(MySector.MainCamera.Position, MySector.MainCamera.FarPlaneDistance * 2), m_tmpSeedsList);
             }
 
-            MyAsteroidCellGenerator.Static.GetAll(m_tmpSeedsList);
-            double max_distance = 20 * 1000;
+            MyProceduralWorldGenerator.Static.GetAllExisting(m_tmpSeedsList);
+
+            double max_distance = 100 * 2 * 60 * 60;
             foreach (var seed in m_tmpSeedsList)
             {
-                if (!(m_drawAsteroidSeeds && seed.Type == MyAsteroidCellGenerator.MyObjectSeedType.Asteroid)
-                    && !(m_drawEncounterSeeds && seed.Type == MyAsteroidCellGenerator.MyObjectSeedType.EncounterAlone)
-                    && !(m_drawEncounterSeeds && seed.Type == MyAsteroidCellGenerator.MyObjectSeedType.EncounterSingle)
-                    && !(m_drawEncounterSeeds && seed.Type == MyAsteroidCellGenerator.MyObjectSeedType.EncounterMulti))
+                if (!m_drawSeeds)
                     continue;
 
                 var pos = seed.BoundingVolume.Center;
 
-                VRageRender.MyRenderProxy.DebugDrawSphere(pos, seed.Size / 2, seed.Type == MyAsteroidCellGenerator.MyObjectSeedType.Asteroid ? Color.Green : Color.Red, 1.0f, true);
-                if ((pos - MySector.MainCamera.Position).Length() < max_distance)
+                VRageRender.MyRenderProxy.DebugDrawSphere(pos, seed.Size / 2, seed.Params.Type == MyObjectSeedType.Asteroid ? Color.Green : Color.Red, 1.0f, true);
+                //if ((pos - MySector.MainCamera.Position).Length() < max_distance)
                 {
                     if (m_drawRadius)
                     {
@@ -183,7 +214,7 @@ namespace Sandbox.Game.Gui
 
             if (m_drawTrackedEntities)
             {
-                foreach (var kv in MyAsteroidCellGenerator.Static.GetTrackedEntities())
+                foreach (var kv in MyProceduralWorldGenerator.Static.GetTrackedEntities())
                 {
                     VRageRender.MyRenderProxy.DebugDrawSphere(kv.Value.CurrentPosition, (float)(kv.Value.BoundingVolume.Radius), Color.White, 1.0f, true);
                 }
@@ -191,7 +222,7 @@ namespace Sandbox.Game.Gui
 
             if (m_drawCells)
             {
-                MyAsteroidCellGenerator.Static.GetAllCells(m_tmpCellsList);
+                MyProceduralWorldGenerator.Static.GetAllExistingCells(m_tmpCellsList);
                 foreach (var cell in m_tmpCellsList)
                 {
                     VRageRender.MyRenderProxy.DebugDrawAABB(cell.BoundingVolume, Color.Blue, 1f, 1f, true);
@@ -199,25 +230,11 @@ namespace Sandbox.Game.Gui
             }
             m_tmpCellsList.Clear();
 
-            var drawPos = new Vector2(0, 32);
-            int row = 0;
-            VRageRender.MyRenderProxy.DebugDrawText2D(drawPos * row++, "Cells: " + MyAsteroidCellGenerator.Static.CellCount, Color.Yellow, 1.0f);
-            VRageRender.MyRenderProxy.DebugDrawText2D(drawPos * row++, "Asteroid Seeds: " + MyAsteroidCellGenerator.Static.AsteroidSeedCount, Color.Yellow, 1.0f);
-            VRageRender.MyRenderProxy.DebugDrawText2D(drawPos * row++, "Encounter Seeds: " + MyAsteroidCellGenerator.Static.EncounterSeedCount, Color.Yellow, 1.0f);
-            row++;
-            VRageRender.MyRenderProxy.DebugDrawText2D(drawPos * row++, "Asteroids: " + MyAsteroidCellGenerator.Static.AsteroidCount + " / " + MySession.Static.VoxelMaps.Instances.Count, Color.Yellow, 1.0f);
-            VRageRender.MyRenderProxy.DebugDrawText2D(drawPos * row++, "Visible: " + visibleCount, Color.Yellow, 1.0f);
-            row++;
-            VRageRender.MyRenderProxy.DebugDrawText2D(drawPos * row++, "Encounters: " + MyAsteroidCellGenerator.Static.EncounterCount, Color.Yellow, 1.0f);
-            VRageRender.MyRenderProxy.DebugDrawText2D(drawPos * row++, "Fake Players: " + m_plys.Count, Color.Yellow, 1.0f);
-            row++;
-            VRageRender.MyRenderProxy.DebugDrawText2D(drawPos * row++, "Tracked Entities: " + MyAsteroidCellGenerator.Static.GetTrackedEntities().Count(), Color.Yellow, 1.0f);
-
-            VRageRender.MyRenderProxy.DebugDrawSphere(Vector3D.Zero, 0, Color.White, 1f, true); // this is here just to fix some weird color issues with profiler
+            VRageRender.MyRenderProxy.DebugDrawSphere(Vector3D.Zero, 0, Color.White, 0.0f, false);
         }
 
-        List<MyAsteroidCellGenerator.MyObjectSeed> m_tmpSeedsList = new List<MyAsteroidCellGenerator.MyObjectSeed>();
-        List<MyAsteroidCellGenerator.MyProceduralCell> m_tmpCellsList = new List<MyAsteroidCellGenerator.MyProceduralCell>();
+        List<MyObjectSeed> m_tmpSeedsList = new List<MyObjectSeed>();
+        List<MyProceduralCell> m_tmpCellsList = new List<MyProceduralCell>();
 
         public override string GetName()
         {

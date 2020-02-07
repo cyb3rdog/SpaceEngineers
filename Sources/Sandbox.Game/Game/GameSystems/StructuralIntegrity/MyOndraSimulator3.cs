@@ -11,9 +11,13 @@ using System.Diagnostics;
 using System.Linq;
 using System.Text;
 using VRage;
+using VRage.Game;
+using VRage.Game.Components;
+using VRage.Game.Entity;
 using VRage.Utils;
 using VRageMath;
 using VRageRender;
+using VRageRender.Utils;
 
 namespace Sandbox.Game.GameSystems.StructuralIntegrity
 {
@@ -98,7 +102,7 @@ namespace Sandbox.Game.GameSystems.StructuralIntegrity
         private static bool m_blurEnabled = false;
         private static bool m_blurStaticShareSupport = true;
 
-        public bool ForceRecalc;
+        bool m_needsRecalc;
 
         public static bool DrawText = true;
         public static bool BlurEnabled { get { return m_blurEnabled; } set { m_blurEnabled = value; } }
@@ -158,10 +162,10 @@ namespace Sandbox.Game.GameSystems.StructuralIntegrity
             m_frameCounter++;
 
             // Change detected by changing block count
-            if (m_grid.GetBlocks().Count == BlockCount && !ForceRecalc)
+            if (m_grid.GetBlocks().Count == BlockCount && !m_needsRecalc)
                 return false;
 
-            ForceRecalc = false;
+            m_needsRecalc = false;
 
             m_selectedGrid = m_grid;
 
@@ -393,13 +397,13 @@ namespace Sandbox.Game.GameSystems.StructuralIntegrity
             if (impact < 0)
                 return;
 
-            if (m_grid.GridSizeEnum == Common.ObjectBuilders.MyCubeSize.Large)
+            if (m_grid.GridSizeEnum == MyCubeSize.Large)
             {
             }
 
             DynamicWeights[blockPos] = impact;
 
-            ForceRecalc = true;
+            m_needsRecalc = true;
 
             m_lastFrameCollision = m_frameCounter;
 
@@ -416,16 +420,16 @@ namespace Sandbox.Game.GameSystems.StructuralIntegrity
                 m_collidingEntities[info.CollidingEntity].FrameTime = m_frameCounter;
         }
 
-        void PositionComp_OnPositionChanged(Common.Components.MyPositionComponentBase obj)
+        void PositionComp_OnPositionChanged(MyPositionComponentBase obj)
         {
-            if (m_collidingEntities.ContainsKey((MyEntity)obj.Entity))
+            if (m_collidingEntities.ContainsKey((MyEntity)obj.Container.Entity))
             {
-                if (m_frameCounter - m_collidingEntities[(MyEntity)obj.Entity].FrameTime > 20)
+                if (m_frameCounter - m_collidingEntities[(MyEntity)obj.Container.Entity].FrameTime > 20)
                 { //Object not contacted with grid for 20 frames
                     obj.OnPositionChanged -= PositionComp_OnPositionChanged;
-                    DynamicWeights.Remove(m_collidingEntities[(MyEntity)obj.Entity].Position);
-                    m_collidingEntities.Remove((MyEntity)obj.Entity);
-                    ForceRecalc = true;
+                    DynamicWeights.Remove(m_collidingEntities[(MyEntity)obj.Container.Entity].Position);
+                    m_collidingEntities.Remove((MyEntity)obj.Container.Entity);
+                    m_needsRecalc = true;
                 }
             }
         }

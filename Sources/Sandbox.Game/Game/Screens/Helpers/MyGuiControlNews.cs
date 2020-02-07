@@ -1,26 +1,28 @@
-﻿using Sandbox.Common;
-using Sandbox.Common.News;
-using Sandbox.Common.ObjectBuilders.Gui;
-using Sandbox.Game.Localization;
+﻿using Sandbox.Game.Localization;
 using Sandbox.Graphics.GUI;
 using Sandbox.Gui;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Linq;
-using System.Reflection;
+using System.IO;
+using System.Net;
 using System.Text;
+using System.Threading.Tasks;
+#if !XB1
 using System.Text.RegularExpressions;
+#endif // !XB1
 using System.Xml.Serialization;
+using Sandbox.Engine.Utils;
 using VRage;
+using VRage.Game;
+using VRage.Game.News;
 using VRage.Library.Utils;
-using VRage.Utils;
 using VRage.Utils;
 using VRageMath;
 
 namespace Sandbox.Game.Screens.Helpers
 {
-    class MyGuiControlNews : MyGuiControlBase
+    public class MyGuiControlNews : MyGuiControlBase
     {
         public enum StateEnum
         {
@@ -48,6 +50,20 @@ namespace Sandbox.Game.Screens.Helpers
         private MyGuiControlMultilineText m_textError;
 
         private MyGuiControlRotatingWheel m_wheelLoading;
+
+        #region Downloading process
+
+        Task m_downloadNewsTask;
+        MyNews m_downloadedNews;
+        XmlSerializer m_newsSerializer;
+        bool m_downloadedNewsOK = false;
+        bool m_downloadedNewsFinished = false;
+        bool m_pauseGame = false;
+        private static readonly char[] m_trimArray = new char[] {' ', (char) 13, '\r', '\n'};
+        private static readonly char[] m_splitArray = new char[] {'\r', '\n'};
+
+        #endregion
+
 
         public StateEnum State
         {
@@ -116,7 +132,7 @@ namespace Sandbox.Game.Screens.Helpers
             m_textError = new MyGuiControlMultilineText(
                 textAlign: MyGuiDrawAlignEnum.HORISONTAL_CENTER_AND_VERTICAL_CENTER,
                 textBoxAlign: MyGuiDrawAlignEnum.HORISONTAL_CENTER_AND_VERTICAL_CENTER,
-                font: Common.MyFontEnum.Red) {
+                font: MyFontEnum.Red) {
                 OriginAlign = MyGuiDrawAlignEnum.HORISONTAL_CENTER_AND_VERTICAL_CENTER,
                 Name = "Error"
             };
@@ -154,16 +170,25 @@ namespace Sandbox.Game.Screens.Helpers
             RefreshState();
             UpdatePositionsAndSizes();
             RefreshShownEntry();
+
+            try
+            {
+                m_newsSerializer = new XmlSerializer(typeof(MyNews));
+            }
+            finally
+            {
+                DownloadNews();   
+            }
         }
 
         void OnLinkClicked(MyGuiControlBase sender, string url)
         {
             Debug.Assert(sender == m_textNewsEntry);
             m_stringCache.Clear();
-            m_stringCache.AppendFormat(MyTexts.GetString(MySpaceTexts.MessageBoxTextOpenBrowser), url);
+            m_stringCache.AppendFormat(MyTexts.GetString(MyCommonTexts.MessageBoxTextOpenBrowser), url);
             MyGuiSandbox.AddScreen(MyGuiSandbox.CreateMessageBox(
                 buttonType: MyMessageBoxButtonsType.YES_NO,
-                messageCaption: MyTexts.Get(MySpaceTexts.MessageBoxCaptionPleaseConfirm),
+                messageCaption: MyTexts.Get(MyCommonTexts.MessageBoxCaptionPleaseConfirm),
                 messageText: m_stringCache,
                 callback: delegate(MyGuiScreenMessageBox.ResultEnum retval)
                 {
@@ -171,8 +196,8 @@ namespace Sandbox.Game.Screens.Helpers
                         if (!MyBrowserHelper.OpenInternetBrowser(url))
                         {
                             StringBuilder sbMessage = new StringBuilder();
-                            sbMessage.AppendFormat(MyTexts.GetString(MySpaceTexts.TitleFailedToStartInternetBrowser), url);
-                            StringBuilder sbTitle = MyTexts.Get(MySpaceTexts.TitleFailedToStartInternetBrowser);
+                            sbMessage.AppendFormat(MyTexts.GetString(MyCommonTexts.TitleFailedToStartInternetBrowser), url);
+                            StringBuilder sbTitle = MyTexts.Get(MyCommonTexts.TitleFailedToStartInternetBrowser);
                             MyGuiSandbox.AddScreen(MyGuiSandbox.CreateMessageBox(
                                 messageText: sbMessage,
                                 messageCaption: sbTitle));
@@ -288,7 +313,120 @@ namespace Sandbox.Game.Screens.Helpers
             get { return m_textError.Text; }
             set { m_textError.Text = value; }
         }
-        
 
+        public void DownloadNews()
+        {
+            if (m_downloadNewsTask != null && !m_downloadNewsTask.IsCompleted)
+            {
+                Debug.Fail("Trying to download news before the previous download action was completed.");
+                return;
+            }
+            State = StateEnum.Loading;
+
+            m_downloadNewsTask = Task.Run(() => DownloadNewsAsync()).ContinueWith(task => DownloadNewsCompleted());
+        }
+
+        void DownloadNewsCompleted()
+        {
+            CheckVersion();
+
+            if (m_downloadedNewsOK)
+            {
+                State = StateEnum.Entries;
+                Show(m_downloadedNews);
+            }
+            else
+            {
+                State = StateEnum.Error;
+                ErrorText = MyTexts.Get(MyCommonTexts.NewsDownloadingFailed);
+            }
+        }
+
+        void DownloadNewsAsync()
+        {
+            try
+            {
+                var newsDownloadClient = new WebClient();
+                newsDownloadClient.Proxy = null;
+
+                Uri changeLogUri;
+                if (MyFinalBuildConstants.IS_STABLE)
+                    changeLogUri = new Uri(MyPerGameSettings.ChangeLogUrl);
+                else
+                    changeLogUri = new Uri(MyPerGameSettings.ChangeLogUrlDevelop);
+
+                var downloadedNews = newsDownloadClient.DownloadString(changeLogUri);
+
+                using (StringReader stream = new StringReader(downloadedNews))
+                {
+                    m_downloadedNews = (MyNews)m_newsSerializer.Deserialize(stream);
+
+                    StringBuilder text = new StringBuilder();
+                    for (int i = 0; i < m_downloadedNews.Entry.Count; i++)
+                    {
+                        var newsItem = m_downloadedNews.Entry[i];
+
+                        string itemText = newsItem.Text.Trim(m_trimArray);
+                        string[] lines = itemText.Split(m_splitArray);
+
+                        text.Clear();
+                        foreach (string lineItem in lines)
+                        {
+                            string line = lineItem.Trim();
+                            text.AppendLine(line);
+                        }
+
+                        m_downloadedNews.Entry[i] = new MyNewsEntry()
+                        {
+                            Title = newsItem.Title,
+                            Version = newsItem.Version,
+                            Date = newsItem.Date,
+                            Text = text.ToString(),
+                        };
+                    }
+
+                    if (MyFakes.TEST_NEWS)
+                    {
+                        var entry = m_downloadedNews.Entry[m_downloadedNews.Entry.Count - 1];
+                        entry.Title = "Test";
+                        entry.Text = "ASDF\nASDF\n[www.spaceengineersgame.com Space engineers web]\n[[File:Textures\\GUI\\MouseCursor.dds|64x64px]]\n";
+                        m_downloadedNews.Entry.Add(entry);
+                    }
+                    m_downloadedNewsOK = true;
+                }
+            }
+            catch (Exception e)
+            {
+                MyLog.Default.WriteLine("Error while downloading news: " + e.ToString());
+            }
+            finally
+            {
+                m_downloadedNewsFinished = true;
+            }
+        }
+
+        void CheckVersion()
+        {
+            int latestVersion = 0;
+            if (m_downloadedNews != null && m_downloadedNews.Entry.Count > 0)
+            {
+                if (int.TryParse(m_downloadedNews.Entry[0].Version, out latestVersion))
+                {
+                    if (latestVersion > MyFinalBuildConstants.APP_VERSION)
+                    {
+                        if (MySandboxGame.Config.LastCheckedVersion != MyFinalBuildConstants.APP_VERSION)
+                        {
+                            MyGuiSandbox.AddScreen(MyGuiSandbox.CreateMessageBox(
+                                messageText: MyTexts.Get(MySpaceTexts.NewVersionAvailable),
+                                messageCaption: MyTexts.Get(MyCommonTexts.MessageBoxCaptionInfo),
+                                styleEnum: MyMessageBoxStyleEnum.Info));
+
+                            MySandboxGame.Config.LastCheckedVersion = MyFinalBuildConstants.APP_VERSION;
+                            MySandboxGame.Config.Save();
+                        }
+                    }
+                }
+            }
+        }
     }
 }

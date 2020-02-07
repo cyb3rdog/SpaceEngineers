@@ -118,7 +118,7 @@ namespace VRage.Noise
                                                    MathHelper.Lerp(m_grad[AB + 1], m_grad[BB + 1], ut), vt), wt);
         }
 
-        public int Seed
+        public virtual int Seed
         {
             get { return m_seed; }
             set
@@ -126,7 +126,7 @@ namespace VRage.Noise
                 m_seed = value;
 
                 // Generate new random permutations with this seed.
-                System.Random random = new System.Random(m_seed);
+                System.Random random = new System.Random(VRage.Library.Utils.MyRandom.DisableRandomSeed ? 1 : m_seed);
 
                 for (int i = 0; i < 256; i++)
                 {

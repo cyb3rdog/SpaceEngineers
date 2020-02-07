@@ -7,19 +7,32 @@ using VRage.Data.Audio;
 
 namespace VRage
 {
+    [ProtoContract, XmlType("DistantSound")]
+    public sealed class DistantSound
+    {
+        [ProtoMember, XmlAttribute]
+        public float distance = 50f;
+
+        [ProtoMember, XmlAttribute]
+        public float distanceCrossfade = -1f;
+
+        [ProtoMember, XmlAttribute]
+        public String sound = "";
+    };
+
     [ProtoContract, XmlType("Wave")]
     public sealed class MyAudioWave
     {
-        [ProtoMember(1), XmlAttribute]
+        [ProtoMember, XmlAttribute]
         public MySoundDimensions Type;
 
-        [ProtoMember(2), DefaultValue(""), ModdableContentFile("xwm")]
+        [ProtoMember, DefaultValue(""), ModdableContentFile("xwm")]
         public String Start;
 
-        [ProtoMember(3), DefaultValue(""), ModdableContentFile("xwm")]
+        [ProtoMember, DefaultValue(""), ModdableContentFile("xwm")]
         public String Loop;
 
-        [ProtoMember(4), DefaultValue(""), ModdableContentFile("xwm")]
+        [ProtoMember, DefaultValue(""), ModdableContentFile("xwm")]
         public String End;
     };
 }

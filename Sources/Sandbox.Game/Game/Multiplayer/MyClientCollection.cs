@@ -34,7 +34,7 @@ namespace Sandbox.Game.Multiplayer
         {
             m_localSteamId = localSteamId;
 
-            if (createLocalClient == true)
+            if (createLocalClient == true && m_clients.ContainsKey(m_localSteamId) == false)
             {
                 AddClient(m_localSteamId);
             }
@@ -79,7 +79,8 @@ namespace Sandbox.Game.Multiplayer
         {
             MyNetworkClient client;
             m_clients.TryGetValue(steamId, out client);            
-            System.Diagnostics.Debug.Assert(client != null, "Client not present!");
+            //This is ok when there is a lag on server
+            //System.Diagnostics.Debug.Assert(client != null, "Client not present!");
             if (client == null)
             {
                 MyLog.Default.WriteLine("ERROR: Removed client not present: " + steamId);

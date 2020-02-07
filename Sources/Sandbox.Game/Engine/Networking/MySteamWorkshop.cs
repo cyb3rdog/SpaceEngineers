@@ -16,13 +16,15 @@ using VRage.Utils;
 using System.Diagnostics;
 using Sandbox.Common.ObjectBuilders;
 using VRage.Compression;
-using Sandbox.Common.ObjectBuilders.Serializer;
 using Sandbox.Game;
 using Sandbox.Game.Localization;
-using VRage.Utils;
 using VRage.Library.Utils;
 using VRage.FileSystem;
+using VRage.Game;
+using VRage.ObjectBuilders;
+using VRage;
 
+#if !XB1 // XB1_NOWORKSHOP
 namespace Sandbox.Engine.Networking
 {
     public class MySteamWorkshop
@@ -44,6 +46,31 @@ namespace Sandbox.Engine.Networking
             public string[] Tags;
         }
 
+        public struct MyWorkshopPathInfo
+        {
+            public string Path;
+            public string Suffix;
+            public string NamePrefix;
+
+            public static MyWorkshopPathInfo CreateWorldInfo()
+            {
+                var info = new MyWorkshopPathInfo();
+                info.Path = m_workshopWorldsPath;
+                info.Suffix = m_workshopWorldSuffix;
+                info.NamePrefix = "Workshop";
+                return info;
+            }
+
+            public static MyWorkshopPathInfo CreateScenarioInfo()
+            {
+                var info = new MyWorkshopPathInfo();
+                info.Path = m_workshopScenariosPath;
+                info.Suffix = m_workshopScenariosSuffix;
+                info.NamePrefix = "Scenario";
+                return info;
+            }
+        }
+
         private static readonly string m_workshopWorldsDir = "WorkshopWorlds";
         private static readonly string m_workshopWorldsPath = Path.Combine(MyFileSystem.UserDataPath, m_workshopWorldsDir);
         private static readonly string m_workshopWorldSuffix = ".sbw";
@@ -55,6 +82,9 @@ namespace Sandbox.Engine.Networking
 
         private static readonly string m_workshopModsPath = MyFileSystem.ModsPath;
         private static readonly string m_workshopModSuffix = ".sbm";
+
+        private static readonly string m_workshopScenariosPath = Path.Combine(MyFileSystem.UserDataPath, "Scenarios", "workshop");
+        private static readonly string m_workshopScenariosSuffix = ".sbs";
 
         private static readonly string[] m_previewFileNames = { "thumb.png", MyTextConstants.SESSION_THUMB_NAME_AND_EXTENSION };
 
@@ -71,25 +101,33 @@ namespace Sandbox.Engine.Networking
         private static Category[] m_modCategories;
         private static Category[] m_worldCategories;
         private static Category[] m_blueprintCategories;
+        private static Category[] m_scenarioCategories;
 
         public static Category[] ModCategories { get { return m_modCategories; } }
         public static Category[] WorldCategories { get { return m_worldCategories; } }
         public static Category[] BlueprintCategories { get { return m_blueprintCategories; } }
+        public static Category[] ScenarioCategories { get { return m_scenarioCategories; } }
 
         /// <summary>
         /// Do NOT change this value, as it would break worlds published to workshop!!!
         /// Tag for workshop items which contain world data.
         /// </summary>
+        public const string WORKSHOP_DEVELOPMENT_TAG = "development";
         public const string WORKSHOP_WORLD_TAG = "world";
+        public const string WORKSHOP_CAMPAIGN_TAG = "campaign";
         public const string WORKSHOP_MOD_TAG = "mod";
         public const string WORKSHOP_BLUEPRINT_TAG = "blueprint";
+        public const string WORKSHOP_SCENARIO_TAG = "scenario";
         private const string WORKSHOP_INGAMESCRIPT_TAG = "ingameScript";
 
-        public static void Init(Category[] modCategories, Category[] worldCategories, Category[] blueprintCategories)
+        static FastResourceLock m_modLock = new FastResourceLock();
+
+        public static void Init(Category[] modCategories, Category[] worldCategories, Category[] blueprintCategories, Category[] scenarioCategories)
         {
             m_modCategories = modCategories;
             m_worldCategories = worldCategories;
             m_blueprintCategories = blueprintCategories;
+            m_scenarioCategories = scenarioCategories;
         }
 
         #region Publishing
@@ -114,7 +152,7 @@ namespace Sandbox.Engine.Networking
 
             string[] ignoredExtensions = { ".sbmi" };
 
-            MyGuiSandbox.AddScreen(m_asyncPublishScreen = new MyGuiScreenProgressAsync(MySpaceTexts.ProgressTextUploadingWorld,
+            MyGuiSandbox.AddScreen(m_asyncPublishScreen = new MyGuiScreenProgressAsync(MyCommonTexts.ProgressTextUploadingWorld,
                 null,
                 () => new PublishItemResult(localModFolder, publishedTitle, publishedDescription, publishedFileId, visibility, tags, ignoredExtensions),
                 endActionPublish));
@@ -124,7 +162,7 @@ namespace Sandbox.Engine.Networking
         {
             var modInfoPath = Path.Combine(MyFileSystem.ModsPath, localModFolder, "modinfo.sbmi");
             MyObjectBuilder_ModInfo modInfo;
-            if (File.Exists(modInfoPath) && Sandbox.Common.ObjectBuilders.Serializer.MyObjectBuilderSerializer.DeserializeXML(modInfoPath, out modInfo))
+            if (File.Exists(modInfoPath) && MyObjectBuilderSerializer.DeserializeXML(modInfoPath, out modInfo))
                 return modInfo.WorkshopId;
             return 0ul;
         }
@@ -133,7 +171,7 @@ namespace Sandbox.Engine.Networking
         {
             var modInfoPath = Path.Combine(MyFileSystem.ModsPath, localModFolder, "modinfo.sbmi");
             MyObjectBuilder_ModInfo modInfo;
-            if (File.Exists(modInfoPath) && Sandbox.Common.ObjectBuilders.Serializer.MyObjectBuilderSerializer.DeserializeXML(modInfoPath, out modInfo))
+            if (File.Exists(modInfoPath) && MyObjectBuilderSerializer.DeserializeXML(modInfoPath, out modInfo))
                 return modInfo.SteamIDOwner;
             return 0ul;
         }
@@ -153,7 +191,7 @@ namespace Sandbox.Engine.Networking
 
             string[] ignoredExtensions = { ".xmlcache", ".png" };
 
-            MyGuiSandbox.AddScreen(m_asyncPublishScreen = new MyGuiScreenProgressAsync(MySpaceTexts.ProgressTextUploadingWorld,
+            MyGuiSandbox.AddScreen(m_asyncPublishScreen = new MyGuiScreenProgressAsync(MyCommonTexts.ProgressTextUploadingWorld,
                 null,
                 () => new PublishItemResult(localWorldFolder, publishedTitle, publishedDescription, publishedFileId, visibility, tags, ignoredExtensions),
                 endActionPublish));
@@ -174,7 +212,28 @@ namespace Sandbox.Engine.Networking
 
             string[] ignoredExtensions = { };
 
-            MyGuiSandbox.AddScreen(m_asyncPublishScreen = new MyGuiScreenProgressAsync(MySpaceTexts.ProgressTextUploadingWorld,
+            MyGuiSandbox.AddScreen(m_asyncPublishScreen = new MyGuiScreenProgressAsync(MyCommonTexts.ProgressTextUploadingWorld,
+                null,
+                () => new PublishItemResult(localWorldFolder, publishedTitle, publishedDescription, publishedFileId, visibility, tags, ignoredExtensions),
+                endActionPublish));
+        }
+
+        public static void PublishScenarioAsync(string localWorldFolder,
+            string publishedTitle,
+            string publishedDescription,
+            ulong? publishedFileId,
+            //string[] tags,
+            PublishedFileVisibility visibility,
+            Action<bool, Result, ulong> callbackOnFinished = null)
+        {
+            m_onPublishingFinished = callbackOnFinished;
+            m_publishSuccess = false;
+            m_publishedFileId = 0;
+            m_publishResult = Result.Fail;
+
+            string[] ignoredExtensions = { };
+            string[] tags = { WORKSHOP_SCENARIO_TAG };
+            MyGuiSandbox.AddScreen(m_asyncPublishScreen = new MyGuiScreenProgressAsync(MyCommonTexts.ProgressTextUploadingWorld,
                 null,
                 () => new PublishItemResult(localWorldFolder, publishedTitle, publishedDescription, publishedFileId, visibility, tags, ignoredExtensions),
                 endActionPublish));
@@ -195,7 +254,7 @@ namespace Sandbox.Engine.Networking
             string[] tags = { WORKSHOP_INGAMESCRIPT_TAG };
             string[] ignoredExtensions = { ".sbmi",".png",".jpg"};
 
-            MyGuiSandbox.AddScreen(m_asyncPublishScreen = new MyGuiScreenProgressAsync(MySpaceTexts.ProgressTextUploadingWorld,
+            MyGuiSandbox.AddScreen(m_asyncPublishScreen = new MyGuiScreenProgressAsync(MyCommonTexts.ProgressTextUploadingWorld,
                 null,
                 () => new PublishItemResult(localWorldFolder, publishedTitle, publishedDescription, publishedFileId, visibility, tags, ignoredExtensions),
                 endActionPublish));
@@ -273,7 +332,7 @@ namespace Sandbox.Engine.Networking
 
             steamItemFileName = WriteAndShareFileBlocking(tempFileFullPath);
             File.Delete(tempFileFullPath);
-            if (steamItemFileName == null)
+            if (steamItemFileName == null || steamItemFileName.Equals("FileNotFound"))
             {
                 MySandboxGame.Log.DecreaseIndent();
                 return 0;
@@ -300,13 +359,14 @@ namespace Sandbox.Engine.Networking
             {
                 // Update item if it has already been published, otherwise publish it.
                 bool publishedFileNotFound = true;
-                if (workshopId.HasValue)
+                if (workshopId.HasValue && workshopId != 0)
                 {
                     MySandboxGame.Log.WriteLine("File appears to be published already. Attempting to update workshop file.");
                     ulong updateHandle = steam.RemoteStorage.CreatePublishedFileUpdateRequest(workshopId.Value);
                     steam.RemoteStorage.UpdatePublishedFileTags(updateHandle, tags);
                     steam.RemoteStorage.UpdatePublishedFileFile(updateHandle, steamItemFileName);
-                    steam.RemoteStorage.UpdatePublishedFilePreviewFile(updateHandle, steamPreviewFileName);
+                    if (steamPreviewFileName.Equals("FileNotFound") == false)
+                        steam.RemoteStorage.UpdatePublishedFilePreviewFile(updateHandle, steamPreviewFileName);
                     steam.RemoteStorage.CommitPublishedFileUpdate(updateHandle, delegate(bool ioFailure, RemoteStorageUpdatePublishedFileResult data)
                     {
                         m_publishResult = data.Result;
@@ -365,7 +425,8 @@ namespace Sandbox.Engine.Networking
             // Erasing temporary file. No need for it to take up cloud storage anymore.
             MySandboxGame.Log.WriteLine("Deleting cloud files - START");
             steam.RemoteStorage.FileDelete(steamItemFileName);
-            steam.RemoteStorage.FileDelete(steamPreviewFileName);
+            if (steamPreviewFileName.Equals("FileNotFound") == false)
+                steam.RemoteStorage.FileDelete(steamPreviewFileName);
             MySandboxGame.Log.WriteLine("Deleting cloud files - END");
 
             MySandboxGame.Log.DecreaseIndent();
@@ -397,13 +458,15 @@ namespace Sandbox.Engine.Networking
 
             bool fileShareSuccess = false;
 
+            Result result = Result.Fail;
             using (var mrEvent = new ManualResetEvent(false))
             {
                 steam.RemoteStorage.FileShare(steamFileName, delegate(bool ioFailure, RemoteStorageFileShareResult data)
                 {
                     fileShareSuccess = !ioFailure && data.Result == Result.OK;
+                    result = data.Result;
                     if (fileShareSuccess)
-                        m_asyncPublishScreen.ProgressText = MySpaceTexts.ProgressTextPublishingWorld;
+                        m_asyncPublishScreen.ProgressText = MyCommonTexts.ProgressTextPublishingWorld;
                     else
                         MySandboxGame.Log.WriteLine(string.Format("Error sharing the file: {0}", GetErrorString(ioFailure, data.Result)));
                     mrEvent.Set();
@@ -414,8 +477,10 @@ namespace Sandbox.Engine.Networking
 
             MySandboxGame.Log.WriteLine(string.Format("Writing and sharing file '{0}' - END", steamFileName));
 
-            if (!fileShareSuccess)
+            if (!fileShareSuccess && result != Result.FileNotFound)
                 return null;
+            else if (result == Result.FileNotFound)
+                return result.ToString();
 
             return steamFileName;
         }
@@ -442,6 +507,12 @@ namespace Sandbox.Engine.Networking
 
             public PublishItemResult(string localFolder, string publishedTitle, string publishedDescription, ulong? publishedFileId, PublishedFileVisibility visibility, string[] tags, string[] ignoredExtensions)
             {
+                if (MyFinalBuildConstants.IS_STABLE == false && tags.Contains(WORKSHOP_DEVELOPMENT_TAG) == false)
+                {
+                    Array.Resize(ref tags, tags.Length + 1);
+                    tags[tags.Length - 1] = WORKSHOP_DEVELOPMENT_TAG;
+                }
+
                 Task = Parallel.Start(() =>
                 {
                     m_publishedFileId = PublishItemBlocking(localFolder, publishedTitle, publishedDescription, publishedFileId, visibility, tags, ignoredExtensions);
@@ -472,6 +543,22 @@ namespace Sandbox.Engine.Networking
         /// <summary>
         /// Do NOT call this method from update thread.
         /// </summary>
+        public static bool GetSubscribedCampaignsBlocking(List<SubscribedItem> results)
+        {
+            MySandboxGame.Log.WriteLine("MySteamWorkshop.GetSubscribedWorldsBlocking - START");
+            try
+            {
+                return GetSubscribedItemsBlocking(results, WORKSHOP_CAMPAIGN_TAG);
+            }
+            finally
+            {
+                MySandboxGame.Log.WriteLine("MySteamWorkshop.GetSubscribedWorldsBlocking - END");
+            }
+        }
+
+        /// <summary>
+        /// Do NOT call this method from update thread.
+        /// </summary>
         public static bool GetSubscribedModsBlocking(List<SubscribedItem> results)
         {
             MySandboxGame.Log.WriteLine("MySteamWorkshop.GetSubscribedModsBlocking - START");
@@ -482,6 +569,23 @@ namespace Sandbox.Engine.Networking
             finally
             {
                 MySandboxGame.Log.WriteLine("MySteamWorkshop.GetSubscribedModsBlocking - END");
+            }
+        }
+
+
+        /// <summary>
+        /// Do NOT call this method from update thread.
+        /// </summary>
+        public static bool GetSubscribedScenariosBlocking(List<SubscribedItem> results)
+        {
+            MySandboxGame.Log.WriteLine("MySteamWorkshop.GetSubscribedScenariosBlocking - START");
+            try
+            {
+                return GetSubscribedItemsBlocking(results, WORKSHOP_SCENARIO_TAG);
+            }
+            finally
+            {
+                MySandboxGame.Log.WriteLine("MySteamWorkshop.GetSubscribedScenariosBlocking - END");
             }
         }
 
@@ -524,8 +628,23 @@ namespace Sandbox.Engine.Networking
             Dictionary<ulong, SubscribedItem> resultsByPublishedId = new Dictionary<ulong, SubscribedItem>(publishedFileIds.Count());
             using (ManualResetEvent mrEvent = new ManualResetEvent(false))
             {
+                bool hasDuplicates = false;
                 foreach (var id in publishedFileIds)
-                    resultsByPublishedId.Add(id, new SubscribedItem() { PublishedFileId = id });
+                {
+                    if (!resultsByPublishedId.ContainsKey(id))
+                    {
+                        resultsByPublishedId.Add(id, new SubscribedItem() { PublishedFileId = id });
+                    }
+                    else
+                    {
+                        MySandboxGame.Log.WriteLine(string.Format("MySteamWorkshop.GetItemsBlocking: Duplicate entry for item with id {0}", id));
+                        hasDuplicates = true;
+                    }
+                }
+
+                // If we have duplicates, return false.
+                // This return is delayed so that all duplicate mods get listed, this way the admin can find out which are duplicate.
+                if (hasDuplicates) return false;
 
                 // Retrieve details for each subscription.
                 int callResultCounter = 0;
@@ -810,31 +929,40 @@ namespace Sandbox.Engine.Networking
             if (!downloadSuccess)
                 return false;
 
-            using (var fs = new FileStream(localFullPath, FileMode.Create, FileAccess.Write))
+            // File I/O should always be exception handled
+            try
             {
-                for (uint offset = 0; offset < downloadSizeInBytes; offset += (uint)m_bufferSize)
+                using (var fs = new FileStream(localFullPath, FileMode.Create, FileAccess.Write))
                 {
-                    int bytesRead = MySteam.API.RemoteStorage.UGCRead(UGCHandle, buffer, m_bufferSize, offset);
-                    fs.Write(buffer, 0, bytesRead);
+                    for (uint offset = 0; offset < downloadSizeInBytes; offset += (uint)m_bufferSize)
+                    {
+                        int bytesRead = MySteam.API.RemoteStorage.UGCRead(UGCHandle, buffer, m_bufferSize, offset);
+                        fs.Write(buffer, 0, bytesRead);
+                    }
                 }
+            }
+            catch (Exception ex)
+            {
+                MySandboxGame.Log.WriteLine(string.Format("Error downloading file: {0}, {1}", localFullPath, ex.Message));
+                return false;
             }
 
             return true;
         }
 
-        public static void DownloadModsAsync(List<MyObjectBuilder_Checkpoint.ModItem> mods, Action<bool> onFinishedCallback, Action onCancelledCallback = null)
+        public static void DownloadModsAsync(List<MyObjectBuilder_Checkpoint.ModItem> mods, Action<bool,string> onFinishedCallback, Action onCancelledCallback = null)
         {
             if (mods == null || mods.Count == 0)
             {
-                onFinishedCallback(true);
+                onFinishedCallback(true,"");
                 return;
             }
 
             if (!Directory.Exists(m_workshopModsPath))
                 Directory.CreateDirectory(m_workshopModsPath);
 
-            m_asyncDownloadScreen = new MyGuiScreenProgressAsync(MySpaceTexts.ProgressTextCheckingMods,
-                MySpaceTexts.Cancel,
+            m_asyncDownloadScreen = new MyGuiScreenProgressAsync(MyCommonTexts.ProgressTextCheckingMods,
+                MyCommonTexts.Cancel,
                 () => new DownloadModsResult(mods, onFinishedCallback),
                 endActionDownloadMods);
 
@@ -848,28 +976,30 @@ namespace Sandbox.Engine.Networking
             MyGuiSandbox.AddScreen(m_asyncDownloadScreen);
         }
 
+        public struct ResultData
+        {
+            public bool Success;
+            public string MismatchMods;
+        }
+
         class DownloadModsResult : IMyAsyncResult
         {
-            public bool Success
-            {
-                get;
-                private set;
-            }
-
             public Task Task
             {
                 get;
                 private set;
             }
 
-            public Action<bool> callback;
+            public ResultData Result;
 
-            public DownloadModsResult(List<MyObjectBuilder_Checkpoint.ModItem> mods, Action<bool> onFinishedCallback)
+            public Action<bool,string> callback;
+
+            public DownloadModsResult(List<MyObjectBuilder_Checkpoint.ModItem> mods, Action<bool,string> onFinishedCallback)
             {
                 callback = onFinishedCallback;
                 Task = Parallel.Start(() =>
                 {
-                    Success = DownloadWorldModsBlocking(mods);
+                    Result = DownloadWorldModsBlocking(mods);
                 });
             }
 
@@ -888,41 +1018,111 @@ namespace Sandbox.Engine.Networking
 
             var result = (DownloadModsResult)iResult;
 
-            if (!result.Success)
+            if (!result.Result.Success)
             {
                 MySandboxGame.Log.WriteLine(string.Format("Error downloading mods"));
             }
-            result.callback(result.Success);
+            result.callback(result.Result.Success,result.Result.MismatchMods);
         }
 
         /// <summary>
         /// Do NOT call this method from update thread.
         /// </summary>
-        public static bool DownloadModsBlocking(List<SubscribedItem> mods)
+        public static ResultData DownloadModsBlocking(List<SubscribedItem> mods)
         {
-            foreach (var mod in mods)
+            int counter = 0;
+            string numMods = mods.Count.ToString();
+            VRage.Collections.CachingList<SubscribedItem> failedMods = new VRage.Collections.CachingList<SubscribedItem>();
+            VRage.Collections.CachingList<SubscribedItem> mismatchMods = new VRage.Collections.CachingList<SubscribedItem>();
+            bool downloadingFailed = false;
+
+            long startTime = Stopwatch.GetTimestamp();
+            Parallel.ForEach<SubscribedItem>(mods, delegate(SubscribedItem mod)
             {
                 if (!MySteam.IsOnline)
-                    return false;
+                {
+                    downloadingFailed = true;
+                    return;
+                }
 
                 if (m_stop)
-                    return false;
+                {
+                    downloadingFailed = true;
+                    return;
+                }
+
+
+                bool devTagMismatch = mod.Tags != null && mod.Tags.Contains(MySteamWorkshop.WORKSHOP_DEVELOPMENT_TAG) && MyFinalBuildConstants.IS_STABLE;
+
+                if (devTagMismatch)
+                {
+                    mismatchMods.Add(mod);
+                }
 
                 var localPackedModFullPath = Path.Combine(m_workshopModsPath, mod.PublishedFileId + m_workshopModSuffix);
 
+                // If mod is up to date, no need to download it.
                 if (!IsModUpToDateBlocking(localPackedModFullPath, mod, true))
                 {
+                    // If the mod fails to download, we need to flag it for failure, log it, then stop
                     if (!DownloadItemBlocking(localPackedModFullPath, mod.UGCHandle))
                     {
-                        return false;
+                        failedMods.Add(mod);
+                        downloadingFailed = true;
+                        m_stop = true;
                     }
                 }
                 else
                 {
                     MySandboxGame.Log.WriteLineAndConsole(string.Format("Up to date mod: Id = {0}, title = '{1}'", mod.PublishedFileId, mod.Title));
                 }
+
+                if (m_asyncDownloadScreen != null)
+                {
+                    using (m_modLock.AcquireExclusiveUsing())
+                    {
+                        counter++;
+                        m_asyncDownloadScreen.ProgressTextString = MyTexts.GetString(MyCommonTexts.ProgressTextDownloadingMods) + " " + counter.ToString() + " of " + numMods;
+                    }
+                }
+                
+            });
+
+            long endTime = Stopwatch.GetTimestamp();
+
+            if (downloadingFailed)
+            {
+                failedMods.ApplyChanges();
+                if (failedMods.Count > 0)
+                {
+                    foreach (var mod in failedMods)
+                    {
+                        MySandboxGame.Log.WriteLineAndConsole(string.Format("Failed to download mod: Id = {0}, title = '{1}'", mod.PublishedFileId, mod.Title));
+                    }
+                }
+                else if (!m_stop)
+                {
+                    MySandboxGame.Log.WriteLineAndConsole(string.Format("Failed to download mods because Steam is not in Online Mode."));
+                }
+                else
+                {
+                    MySandboxGame.Log.WriteLineAndConsole(string.Format("Failed to download mods because download was stopped."));
+                }
+                return new ResultData();
             }
-            return true;
+
+            ResultData ret = new ResultData();
+            ret.Success = true;
+            ret.MismatchMods = "";
+            mismatchMods.ApplyChanges();
+            foreach(var mod in mismatchMods)
+            {
+                ret.MismatchMods += mod.Title + Environment.NewLine; 
+            }
+
+            double duration = (double)(endTime - startTime) / (double)Stopwatch.Frequency;
+            MySandboxGame.Log.WriteLineAndConsole(string.Format("Mod download time: {0:0.00} seconds", duration));
+            return ret;
         }
 
         /// <summary>
@@ -957,7 +1157,6 @@ namespace Sandbox.Engine.Networking
 
         public static bool DownloadScriptBlocking(SubscribedItem item)
         {
-
             if (!MySteam.IsOnline)
                 return false;
 
@@ -979,6 +1178,41 @@ namespace Sandbox.Engine.Networking
             }
             return true;
         }
+
+        public static bool DownloadBlueprintBlocking(SubscribedItem item,bool check =true)
+        {
+            if (m_stop)
+                return false;
+
+            var localPackedModFullPath = Path.Combine(m_workshopBlueprintsPath, item.PublishedFileId + m_workshopBlueprintSuffix);
+
+            if (check == false || !IsModUpToDateBlocking(localPackedModFullPath, item, true))
+            {
+                if (!DownloadItemBlocking(localPackedModFullPath, item.UGCHandle))
+                {
+                    return false;
+                }
+            }
+            else
+            {
+                MySandboxGame.Log.WriteLineAndConsole(string.Format("Up to date mod: Id = {0}, title = '{1}'", item.PublishedFileId, item.Title));
+            }
+            return true;
+        }
+
+        public static bool IsBlueprintUpToDate(SubscribedItem item)
+        {  
+            if (!MySteam.IsOnline)
+                return false;
+
+            if (m_stop)
+                return false;
+
+            var localPackedModFullPath = Path.Combine(m_workshopBlueprintsPath, item.PublishedFileId + m_workshopBlueprintSuffix);
+
+            return IsModUpToDateBlocking(localPackedModFullPath, item, true);
+        }
+
         public static bool DownloadModFromURLStream(string url, ulong publishedFileId, Action<bool> callback)
         {
             uint handle = HTTP.CreateHTTPRequest(HTTPMethod.GET, url);
@@ -1089,17 +1323,20 @@ namespace Sandbox.Engine.Networking
         /// <summary>
         /// Do NOT call this method from update thread.
         /// </summary>
-        public static bool DownloadWorldModsBlocking(List<MyObjectBuilder_Checkpoint.ModItem> mods)
+        public static ResultData DownloadWorldModsBlocking(List<MyObjectBuilder_Checkpoint.ModItem> mods)
         {
+            ResultData ret = new ResultData();
+            ret.Success = true;
             if (!MyFakes.ENABLE_WORKSHOP_MODS)
-                return true;
+            {             
+                return ret;
+            }
 
             MySandboxGame.Log.WriteLine("Downloading world mods - START");
             MySandboxGame.Log.IncreaseIndent();
 
             m_stop = false;
 
-            var result = true;
             if (mods != null && mods.Count > 0)
             {
                 var publishedFileIds = new List<ulong>();
@@ -1113,7 +1350,24 @@ namespace Sandbox.Engine.Networking
                     {
                         MySandboxGame.Log.WriteLineAndConsole("Local mods are not allowed in multiplayer.");
                         MySandboxGame.Log.DecreaseIndent();
-                        return false;
+                        return new ResultData();
+                    }
+                }
+
+                // Check if the world doesn't contain duplicate mods, if it does, log it and remove the duplicate entry
+                publishedFileIds.Sort();
+                for (int i = 0; i < publishedFileIds.Count - 1;)
+                {
+                    ulong id1 = publishedFileIds[i];
+                    ulong id2 = publishedFileIds[i + 1];
+                    if (id1 == id2)
+                    {
+                        MySandboxGame.Log.WriteLine(string.Format("Duplicate mod entry for id: {0}", id1));
+                        publishedFileIds.RemoveAt(i + 1);
+                    }
+                    else
+                    {
+                        i++;
                     }
                 }
 
@@ -1133,7 +1387,7 @@ namespace Sandbox.Engine.Networking
                             {
                                 xml = data;
                             }
-                            result = success;
+                            ret.Success = success;
                             mrEvent.Set();
                         });
 
@@ -1145,11 +1399,12 @@ namespace Sandbox.Engine.Networking
                             else
                             {
                                 MySandboxGame.Log.WriteLine("Steam server API unavailable");
-                                result = false;
+                                ret.Success = false;
                                 break;
                             }
                         }
-                        if (result == true)
+
+                        if (ret.Success)
                         {
                             try
                             {
@@ -1166,15 +1421,15 @@ namespace Sandbox.Engine.Networking
                                     if (xmlResult != Result.OK)
                                     {
                                         MySandboxGame.Log.WriteLine(string.Format("Failed to download mods: result = {0}", xmlResult));
-                                        result = false;
+                                        ret.Success = false;
                                     }
 
                                     reader.ReadToFollowing("resultcount");
                                     int count = reader.ReadElementContentAsInt();
 
-                                    if (count != publishedFileIds.Count())
+                                    if (count != publishedFileIds.Count)
                                     {
-                                        MySandboxGame.Log.WriteLine(string.Format("Failed to download mods details: Expected {0} results, got {1}", publishedFileIds.Count(), count));
+                                        MySandboxGame.Log.WriteLine(string.Format("Failed to download mods details: Expected {0} results, got {1}", publishedFileIds.Count, count));
                                     }
 
                                     var array = mods.ToArray();
@@ -1184,9 +1439,9 @@ namespace Sandbox.Engine.Networking
                                         array[i].FriendlyName = array[i].Name;
                                     }
 
-                                    var processed = new List<ulong>(publishedFileIds.Count());
+                                    var processed = new List<ulong>(publishedFileIds.Count);
 
-                                    for (int i = 0; i < publishedFileIds.Count(); ++i)
+                                    for (int i = 0; i < publishedFileIds.Count; ++i)
                                     {
                                         mrEvent.Reset();
 
@@ -1206,7 +1461,7 @@ namespace Sandbox.Engine.Networking
                                         if (itemResult != Result.OK)
                                         {
                                             MySandboxGame.Log.WriteLineAndConsole(string.Format("Failed to download mod: id = {0}, result = {1}", publishedFileId, itemResult));
-                                            result = false;
+                                            ret.Success = false;
                                             continue;
                                         }
 
@@ -1215,7 +1470,7 @@ namespace Sandbox.Engine.Networking
                                         if (appid != MySteam.AppId)
                                         {
                                             MySandboxGame.Log.WriteLineAndConsole(string.Format("Failed to download mod: id = {0}, wrong appid, got {1}, expected {2}", publishedFileId, appid, MySteam.AppId));
-                                            result = false;
+                                            ret.Success = false;
                                             continue;
                                         }
 
@@ -1261,7 +1516,7 @@ namespace Sandbox.Engine.Networking
                                                 mrEvent.Set();
                                             }))
                                             {
-                                                result = false;
+                                                ret.Success = false;
                                                 break;
                                             }
                                         }
@@ -1276,7 +1531,7 @@ namespace Sandbox.Engine.Networking
                                                 mrEvent.Set();
                                             }))
                                             {
-                                                result = false;
+                                                ret.Success = false;
                                                 break;
                                             }
                                         }
@@ -1289,7 +1544,7 @@ namespace Sandbox.Engine.Networking
                                             else
                                             {
                                                 MySandboxGame.Log.WriteLine("Steam server API unavailable");
-                                                result = false;
+                                                ret.Success = false;
                                                 break;
                                             }
                                         }
@@ -1301,7 +1556,7 @@ namespace Sandbox.Engine.Networking
                             catch (Exception e)
                             {
                                 MySandboxGame.Log.WriteLine(string.Format("Failed to download mods: {0}", e));
-                                result = false;
+                                ret.Success = false;
                             }
                         }
                     }
@@ -1313,21 +1568,21 @@ namespace Sandbox.Engine.Networking
                     if (!GetItemsBlocking(toGet, publishedFileIds))
                     {
                         MySandboxGame.Log.WriteLine("Could not obtain workshop item details");
-                        result = false;
+                       ret.Success = false;
                     }
                     else if (publishedFileIds.Count != toGet.Count)
                     {
                         MySandboxGame.Log.WriteLine(string.Format("Could not obtain all workshop item details, expected {0}, got {1}", publishedFileIds.Count, toGet.Count));
-                        result = false;
+                        ret.Success = false;
                     }
                     else
                     {
-                        m_asyncDownloadScreen.ProgressText = MySpaceTexts.ProgressTextDownloadingMods;
-
-                        if (!DownloadModsBlocking(toGet))
+                        m_asyncDownloadScreen.ProgressTextString = MyTexts.GetString(MyCommonTexts.ProgressTextDownloadingMods) + " 0 of " + toGet.Count.ToString();
+                       
+                        ret = DownloadModsBlocking(toGet);
+                        if (ret.Success == false)
                         {
                             MySandboxGame.Log.WriteLine("Downloading mods failed");
-                            result = false;
                         }
                         else
                         {
@@ -1353,8 +1608,7 @@ namespace Sandbox.Engine.Networking
             }
             MySandboxGame.Log.DecreaseIndent();
             MySandboxGame.Log.WriteLine("Downloading world mods - END");
-
-            return result;
+            return ret;
         }
 
         /// <summary>
@@ -1420,11 +1674,11 @@ namespace Sandbox.Engine.Networking
 
         public static bool GenerateModInfo(string modPath, ulong publishedFileId, ulong steamIDOwner)
         {
-            var modInfo = Sandbox.Common.ObjectBuilders.Serializer.MyObjectBuilderSerializer.CreateNewObject<MyObjectBuilder_ModInfo>();
+            var modInfo = MyObjectBuilderSerializer.CreateNewObject<MyObjectBuilder_ModInfo>();
             modInfo.WorkshopId = publishedFileId;
             modInfo.SteamIDOwner = steamIDOwner;
 
-            if (!Sandbox.Common.ObjectBuilders.Serializer.MyObjectBuilderSerializer.SerializeXML(Path.Combine(modPath, "modinfo.sbmi"), false, modInfo))
+            if (!MyObjectBuilderSerializer.SerializeXML(Path.Combine(modPath, "modinfo.sbmi"), false, modInfo))
             {
                 MySandboxGame.Log.WriteLine(string.Format("Error creating modinfo: workshopID={0}, mod='{1}'", publishedFileId, modPath));
                 return false;
@@ -1435,11 +1689,11 @@ namespace Sandbox.Engine.Networking
         #endregion
 
         #region Subscribed world instance creation
-        public static void CreateWorldInstanceAsync(SubscribedItem world, Action<bool, string> callbackOnFinished = null)
+        public static void CreateWorldInstanceAsync(SubscribedItem world, MyWorkshopPathInfo pathInfo, bool overwrite, Action<bool, string> callbackOnFinished = null)
         {
-            MyGuiSandbox.AddScreen(new MyGuiScreenProgressAsync(MySpaceTexts.ProgressTextCreatingWorld,
+            MyGuiSandbox.AddScreen(new MyGuiScreenProgressAsync(MyCommonTexts.ProgressTextCreatingWorld,
                 null,
-                () => new CreateWorldResult(world, callbackOnFinished),
+                () => new CreateWorldResult(world, pathInfo, callbackOnFinished, overwrite),
                 endActionCreateWorldInstance));
         }
 
@@ -1458,7 +1712,56 @@ namespace Sandbox.Engine.Networking
         /// <summary>
         /// Do NOT call this method from update thread.
         /// </summary>
-        public static bool TryCreateWorldInstanceBlocking(SubscribedItem world, out string sessionPath)
+        public static bool TryCreateWorldInstanceBlocking(SubscribedItem world, MyWorkshopPathInfo pathInfo, out string sessionPath, bool overwrite)
+        {
+            m_stop = false;
+            if (!Directory.Exists(pathInfo.Path))
+                Directory.CreateDirectory(pathInfo.Path);
+
+            string safeName = MyUtils.StripInvalidChars(world.Title);
+            sessionPath = null;
+
+            var localPackedWorldFullPath = Path.Combine(pathInfo.Path, world.PublishedFileId + pathInfo.Suffix);
+
+            if (!MySteam.IsOnline)
+                return false;
+
+            if (!IsModUpToDateBlocking(localPackedWorldFullPath, world, true))
+            {
+                if (!DownloadItemBlocking(localPackedWorldFullPath, world.UGCHandle))
+                    return false;
+            }
+
+            // Extract packaged world.
+            sessionPath = MyLocalCache.GetSessionSavesPath(safeName, false, false);
+
+            //overwrite?
+            if (overwrite && Directory.Exists(sessionPath))
+                Directory.Delete(sessionPath, true);
+
+            // Find new non existing folder. The game folder name may be different from game name, so we have to
+            // make sure we don't overwrite another save
+            while (Directory.Exists(sessionPath))
+                sessionPath = MyLocalCache.GetSessionSavesPath(safeName + MyUtils.GetRandomInt(int.MaxValue).ToString("########"), false, false);
+
+            MyZipArchive.ExtractToDirectory(localPackedWorldFullPath, sessionPath);
+
+            // Update some meta-data of the new world.
+            ulong checkPointSize;
+            var checkpoint = MyLocalCache.LoadCheckpoint(sessionPath, out checkPointSize);
+            checkpoint.SessionName = string.Format("({0}) {1}", pathInfo.NamePrefix, world.Title);
+            checkpoint.LastSaveTime = DateTime.Now;
+            checkpoint.WorkshopId = null;
+            MyLocalCache.SaveCheckpoint(checkpoint, sessionPath);
+            MyLocalCache.SaveLastLoadedTime(sessionPath, DateTime.Now);
+
+            return true;
+        }
+
+        /// <summary>
+        /// Do NOT call this method from update thread.
+        /// </summary>
+        public static bool TryCreateBattleWorldInstanceBlocking(SubscribedItem world, string workshopBattleWorldsPath, out string sessionPath)
         {
             if (!Directory.Exists(m_workshopWorldsPath))
                 Directory.CreateDirectory(m_workshopWorldsPath);
@@ -1477,27 +1780,33 @@ namespace Sandbox.Engine.Networking
                     return false;
             }
 
-            // Extract packaged world.
-            sessionPath = MyLocalCache.GetSessionSavesPath(safeName, false, false);
+            if (!Directory.Exists(workshopBattleWorldsPath))
+                Directory.CreateDirectory(workshopBattleWorldsPath);
+
+            sessionPath = Path.Combine(workshopBattleWorldsPath, safeName);
 
             // Find new non existing folder. The game folder name may be different from game name, so we have to
             // make sure we don't overwrite another save
             while (Directory.Exists(sessionPath))
-                sessionPath = MyLocalCache.GetSessionSavesPath(safeName + MyUtils.GetRandomInt(int.MaxValue).ToString("########"), false, false);
-
+                sessionPath = Path.Combine(workshopBattleWorldsPath, safeName + MyUtils.GetRandomInt(int.MaxValue).ToString("########"));
+#if XB1
+			System.Diagnostics.Debug.Assert(false);
+#else
             MyZipArchive.ExtractToDirectory(localPackedWorldFullPath, sessionPath);
+#endif
 
-            // Update some meta-data of the new world.
+			// Update some meta-data of the new world.
             ulong checkPointSize;
             var checkpoint = MyLocalCache.LoadCheckpoint(sessionPath, out checkPointSize);
-            checkpoint.SessionName = string.Format("(Workshop) {0}", world.Title);
+            checkpoint.SessionName = world.Title;
             checkpoint.LastSaveTime = DateTime.Now;
-            checkpoint.WorkshopId = null;
+            checkpoint.WorkshopId = world.PublishedFileId;
             MyLocalCache.SaveCheckpoint(checkpoint, sessionPath);
             MyLocalCache.SaveLastLoadedTime(sessionPath, DateTime.Now);
 
             return true;
         }
+
 
         class CreateWorldResult : IMyAsyncResult
         {
@@ -1521,12 +1830,12 @@ namespace Sandbox.Engine.Networking
                 private set;
             }
 
-            public CreateWorldResult(SubscribedItem world, Action<bool, string> callback)
+            public CreateWorldResult(SubscribedItem world, MyWorkshopPathInfo pathInfo, Action<bool, string> callback, bool overwrite)
             {
                 Callback = callback;
                 Task = Parallel.Start(() =>
                 {
-                    Success = TryCreateWorldInstanceBlocking(world, out m_createdSessionPath);
+                    Success = TryCreateWorldInstanceBlocking(world, pathInfo, out m_createdSessionPath, overwrite);
                 });
             }
 
@@ -1569,3 +1878,31 @@ namespace Sandbox.Engine.Networking
         }
     }
 }
+#else // XB1
+namespace Sandbox.Engine.Networking
+{
+    public class MySteamWorkshop
+    {
+        public static void DownloadModsAsync(List<MyObjectBuilder_Checkpoint.ModItem> mods, Action<bool,string> onFinishedCallback, Action onCancelledCallback = null)
+        {
+            onFinishedCallback(true,"");
+            return;
+        }
+
+        public static bool DownloadWorldModsBlocking(List<MyObjectBuilder_Checkpoint.ModItem> mods)
+        {
+            return true;
+        }
+
+        public static bool CheckLocalModsAllowed(List<MyObjectBuilder_Checkpoint.ModItem> mods, bool allowLocalMods)
+        {
+            return true;
+        }
+
+        public static bool CanRunOffline(List<MyObjectBuilder_Checkpoint.ModItem> mods)
+        {
+            return true;
+        }
+    }
+}
+#endif // XB1

@@ -1,5 +1,7 @@
 ﻿using Sandbox.Common.ObjectBuilders;
 using Sandbox.Common.ObjectBuilders.Definitions;
+using VRage.Game;
+using VRage.Game.Definitions;
 using VRage.Utils;
 
 
@@ -19,6 +21,8 @@ namespace Sandbox.Definitions
         /// </summary>
         public float DropProbability;
 
+		public float DeconstructionEfficiency;
+
         protected override void Init(MyObjectBuilder_DefinitionBase builder)
         {
             base.Init(builder);
@@ -27,6 +31,7 @@ namespace Sandbox.Definitions
             MyDebug.AssertDebug(ob != null);
             this.MaxIntegrity = ob.MaxIntegrity;
             this.DropProbability = ob.DropProbability;
+			DeconstructionEfficiency = ob.DeconstructionEfficiency;
         }
     }
 }

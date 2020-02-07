@@ -6,7 +6,7 @@ namespace VRage.Audio
 {
     public interface IMy3DSoundEmitter
     {
-        MyStringId SoundId { get; }
+        MyCueId SoundId { get; }
         IMySourceVoice Sound { get; set; }
         Vector3 SourcePosition { get; }
         Vector3 Velocity { get; }
@@ -14,9 +14,11 @@ namespace VRage.Audio
         float? CustomMaxDistance { get; }
         float? CustomVolume { get; }
 
+        bool Realistic { get; }
         bool Force3D { get; }
 
         bool Plays2D { get; }
         int SourceChannels { get; set; }
+		int LastPlayedWaveNumber { get; set; }
     }    
 }

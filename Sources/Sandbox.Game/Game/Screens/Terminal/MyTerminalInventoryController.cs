@@ -1,5 +1,4 @@
 ﻿using Sandbox.Common.ObjectBuilders;
-using Sandbox.Common.ObjectBuilders.Gui;
 using Sandbox.Definitions;
 using Sandbox.Game.Entities;
 using Sandbox.Game.Entities.Character;
@@ -10,11 +9,16 @@ using Sandbox.Game.Localization;
 using Sandbox.Game.Screens.Helpers;
 using Sandbox.Game.World;
 using Sandbox.Graphics.GUI;
+using Sandbox.ModAPI.Interfaces;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using VRage;
+using VRage.Audio;
+using VRage.Game;
+using VRage.Game.Entity;
 using VRage.Input;
+using VRage.Profiler;
 using VRage.Utils;
 using VRageMath;
 
@@ -51,16 +55,16 @@ namespace Sandbox.Game.Gui
         MyEntity m_userAsEntity;
         MyEntity m_interactedAsEntity;
         MyEntity m_openInventoryInteractedAsEntity;
-        IMyInventoryOwner m_userAsOwner;
-        IMyInventoryOwner m_interactedAsOwner;
-        List<IMyInventoryOwner> m_interactedGridOwners = new List<IMyInventoryOwner>();
+        MyEntity m_userAsOwner;
+        MyEntity m_interactedAsOwner;
+        List<MyEntity> m_interactedGridOwners = new List<MyEntity>();
         List<IMyConveyorEndpoint> m_reachableInventoryOwners = new List<IMyConveyorEndpoint>();
 
         List<MyGridConveyorSystem> m_registeredConveyorSystems = new List<MyGridConveyorSystem>();
 
         MyGuiControlInventoryOwner m_focusedOwnerControl;
         MyGuiControlGrid m_focusedGridControl;
-        MyInventoryItem? m_selectedInventoryItem;
+        MyPhysicalInventoryItem? m_selectedInventoryItem;
         MyInventory m_selectedInventory;
 
         bool m_leftShowsGrid;
@@ -98,6 +102,34 @@ namespace Sandbox.Game.Gui
             m_rightFilterGroup = new MyGuiControlRadioButtonGroup();
             m_controlsDisabledWhileDragged = new List<MyGuiControlGrid>();
             m_endpointPredicate = this.EndpointPredicate;
+        }
+
+        public void Refresh()
+        {
+            var parentGrid = (m_interactedAsEntity != null) ? m_interactedAsEntity.Parent as MyCubeGrid : null;
+            m_interactedGridOwners.Clear();
+            if (parentGrid != null)
+            {
+                var group = MyCubeGridGroups.Static.Logical.GetGroup(parentGrid);
+                foreach (var node in group.Nodes)
+                {
+                    GetGridInventories(node.NodeData, m_interactedGridOwners);
+                    node.NodeData.GridSystems.ConveyorSystem.BlockAdded += ConveyorSystem_BlockAdded;
+                    node.NodeData.GridSystems.ConveyorSystem.BlockRemoved += ConveyorSystem_BlockRemoved;
+
+                    m_registeredConveyorSystems.Add(node.NodeData.GridSystems.ConveyorSystem);
+                }
+            }
+
+            m_leftTypeGroup.SelectedIndex = 0;
+            m_rightTypeGroup.SelectedIndex = (m_interactedAsEntity is MyCharacter) || (m_interactedAsEntity is MyInventoryBagEntity) ? 0 : 1;
+            m_leftFilterGroup.SelectedIndex = 0;
+            m_rightFilterGroup.SelectedIndex = 0;
+
+            LeftTypeGroup_SelectedChanged(m_leftTypeGroup);
+            RightTypeGroup_SelectedChanged(m_rightTypeGroup);
+            SetLeftFilter(m_leftFilterType);
+            SetRightFilter(m_rightFilterType);
         }
 
         public void Init(IMyGuiControlsParent controlsParent, MyEntity thisEntity, MyEntity interactedEntity, MyGridColorHelper colorHelper)
@@ -200,11 +232,11 @@ namespace Sandbox.Game.Gui
             m_throwOutButton.ButtonClicked += throwOutButton_OnButtonClick;
             m_dragAndDrop.ItemDropped += dragDrop_OnItemDropped;
 
-            var thisInventoryOwner = m_userAsEntity as IMyInventoryOwner;
+            var thisInventoryOwner = (m_userAsEntity != null && m_userAsEntity.HasInventory) ? m_userAsEntity : null;
             if (thisInventoryOwner != null)
                 m_userAsOwner = thisInventoryOwner;
 
-            var targetInventoryOwner = m_interactedAsEntity as IMyInventoryOwner;
+            var targetInventoryOwner = (m_interactedAsEntity != null && m_interactedAsEntity.HasInventory) ? m_interactedAsEntity : null;
             if (targetInventoryOwner != null)
                 m_interactedAsOwner = targetInventoryOwner;
 
@@ -224,7 +256,7 @@ namespace Sandbox.Game.Gui
             }
             
             m_leftTypeGroup.SelectedIndex = 0;
-            m_rightTypeGroup.SelectedIndex = (m_interactedAsEntity is MyCharacter) ? 0 : 1;
+            m_rightTypeGroup.SelectedIndex = (m_interactedAsEntity is MyCharacter) || (m_interactedAsEntity is MyInventoryBagEntity) ? 0 : 1;
             m_leftFilterGroup.SelectedIndex = 0;
             m_rightFilterGroup.SelectedIndex = 0;
 
@@ -325,7 +357,7 @@ namespace Sandbox.Game.Gui
         private void DisableInvalidWhileDragging()
         {
             var draggingItem = m_dragAndDropInfo.Grid.GetItemAt(m_dragAndDropInfo.ItemIndex);
-            var invItem = (MyInventoryItem)draggingItem.UserData;
+            var invItem = (MyPhysicalInventoryItem)draggingItem.UserData;
             var srcInventory = (MyInventory)m_dragAndDropInfo.Grid.UserData;
             DisableUnacceptingInventoryControls(invItem, m_leftOwnersControl);
             DisableUnacceptingInventoryControls(invItem, m_rightOwnersControl);
@@ -333,7 +365,7 @@ namespace Sandbox.Game.Gui
             DisableUnreachableInventoryControls(srcInventory, invItem, m_rightOwnersControl);
         }
 
-        private void DisableUnacceptingInventoryControls(MyInventoryItem item, MyGuiControlList list)
+        private void DisableUnacceptingInventoryControls(MyPhysicalInventoryItem item, MyGuiControlList list)
         {
             foreach (var control in list.Controls.GetVisibleControls())
             {
@@ -358,10 +390,10 @@ namespace Sandbox.Game.Gui
         private IMyConveyorEndpointBlock m_interactedEndpointBlock;
         private bool EndpointPredicate(IMyConveyorEndpoint endpoint)
         {
-            return endpoint.CubeBlock is IMyInventoryOwner || endpoint.CubeBlock == m_interactedEndpointBlock;
+            return (endpoint.CubeBlock != null && endpoint.CubeBlock.HasInventory) || endpoint.CubeBlock == m_interactedEndpointBlock;
         }
 
-        private void DisableUnreachableInventoryControls(MyInventory srcInventory, MyInventoryItem item, MyGuiControlList list)
+        private void DisableUnreachableInventoryControls(MyInventory srcInventory, MyPhysicalInventoryItem item, MyGuiControlList list)
         {
             bool fromUser = srcInventory.Owner == m_userAsOwner;
             bool fromInteracted = srcInventory.Owner == m_interactedAsOwner;
@@ -388,7 +420,7 @@ namespace Sandbox.Game.Gui
 
             if (srcEndpoint != null)
             {
-                long ownerId = MySession.LocalPlayerId;
+                long ownerId = MySession.Static.LocalPlayerId;
                 m_interactedEndpointBlock = interactedEndpoint;
                 MyGridConveyorSystem.AppendReachableEndpoints(srcEndpoint.ConveyorEndpoint, ownerId, m_reachableInventoryOwners, item, m_endpointPredicate);
             }
@@ -412,7 +444,9 @@ namespace Sandbox.Game.Gui
                 bool transferIsFar = !transferIsLocal && !transferIsClose;
                 bool endpointUnreachable = !m_reachableInventoryOwners.Contains(endpoint);
                 bool interactedReachable = interactedEndpoint != null && m_reachableInventoryOwners.Contains(interactedEndpoint.ConveyorEndpoint);
-                bool toOwnerThroughInteracted = owner == m_userAsOwner && interactedReachable;
+                // If interacted is reachable but does not have inventory, than you cant take anything out from it.
+                // WARNING: no need for check of null on m_interactedAsEntity, because interactedEndpoint is checked above already (that will be null also if the other is)
+                bool toOwnerThroughInteracted = owner == m_userAsOwner && interactedReachable && m_interactedAsEntity.HasInventory;
 
                 if (transferIsFar && endpointUnreachable && !toOwnerThroughInteracted)
                 {
@@ -430,7 +464,7 @@ namespace Sandbox.Game.Gui
             m_reachableInventoryOwners.Clear();
         }
 
-        private void GetGridInventories(MyCubeGrid grid, List<IMyInventoryOwner> outputInventories)
+        private void GetGridInventories(MyCubeGrid grid, List<MyEntity> outputInventories)
         {
             Debug.Assert(outputInventories != null);
 
@@ -441,10 +475,12 @@ namespace Sandbox.Game.Gui
 
             if (grid != null)
             {
-                foreach (var block in grid.GridSystems.ConveyorSystem.Blocks)
+                foreach (var block in grid.GridSystems.ConveyorSystem.InventoryBlocks)
                 {
                     if ((block is Sandbox.Game.Entities.Cube.MyTerminalBlock) &&
                         !(block as Sandbox.Game.Entities.Cube.MyTerminalBlock).HasLocalPlayerAccess())
+                        continue;
+                    if (m_interactedAsEntity != block && block is Sandbox.Game.Entities.Cube.MyTerminalBlock && !(block as Sandbox.Game.Entities.Cube.MyTerminalBlock).ShowInInventory)
                         continue;
 
                     outputInventories.Add(block);
@@ -452,16 +488,16 @@ namespace Sandbox.Game.Gui
             }
         }
 
-        private void CreateInventoryControlInList(IMyInventoryOwner owner, MyGuiControlList listControl)
+        private void CreateInventoryControlInList(MyEntity owner, MyGuiControlList listControl)
         {
-            List<IMyInventoryOwner> inventories = new List<IMyInventoryOwner>();
+            List<MyEntity> inventories = new List<MyEntity>();
             if (owner != null)
                 inventories.Add(owner);
 
             CreateInventoryControlsInList(inventories, listControl);
         }
 
-        private void CreateInventoryControlsInList(List<IMyInventoryOwner> owners, MyGuiControlList listControl, MyInventoryOwnerTypeEnum? filterType = null)
+        private void CreateInventoryControlsInList(List<MyEntity> owners, MyGuiControlList listControl, MyInventoryOwnerTypeEnum? filterType = null)
         {
             if (listControl.Controls.Contains(m_focusedOwnerControl))
                 m_focusedOwnerControl = null;
@@ -470,7 +506,10 @@ namespace Sandbox.Game.Gui
 
             foreach (var owner in owners)
             {
-                if (filterType.HasValue && owner.InventoryOwnerType != filterType)
+                if (!(owner != null && owner.HasInventory))
+                    continue;
+
+                if (filterType.HasValue && (owner as MyEntity).InventoryOwnerType() != filterType)
                     continue;
 
                 Vector4 labelColor = Color.White.ToVector4();
@@ -511,7 +550,7 @@ namespace Sandbox.Game.Gui
             listControl.InitControls(inventoryControlList);
         }
 
-        private void ShowAmountTransferDialog(MyInventoryItem inventoryItem, Action<float> onConfirmed)
+        private void ShowAmountTransferDialog(MyPhysicalInventoryItem inventoryItem, Action<float> onConfirmed)
         {
             var amount = inventoryItem.Amount;
             var obType = inventoryItem.Content.TypeId;
@@ -523,12 +562,12 @@ namespace Sandbox.Game.Gui
                 maxDecimalDigits = MyInventoryConstants.GUI_DISPLAY_MAX_DECIMALS;
                 asInteger = false;
             }
-            var dialog = new MyGuiScreenDialogAmount(0, (float)amount, minMaxDecimalDigits: maxDecimalDigits, parseAsInteger: asInteger);
+            var dialog = new MyGuiScreenDialogAmount(0, (float)amount, MyCommonTexts.DialogAmount_AddAmountCaption, minMaxDecimalDigits: maxDecimalDigits, parseAsInteger: asInteger);
             dialog.OnConfirmed += onConfirmed;
             MyGuiSandbox.AddScreen(dialog);
         }
 
-        private bool TransferToOppositeFirst(MyInventoryItem item)
+        private bool TransferToOppositeFirst(MyPhysicalInventoryItem item)
         {
             var srcControl = m_focusedOwnerControl;
             var otherInventoriesControl = (srcControl.Owner == m_leftOwnersControl) ? m_rightOwnersControl : m_leftOwnersControl;
@@ -557,7 +596,19 @@ namespace Sandbox.Game.Gui
                 if (srcEndpoint == null || dstEndpoint == null)
                     return false;
 
-                if (!MyGridConveyorSystem.Pathfinding.Reachable(srcEndpoint.ConveyorEndpoint, dstEndpoint.ConveyorEndpoint))
+				try
+				{
+					MyGridConveyorSystem.AppendReachableEndpoints(srcEndpoint.ConveyorEndpoint, MySession.Static.LocalPlayerId, m_reachableInventoryOwners, item, m_endpointPredicate);
+
+					if (!m_reachableInventoryOwners.Contains(dstEndpoint.ConveyorEndpoint))
+						return false;
+				}
+				finally
+				{
+					m_reachableInventoryOwners.Clear();
+				}
+
+                if (!MyGridConveyorSystem.Reachable(srcEndpoint.ConveyorEndpoint, dstEndpoint.ConveyorEndpoint))
                     return false;
             }
 
@@ -568,7 +619,9 @@ namespace Sandbox.Game.Gui
             MyInventory dstInventory = null;
             for (int i = 0; i < dstOwner.InventoryCount; ++i)
             {
-                var tmp = dstOwner.GetInventory(i);
+                var tmp = dstOwner.GetInventory(i) as MyInventory;
+                System.Diagnostics.Debug.Assert(tmp as MyInventory != null, "Null or unexpected inventory type!");
+
                 if (tmp.CheckConstraint(item.Content.GetId()))
                 {
                     dstInventory = tmp;
@@ -579,7 +632,7 @@ namespace Sandbox.Game.Gui
             if (dstInventory == null)
                 return false;
 
-            dstInventory.TransferItemFrom(srcInventory, m_focusedGridControl.SelectedIndex.Value, amount: item.Amount);
+            MyInventory.TransferByUser(srcInventory, dstInventory, srcInventory.GetItems()[m_focusedGridControl.SelectedIndex.Value].ItemId, amount: item.Amount);
             return true;
         }
 
@@ -611,7 +664,7 @@ namespace Sandbox.Game.Gui
             {
                 m_selectedInventory = (MyInventory)m_focusedGridControl.UserData;
                 var selectedItem = m_focusedGridControl.SelectedItem;
-                m_selectedInventoryItem = (selectedItem != null) ? (MyInventoryItem?)selectedItem.UserData
+                m_selectedInventoryItem = (selectedItem != null) ? (MyPhysicalInventoryItem?)selectedItem.UserData
                                                                  : null;
             }
             else
@@ -690,7 +743,7 @@ namespace Sandbox.Game.Gui
         }
 
         #region Event handling
-        private void ConveyorSystem_BlockAdded(IMyInventoryOwner obj)
+        private void ConveyorSystem_BlockAdded(MyCubeBlock obj)
         {
             m_interactedGridOwners.Add(obj);
             if (m_leftShowsGrid) LeftTypeGroup_SelectedChanged(m_leftTypeGroup);
@@ -703,7 +756,7 @@ namespace Sandbox.Game.Gui
             }
         }
 
-        private void ConveyorSystem_BlockRemoved(IMyInventoryOwner obj)
+        private void ConveyorSystem_BlockRemoved(MyCubeBlock obj)
         {
             m_interactedGridOwners.Remove(obj);
             if (m_leftShowsGrid) LeftTypeGroup_SelectedChanged(m_leftTypeGroup);
@@ -726,6 +779,7 @@ namespace Sandbox.Game.Gui
                                           m_hideEmptyLeftLabel,
                                           m_blockSearchLeft,
                                           m_blockSearchClearLeft, true);
+            m_leftOwnersControl.SetScrollBarPage(0);
         }
 
         private void RightTypeGroup_SelectedChanged(MyGuiControlRadioButtonGroup obj)
@@ -738,6 +792,7 @@ namespace Sandbox.Game.Gui
                                           m_hideEmptyRightLabel,
                                           m_blockSearchRight,
                                           m_blockSearchClearRight, false);
+            m_rightOwnersControl.SetScrollBarPage(0);
         }
 
         private void throwOutButton_OnButtonClick(MyGuiControlButton sender)
@@ -750,9 +805,10 @@ namespace Sandbox.Game.Gui
                 var thrownItem = m_selectedInventoryItem.Value;
                 Debug.Assert(m_focusedGridControl.SelectedIndex.HasValue, "Focused grid has no selected item.");
                 if (m_focusedGridControl.SelectedIndex.HasValue)
-                    m_selectedInventory.RemoveItemsAt(m_focusedGridControl.SelectedIndex.Value, thrownItem.Amount, spawn: true);
-                else
-                    m_selectedInventory.RemoveItemsOfType(thrownItem.Amount, thrownItem.Content, spawn: true);
+                {
+                    m_selectedInventory.DropItem(m_focusedGridControl.SelectedIndex.Value, thrownItem.Amount);
+                }
+             
 
                 //var forward = ownerAsEntity.WorldMatrix.Forward;
                 //var up = ownerAsEntity.WorldMatrix.Up;
@@ -760,7 +816,7 @@ namespace Sandbox.Game.Gui
                 //MyFloatingObjects.Spawn(thrownItem, ownerAsEntity.GetPosition() + forward + up, forward, up, ownerAsEntity.Physics);
             }
 
-            MyGuiAudio.PlaySound(MyGuiSounds.PlayDropItem);
+            //MyGuiAudio.PlaySound(MyGuiSounds.PlayDropItem);
 
             RefreshSelectedInventoryItem();
         }
@@ -800,7 +856,7 @@ namespace Sandbox.Game.Gui
                 MyInput.Static.IsAnyCtrlKeyPressed())
                 return;
 
-            var item = (MyInventoryItem)sender.GetItemAt(eventArgs.ItemIndex).UserData;
+            var item = (MyPhysicalInventoryItem)sender.GetItemAt(eventArgs.ItemIndex).UserData;
             bool transfered = TransferToOppositeFirst(item);
             RefreshSelectedInventoryItem();
             //MyAudio.Static.PlayCue(transfered ? MySoundCuesEnum.HudMouseClick : MySoundCuesEnum.HudUnable);
@@ -812,7 +868,7 @@ namespace Sandbox.Game.Gui
             bool shiftPressed = MyInput.Static.IsAnyShiftKeyPressed();
             if (ctrlPressed || shiftPressed)
             {
-                var item = (MyInventoryItem)sender.GetItemAt(eventArgs.ItemIndex).UserData;
+                var item = (MyPhysicalInventoryItem)sender.GetItemAt(eventArgs.ItemIndex).UserData;
                 item.Amount = MyFixedPoint.Min((shiftPressed ? 100 : 1) * (ctrlPressed ? 10 : 1), item.Amount);
                 bool transfered = TransferToOppositeFirst(item);
                 RefreshSelectedInventoryItem();
@@ -824,9 +880,9 @@ namespace Sandbox.Game.Gui
         {
             if (eventArgs.DropTo != null)
             {
-                MyGuiAudio.PlaySound(MyGuiSounds.HudMouseClick);
+                MyGuiAudio.PlaySound(MyGuiSounds.HudItem);
 
-                MyInventoryItem inventoryItem = (MyInventoryItem)eventArgs.Item.UserData;
+                MyPhysicalInventoryItem inventoryItem = (MyPhysicalInventoryItem)eventArgs.Item.UserData;
 
                 var srcGrid = eventArgs.DragFrom.Grid;
                 var dstGrid = eventArgs.DropTo.Grid;
@@ -841,6 +897,9 @@ namespace Sandbox.Game.Gui
 
                 if (srcGrid == dstGrid)
                 {
+                    //GR: Why alter ItemIndex? This caused invalid swapping of items
+                    //if (eventArgs.DragFrom.ItemIndex < eventArgs.DropTo.ItemIndex)
+                    //    eventArgs.DropTo.ItemIndex++;
                     if (eventArgs.DragButton == MySharedButtonsEnum.Secondary)
                     {
                         ShowAmountTransferDialog(inventoryItem, delegate(float amount)
@@ -851,7 +910,7 @@ namespace Sandbox.Game.Gui
                                 return;
                             inventoryItem.Amount = (MyFixedPoint)amount;
                             CorrectItemAmount(ref inventoryItem);
-                            MyInventory.Transfer(srcInventory, srcInventory, inventoryItem.ItemId, eventArgs.DropTo.ItemIndex, inventoryItem.Amount);
+                            MyInventory.TransferByUser(srcInventory, srcInventory, inventoryItem.ItemId, eventArgs.DropTo.ItemIndex, inventoryItem.Amount);
                             if (dstGrid.IsValidIndex(eventArgs.DropTo.ItemIndex))
                                 dstGrid.SelectedIndex = eventArgs.DropTo.ItemIndex;
                             else
@@ -861,7 +920,7 @@ namespace Sandbox.Game.Gui
                     }
                     else
                     {
-                        MyInventory.Transfer(srcInventory, srcInventory, inventoryItem.ItemId, eventArgs.DropTo.ItemIndex);
+                        MyInventory.TransferByUser(srcInventory, srcInventory, inventoryItem.ItemId, eventArgs.DropTo.ItemIndex);
                         if (dstGrid.IsValidIndex(eventArgs.DropTo.ItemIndex))
                             dstGrid.SelectedIndex = eventArgs.DropTo.ItemIndex;
                         else
@@ -879,13 +938,13 @@ namespace Sandbox.Game.Gui
                             return;
                         inventoryItem.Amount = (MyFixedPoint)amount;
                         CorrectItemAmount(ref inventoryItem);
-                        MyInventory.Transfer(srcInventory, dstInventory, inventoryItem.ItemId, eventArgs.DropTo.ItemIndex, inventoryItem.Amount);
+                        MyInventory.TransferByUser(srcInventory, dstInventory, inventoryItem.ItemId, eventArgs.DropTo.ItemIndex, inventoryItem.Amount);
                         RefreshSelectedInventoryItem();
                     });
                 }
                 else
                 {
-                    MyInventory.Transfer(srcInventory, dstInventory, inventoryItem.ItemId, eventArgs.DropTo.ItemIndex);
+                    MyInventory.TransferByUser(srcInventory, dstInventory, inventoryItem.ItemId, eventArgs.DropTo.ItemIndex);
                     RefreshSelectedInventoryItem();
                 }
             }
@@ -902,7 +961,7 @@ namespace Sandbox.Game.Gui
             m_controlsDisabledWhileDragged.Clear();
         }
 
-        private static void CorrectItemAmount(ref MyInventoryItem dragItem)
+        private static void CorrectItemAmount(ref MyPhysicalInventoryItem dragItem)
         {
             var obType = dragItem.Content.TypeId;
         }
@@ -991,7 +1050,7 @@ namespace Sandbox.Game.Gui
                 foreach (var item in list.Controls)
                 {
                     var owner   = (item as MyGuiControlInventoryOwner).InventoryOwner;
-                    var tmp     = owner.DisplayNameText.ToString().ToLower();
+                    var tmp     = (owner as MyEntity).DisplayNameText.ToString().ToLower();
                     var add     = true;
                     var isEmpty = true;
 
@@ -1008,7 +1067,9 @@ namespace Sandbox.Game.Gui
                     {
                         for (int i = 0; i < owner.InventoryCount; i++)
                         {
-                            foreach (var inventoryItem in owner.GetInventory(i).GetItems())
+                            System.Diagnostics.Debug.Assert(owner.GetInventory(i) as MyInventory != null, "Null or other inventory type!");
+
+                            foreach (var inventoryItem in (owner.GetInventory(i) as MyInventory).GetItems())
                             {
                                 bool matches = true;
                                 string inventoryItemName = MyDefinitionManager.Static.GetPhysicalItemDefinition(inventoryItem.Content).DisplayNameText.ToString().ToLower();
@@ -1072,6 +1133,7 @@ namespace Sandbox.Game.Gui
                         item.Visible = true;
                 }
             }
+            list.SetScrollBarPage();
         }
 
     }

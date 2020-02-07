@@ -9,6 +9,7 @@ using Sandbox.Engine.Utils;
 using VRage;
 using Sandbox.Game;
 using VRage.Utils;
+using System.Diagnostics;
 
 namespace Sandbox
 {
@@ -37,6 +38,12 @@ namespace Sandbox
             }
 
             string text = String.Format(format, logfile, gameName, minimumRequirementsPage);
+            Sandbox.MyMessageBox.Show(IntPtr.Zero, text, gameName, MessageBoxOptions.OkOnly | MessageBoxOptions.SystemModal | MessageBoxOptions.IconExclamation | MessageBoxOptions.SetForeground);
+        }
+
+        public static void ReportNotCompatibleGPU(string gameName, string logfile, string minimumRequirementsPage)
+        {
+            string text = String.Format(APP_WARNING_MESSAGE_UNSUPPORTED_GPU, logfile, gameName, minimumRequirementsPage);
             Sandbox.MyMessageBox.Show(IntPtr.Zero, text, gameName, MessageBoxOptions.OkOnly | MessageBoxOptions.SystemModal | MessageBoxOptions.IconExclamation | MessageBoxOptions.SetForeground);
         }
 
@@ -137,9 +144,13 @@ namespace Sandbox
 
         public static void ReportAppAlreadyRunning(string gameName)
         {
+#if !XB1
             System.Windows.Forms.MessageBox.Show(
                 String.Format(APP_ALREADY_RUNNING, gameName),
                 String.Format(MESSAGE_BOX_CAPTION, gameName));
+#else
+            System.Diagnostics.Debug.Assert(false, "Report support on XB1!");
+#endif
         }
 
         private static void SendReport(string logName, string id, out string log, out HttpStatusCode code)
@@ -159,19 +170,25 @@ namespace Sandbox
                     }
                 }
 
+#if XB1
+                System.Diagnostics.Debug.Assert(false, "TODO for XB1.");
+#else // !XB1
                 try
                 {
-                    string renderLog = Path.Combine(Path.GetDirectoryName(logName), "VRageRender" + Path.GetExtension(logName));
-                    if (renderLog != null && File.Exists(renderLog))
+                    foreach (var renderLog in Directory.GetFiles(Path.GetDirectoryName(logName), "VRageRender*.log", SearchOption.TopDirectoryOnly))
                     {
-                        using (var file = File.Open(renderLog, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
-                        using (var reader = new StreamReader(file))
+                        if (renderLog != null && File.Exists(renderLog))
                         {
-                            additionalInfo = reader.ReadToEnd() ?? String.Empty;
+                            using (var file = File.Open(renderLog, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                            using (var reader = new StreamReader(file))
+                            {
+                                additionalInfo += reader.ReadToEnd() ?? String.Empty;
+                            }
                         }
                     }
                 }
                 catch { }
+#endif // !XB1
 
                 if (!String.IsNullOrEmpty(log))
                 {
@@ -260,6 +277,14 @@ namespace Sandbox
             "{1} - application error occured. For more information please see application log at {0}\n\n" +
             "It seems that your graphics card driver is not installed or your graphics card does not meet minimum requirements. " +
             "Please install driver and see minimum requirements at {2}\n\n" +
+            "Thank You!\n" +
+            "Keen Software House"
+            ).Replace("\n", MyUtils.C_CRLF);
+
+        public static string APP_WARNING_MESSAGE_UNSUPPORTED_GPU = (
+            "{1} - Warning!\n\n" +
+            "It seems that your graphics card is currently unsupported because it does not meet minimum requirements. For more information please see application log at {0}\n" +
+            "Please see minimum requirements at {2}\n\n" +
             "Thank You!\n" +
             "Keen Software House"
             ).Replace("\n", MyUtils.C_CRLF);

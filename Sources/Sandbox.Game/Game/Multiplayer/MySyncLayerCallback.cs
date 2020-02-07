@@ -1,5 +1,7 @@
 ﻿using VRage.Serialization;
+#if !XB1 // XB1_NOPROTOBUF
 using ProtoBuf.Meta;
+#endif // !XB1
 using Sandbox.Engine.Multiplayer;
 using Sandbox.Game.World;
 using System;
@@ -11,7 +13,9 @@ using VRage;
 using VRage.Trace;
 using Sandbox.Common.ObjectBuilders;
 using VRage.Compiler;
-using Sandbox.Common.ObjectBuilders.Serializer;
+using VRage.ObjectBuilders;
+using VRage.Game.Entity;
+using VRage.Library.Utils;
 
 namespace Sandbox.Game.Multiplayer
 {
@@ -20,11 +24,11 @@ namespace Sandbox.Game.Multiplayer
         long GetEntityId();
     }
 
-    static class EntityMessageExtensions
+    public static class EntityMessageExtensions
     {
         public static string GetEntityText(this IEntityMessage msg)
         {
-            Sandbox.Game.Entities.MyEntity entity;
+            MyEntity entity;
             if (Sandbox.Game.Entities.MyEntities.TryGetEntityById(msg.GetEntityId(), out entity))
             {
                 return entity.ToString();
@@ -33,7 +37,7 @@ namespace Sandbox.Game.Multiplayer
         }
     }
 
-    public delegate void MessageCallbackTime<TMsg>(ref TMsg message, MyNetworkClient sender, TimeSpan timestamp)
+    public delegate void MessageCallbackTime<TMsg>(ref TMsg message, MyNetworkClient sender, MyTimeSpan timestamp)
         where TMsg : struct;
 
     public delegate void MessageCallback<TMsg>(ref TMsg message, MyNetworkClient sender)
@@ -48,7 +52,6 @@ namespace Sandbox.Game.Multiplayer
     {
         FromServer = 1,
         ToServer = 2,
-        Any = 4,
     }
 
     public partial class MySyncLayer
@@ -59,10 +62,12 @@ namespace Sandbox.Game.Multiplayer
             void Unregister(MySyncLayer layer);
         }
 
+#if !XB1 // XB1_NOPROTOBUF
         class DefaultProtoSerializer<T>
         {
-            public static readonly ProtoSerializer<T> Default = new ProtoSerializer<T>(Sandbox.Common.ObjectBuilders.Serializer.MyObjectBuilderSerializer.Serializer);
+            public static readonly ProtoSerializer<T> Default = new ProtoSerializer<T>(MyObjectBuilderSerializer.Serializer);
         }
+#endif // !XB1
 
         class Registrator<TMsg> : IRegistrator
             where TMsg : struct
@@ -113,21 +118,23 @@ namespace Sandbox.Game.Multiplayer
                 this.Callback = callback;
             }
 
-            void OnHandle(ref TMsg msg, MyNetworkClient player, TimeSpan timestamp)
+            void OnHandle(ref TMsg msg, MyNetworkClient player, MyTimeSpan timestamp)
             {
                 Callback(ref msg, player, timestamp);
             }
 
-            void Handle(ref TMsg msg, ulong sender, TimeSpan timestamp)
-            {
-                if (Sync.ServerId == sender)
-                {
-                    Layer.LastMessageFromServer = DateTime.UtcNow;
-                }
-
+            void Handle(ref TMsg msg, ulong sender, MyTimeSpan timestamp)
+            {              
                 MyNetworkClient player;
                 bool playerFound = Layer.Clients.TryGetClient(sender, out player);
-                bool permissionsOk = Layer.CheckPermissions(sender, Permission);
+                bool permissionsOk = MySyncLayer.CheckReceivePermissions(sender, Permission);
+
+             /*   if (!playerFound && msg is ConnectedClientDataMsg)
+                {
+                    var m = (ConnectedClientDataMsg)(object)msg;
+                    player = Layer.Clients.AddClient(sender);
+                    playerFound = true;
+                }*/
 
                 //TODO: This should be ok if client loads the scene, buffers another player messages
                 //and during that time is that player kicked
@@ -144,7 +151,7 @@ namespace Sandbox.Game.Multiplayer
                 Serializer.Serialize(destination, ref msg);
             }
 
-            void ITransportCallback.Receive(ByteStream source, ulong sender, TimeSpan timestamp)
+            void ITransportCallback.Receive(ByteStream source, ulong sender, MyTimeSpan timestamp)
             {
                 // TODO: msg pool as member in this class?
 
@@ -180,7 +187,7 @@ namespace Sandbox.Game.Multiplayer
                 this.Callback = callback;
             }
 
-            public void Handle(ref TMsg msg, MyNetworkClient player, TimeSpan timestamp)
+            public void Handle(ref TMsg msg, MyNetworkClient player, MyTimeSpan timestamp)
             {
                 Callback(ref msg, player);
             }
@@ -199,7 +206,7 @@ namespace Sandbox.Game.Multiplayer
                 this.Layer = layer;
             }
 
-            public void Handle(ref TMsg msg, MyNetworkClient player, TimeSpan timestamp)
+            public void Handle(ref TMsg msg, MyNetworkClient player, MyTimeSpan timestamp)
             {
                 TSync sync = Layer.GetSyncEntity<TSync, TMsg>(msg.GetEntityId());
                 if (sync != null)

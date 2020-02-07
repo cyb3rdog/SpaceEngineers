@@ -1,34 +1,31 @@
-﻿using System;
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.Diagnostics;
-using System.Linq;
-using System.Reflection;
 using System.Text;
-using Sandbox.Common;
-
 using Sandbox.Common.ObjectBuilders;
-using Sandbox.Game.GameSystems.Electricity;
+using Sandbox.Definitions;
 using Sandbox.Game.Gui;
 using Sandbox.Game.Lights;
 using VRageMath;
 using Sandbox.Engine.Utils;
-using Sandbox.Graphics.GUI;
 using Sandbox.Game.Multiplayer;
-
-using Sandbox.Game.Screens.Terminal.Controls;
 using Sandbox.Game.Components;
-using Sandbox.ModAPI.Ingame;
+using Sandbox.Game.EntityComponents;
+using Sandbox.ModAPI;
 using Sandbox.Game.Localization;
 using VRage;
+using VRage.Game;
 using VRage.Utils;
+using VRage.ModAPI;
+using VRage.Game.Gui;
+using VRage.Sync;
 
 namespace Sandbox.Game.Entities.Cube
 {
     [MyCubeBlockType(typeof(MyObjectBuilder_Beacon))]
-    class MyBeacon : MyFunctionalBlock, IMyPowerConsumer, IMyComponentOwner<MyDataBroadcaster>, IMyBeacon
+    public class MyBeacon : MyFunctionalBlock, IMyBeacon
     {
         private static readonly Color COLOR_ON = new Color(255, 255, 128);
-        private static readonly Color COLOR_OFF = COLOR_ON ; //Color.Red;
+        private static readonly Color COLOR_OFF  = new Color(30, 30, 30);
         private static readonly float POINT_LIGHT_RANGE_SMALL = 2.0f;
         private static readonly float POINT_LIGHT_RANGE_LARGE = 7.5f;
         private static readonly float POINT_LIGHT_INTENSITY_SMALL = 4;
@@ -42,20 +39,43 @@ namespace Sandbox.Game.Entities.Cube
         private float m_currentLightPower;
         private int m_lastAnimationUpdateTime;
 
-        MyRadioBroadcaster m_radioBroadcaster;
+        internal MyRadioBroadcaster RadioBroadcaster 
+        { 
+            get { return (MyRadioBroadcaster)Components.Get<MyDataBroadcaster>(); }
+            private set { Components.Add<MyDataBroadcaster>(value); }
+        }
+        readonly Sync<float> m_radius;
 
-        static MyBeacon()
+        public MyBeacon()
         {
-            MyTerminalControlFactory.RemoveBaseClass<MyBeacon, MyTerminalBlock>();
+#if XB1 // XB1_SYNC_NOREFLECTION
+            m_radius = SyncType.CreateAndAddProp<float>();
+#endif // XB1
+            CreateTerminalControls();
 
-            var show = new MyTerminalControlOnOffSwitch<MyBeacon>("ShowInTerminal", MySpaceTexts.Terminal_ShowInTerminal, MySpaceTexts.Terminal_ShowInTerminalToolTip);
-            show.Getter = (x) => x.ShowInTerminal;
-            show.Setter = (x, v) => x.RequestShowInTerminal(v);
-            MyTerminalControlFactory.AddControl(show);
+            m_radius.ValueChanged += (obj) => ChangeRadius();
+        }
 
-            var customName = new MyTerminalControlTextbox<MyBeacon>("CustomName", MySpaceTexts.Name, MySpaceTexts.Blank);
+        void ChangeRadius()
+        {
+            RadioBroadcaster.BroadcastRadius = m_radius;
+        }
+
+        protected override void CreateTerminalControls()
+        {
+            if (MyTerminalControlFactory.AreControlsCreated<MyBeacon>())
+                return;
+            base.CreateTerminalControls();
+            //MyTerminalControlFactory.RemoveBaseClass<MyBeacon, MyTerminalBlock>(); // this removed also controls shared with other blocks
+
+            //removed unnecessary controls
+            var controlList = MyTerminalControlFactory.GetList(typeof(MyBeacon)).Controls;
+            controlList.Remove(controlList[4]);//name
+            controlList.Remove(controlList[4]);//show on HUD
+
+            var customName = new MyTerminalControlTextbox<MyBeacon>("CustomName", MyCommonTexts.Name, MySpaceTexts.Blank);
             customName.Getter = (x) => x.CustomName;
-            customName.Setter = (x, v) => MySyncBlockHelpers.SendChangeNameRequest(x, v);
+            customName.Setter = (x, v) => x.SetCustomName(v);
             customName.SupportsMultipleBlocks = false;
             MyTerminalControlFactory.AddControl(customName);
             MyTerminalControlFactory.AddControl(new MyTerminalControlSeparator<MyBeacon>());
@@ -64,7 +84,7 @@ namespace Sandbox.Game.Entities.Cube
             broadcastRadius.SetLogLimits(1, MyEnergyConstants.MAX_RADIO_POWER_RANGE);
             broadcastRadius.DefaultValue = 10000;
             broadcastRadius.Getter = (x) => x.RadioBroadcaster.BroadcastRadius;
-            broadcastRadius.Setter = (x, v) => x.RadioBroadcaster.SyncObject.SendChangeRadioAntennaRequest(v, x.RadioBroadcaster.Enabled);
+            broadcastRadius.Setter = (x, v) => x.m_radius.Value = v;
             broadcastRadius.Writer = (x, result) => result.Append(new StringBuilder().AppendDecimal(x.RadioBroadcaster.BroadcastRadius, 0).Append(" m"));
             broadcastRadius.EnableActions();
             MyTerminalControlFactory.AddControl(broadcastRadius);
@@ -84,7 +104,7 @@ namespace Sandbox.Game.Entities.Cube
                         NeedsUpdate |= MyEntityUpdateEnum.EACH_FRAME;
                         m_lastAnimationUpdateTime = MySandboxGame.TotalGamePlayTimeInMilliseconds;
                     }
-                    else
+                    else if (IsFunctional)
                         NeedsUpdate &= ~MyEntityUpdateEnum.EACH_FRAME;
                 }
             }
@@ -92,29 +112,46 @@ namespace Sandbox.Game.Entities.Cube
 
         protected override bool CheckIsWorking()
         {
-            return PowerReceiver.IsPowered && base.CheckIsWorking();
+            return ResourceSink.IsPoweredByType(MyResourceDistributorComponent.ElectricityId) && base.CheckIsWorking();
         }
+
         public override void Init(MyObjectBuilder_CubeBlock objectBuilder, MyCubeGrid cubeGrid)
         {
+            var beaconDefinition = BlockDefinition as MyBeaconDefinition;
+            Debug.Assert(beaconDefinition != null);
+
+            var sinkComp = new MyResourceSinkComponent();
+            sinkComp.Init(
+                MyStringHash.GetOrCompute(beaconDefinition.ResourceSinkGroup),
+                MyEnergyConstants.MAX_REQUIRED_POWER_BEACON,
+                UpdatePowerInput);
+    
+            ResourceSink = sinkComp;
+
+            RadioBroadcaster = new MyRadioBroadcaster(10000);
+            if (((MyObjectBuilder_Beacon)objectBuilder).BroadcastRadius != 0)
+                RadioBroadcaster.BroadcastRadius = ((MyObjectBuilder_Beacon)objectBuilder).BroadcastRadius;
+
             base.Init(objectBuilder, cubeGrid);
 
-            m_radioBroadcaster = new MyRadioBroadcaster(this, 10000, IsWorking);
-            if (((MyObjectBuilder_Beacon)objectBuilder).BroadcastRadius != 0)
-                m_radioBroadcaster.BroadcastRadius = ((MyObjectBuilder_Beacon)objectBuilder).BroadcastRadius;
-            m_radioBroadcaster.OnBroadcastRadiusChanged += OnBroadcastRadiusChanged;
+            sinkComp.IsPoweredChanged += Receiver_IsPoweredChanged;
+            sinkComp.Update();
+        
+            RadioBroadcaster.OnBroadcastRadiusChanged += OnBroadcastRadiusChanged;
 
             m_largeLight = cubeGrid.GridSizeEnum == MyCubeSize.Large;
 
             m_light = MyLights.AddLight();
 
             m_light.Start(MyLight.LightTypeEnum.PointLight, 1.5f);
-            m_light.LightOwner = MyLight.LightOwnerEnum.SmallShip;
+            m_light.LightOwner = m_largeLight ? MyLight.LightOwnerEnum.LargeShip : MyLight.LightOwnerEnum.SmallShip;
             m_light.UseInForwardRender = true;
             m_light.Range = 1;
 
             m_light.GlareOn = true;
             m_light.GlareIntensity = m_largeLight ? 2 : 1;
-            m_light.GlareQuerySize = m_largeLight ? 7.5f : 1.22f;
+            m_light.GlareQuerySize = m_largeLight ? 1.0f : 0.2f;
+            m_light.GlareSize = 1.0f;
             m_light.GlareType = VRageRender.Lights.MyGlareTypeEnum.Distant;
             m_light.GlareMaterial = m_largeLight ? "GlareLsLight"
                                                  : "GlareSsLight";
@@ -127,14 +164,8 @@ namespace Sandbox.Game.Entities.Cube
 
             UpdateLightPosition();
 
-            PowerReceiver = new MyPowerReceiver(
-                MyConsumerGroupEnum.Utility,
-                false,
-                MyEnergyConstants.MAX_REQUIRED_POWER_BEACON,
-                UpdatePowerInput);
-            PowerReceiver.IsPoweredChanged += Receiver_IsPoweredChanged;
-            PowerReceiver.Update();
-            AddDebugRenderComponent(new MyDebugRenderComponentDrawPowerReciever(PowerReceiver,this));
+	       
+            AddDebugRenderComponent(new MyDebugRenderComponentDrawPowerReciever(ResourceSink,this));
 
             AnimationRunning = true;
             SlimBlock.ComponentStack.IsFunctionalChanged += ComponentStack_IsFunctionalChanged;
@@ -149,13 +180,14 @@ namespace Sandbox.Game.Entities.Cube
         public override MyObjectBuilder_CubeBlock GetObjectBuilderCubeBlock(bool copy = false)
         {
             MyObjectBuilder_Beacon objectBuilder = (MyObjectBuilder_Beacon)base.GetObjectBuilderCubeBlock(copy);
-            objectBuilder.BroadcastRadius = m_radioBroadcaster.BroadcastRadius;
+            objectBuilder.BroadcastRadius = RadioBroadcaster.BroadcastRadius;
             return objectBuilder;
         }
 
         void MyBeacon_IsWorkingChanged(MyCubeBlock obj)
         {
-            m_radioBroadcaster.Enabled = IsWorking;
+            if(RadioBroadcaster != null)
+                RadioBroadcaster.Enabled = IsWorking;
 
             if (!MyFakes.ENABLE_RADIO_HUD)
             {
@@ -190,6 +222,11 @@ namespace Sandbox.Game.Entities.Cube
 
         void Receiver_IsPoweredChanged()
         {
+            if (RadioBroadcaster != null)
+                RadioBroadcaster.Enabled = IsWorking;
+            else
+                Debug.Fail("Radio broadcaster is null in Beacon");
+
             UpdatePower();
             UpdateLightProperties();
             UpdateIsWorking();
@@ -198,7 +235,7 @@ namespace Sandbox.Game.Entities.Cube
 
         void ComponentStack_IsFunctionalChanged()
         {
-            PowerReceiver.Update();
+            ResourceSink.Update();
             UpdatePower();
             UpdateLightProperties();
             UpdateText();
@@ -208,8 +245,8 @@ namespace Sandbox.Game.Entities.Cube
         {
             base.WorldPositionChanged(source);
 
-            if (m_radioBroadcaster != null)
-                m_radioBroadcaster.MoveBroadcaster();
+            if (RadioBroadcaster != null)
+                RadioBroadcaster.MoveBroadcaster();
 
             UpdateLightPosition();
         }
@@ -326,54 +363,37 @@ namespace Sandbox.Game.Entities.Cube
             }
         }
 
-        public MyPowerReceiver PowerReceiver
-        {
-            get;
-            private set;
-        }
-
         protected override void OnEnabledChanged()
         {
-            PowerReceiver.Update();
+            ResourceSink.Update();
             UpdatePower();
 
             base.OnEnabledChanged();
         }
 
-        public MyRadioBroadcaster RadioBroadcaster
-        {
-            get { return m_radioBroadcaster; }
-        }
-
-        bool IMyComponentOwner<MyDataBroadcaster>.GetComponent(out MyDataBroadcaster component)
-        {
-            component = m_radioBroadcaster;
-            return m_radioBroadcaster != null;
-        }
-        
         void OnBroadcastRadiusChanged()
         {
-            PowerReceiver.Update();
+            ResourceSink.Update();
             UpdateText();
         }
 
         float UpdatePowerInput()
         {
-            float powerFraction = m_radioBroadcaster.BroadcastRadius / 100000f; // 100km broadcast is at full power
+            float powerFraction = RadioBroadcaster.BroadcastRadius / 100000f; // 100km broadcast is at full power
             return (Enabled && IsFunctional) ? powerFraction * MyEnergyConstants.MAX_REQUIRED_POWER_BEACON : 0.0f;
         }
 
         private void UpdateText()
         {
             DetailedInfo.Clear();
-            DetailedInfo.AppendStringBuilder(MyTexts.Get(MySpaceTexts.BlockPropertiesText_Type));
+            DetailedInfo.AppendStringBuilder(MyTexts.Get(MyCommonTexts.BlockPropertiesText_Type));
             DetailedInfo.Append(BlockDefinition.DisplayNameText);
             DetailedInfo.Append("\n");
             DetailedInfo.AppendStringBuilder(MyTexts.Get(MySpaceTexts.BlockPropertyProperties_CurrentInput));
-            MyValueFormatter.AppendWorkInBestUnit(PowerReceiver.IsPowered ? PowerReceiver.RequiredInput : 0, DetailedInfo);
+            MyValueFormatter.AppendWorkInBestUnit(ResourceSink.IsPoweredByType(MyResourceDistributorComponent.ElectricityId) ? ResourceSink.RequiredInputByType(MyResourceDistributorComponent.ElectricityId) : 0, DetailedInfo);
             RaisePropertiesChanged();
         }
-        float IMyBeacon.Radius
+        float ModAPI.Ingame.IMyBeacon.Radius
         {
             get { return RadioBroadcaster.BroadcastRadius; }
         }

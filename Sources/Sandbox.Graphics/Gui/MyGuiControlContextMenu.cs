@@ -1,11 +1,12 @@
-﻿using Sandbox.Common.ObjectBuilders.Gui;
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using VRage.Game;
 using VRage.Input;
 using VRage.Utils;
 using VRageMath;
+using System.Diagnostics;
 
 namespace Sandbox.Graphics.GUI
 {
@@ -67,6 +68,7 @@ namespace Sandbox.Graphics.GUI
         public void CreateNewContextMenu()
         {
             Clear();
+            Deactivate();
             CreateContextMenu();
         }
 
@@ -133,13 +135,13 @@ namespace Sandbox.Graphics.GUI
             if (ItemClicked != null)
                 ItemClicked(this, new EventArgs { ItemIndex = selectedIndex, UserData = userData });
 
-            //A context menu always disappears when clicked
-            Deactivate();
+            //GK: If the item list have scrollbar and we are over the caret then let scrollbar hanlde input. In any other case disappear when clicked
+            if(!m_itemsList.IsOverScrollBar())
+                Deactivate();
         }
 
         public override MyGuiControlBase HandleInput()
         {
-
             if ((MyInput.Static.IsNewMousePressed(MyMouseButtonsEnum.Left) || MyInput.Static.IsNewMousePressed(MyMouseButtonsEnum.Right)) && Visible && !IsMouseOver)
                 Deactivate();
 
@@ -265,10 +267,10 @@ namespace Sandbox.Graphics.GUI
             if (m_itemsList.Position.Y + m_itemsList.Size.Y >= 1) m_itemsList.Position = new Vector2(m_itemsList.Position.X, 1.0f - m_itemsList.Size.Y);
         }
 
-        public override void Draw(float transitionAlpha)
+        public override void Draw(float transitionAlpha, float backgroundTransitionAlpha)
         {
-            base.Draw(transitionAlpha);
-            m_itemsList.Draw(transitionAlpha);
+            base.Draw(transitionAlpha, backgroundTransitionAlpha);
+            m_itemsList.Draw(transitionAlpha * m_itemsList.Alpha, backgroundTransitionAlpha * m_itemsList.Alpha);
         }
 
         private bool IsEnoughDelay(MyContextMenuKeys key, int forcedDelay)

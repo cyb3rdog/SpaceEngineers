@@ -5,6 +5,10 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using VRage.Game.Entity;
+using VRage.Game.ModAPI;
+using VRage.ModAPI;
+using IMyControllableEntity = VRage.Game.ModAPI.Interfaces.IMyControllableEntity;
 
 namespace Sandbox.Game.Multiplayer
 {
@@ -26,7 +30,7 @@ namespace Sandbox.Game.Multiplayer
             }
         }
 
-        void IMyPlayerCollection.ExtendControl(ModAPI.Interfaces.IMyControllableEntity entityWithControl, ModAPI.IMyEntity entityGettingControl)
+        void IMyPlayerCollection.ExtendControl(IMyControllableEntity entityWithControl, IMyEntity entityGettingControl)
         {
             var e1 = entityWithControl as Sandbox.Game.Entities.IMyControllableEntity;
             var e2 = entityGettingControl as MyEntity;
@@ -34,7 +38,7 @@ namespace Sandbox.Game.Multiplayer
                 ExtendControl(e1, e2);
         }
 
-        bool IMyPlayerCollection.HasExtendedControl(ModAPI.Interfaces.IMyControllableEntity firstEntity, ModAPI.IMyEntity secondEntity)
+        bool IMyPlayerCollection.HasExtendedControl(IMyControllableEntity firstEntity, IMyEntity secondEntity)
         {
             var e1 = firstEntity as Sandbox.Game.Entities.IMyControllableEntity;
             var e2 = secondEntity as MyEntity;
@@ -43,7 +47,7 @@ namespace Sandbox.Game.Multiplayer
             return false;
         }
 
-        void IMyPlayerCollection.ReduceControl(ModAPI.Interfaces.IMyControllableEntity entityWhichKeepsControl, ModAPI.IMyEntity entityWhichLoosesControl)
+        void IMyPlayerCollection.ReduceControl(IMyControllableEntity entityWhichKeepsControl, IMyEntity entityWhichLoosesControl)
         {
             var e1 = entityWhichKeepsControl as Sandbox.Game.Entities.IMyControllableEntity;
             var e2 = entityWhichLoosesControl as MyEntity;
@@ -51,21 +55,21 @@ namespace Sandbox.Game.Multiplayer
                 ReduceControl(e1, e2);
         }
 
-        void IMyPlayerCollection.RemoveControlledEntity(ModAPI.IMyEntity entity)
+        void IMyPlayerCollection.RemoveControlledEntity(IMyEntity entity)
         {
             var e = entity as MyEntity;
             if (e != null)
                 RemoveControlledEntity(e);
         }
 
-        void IMyPlayerCollection.SetControlledEntity(ulong steamUserId, ModAPI.IMyEntity entity)
+        void IMyPlayerCollection.SetControlledEntity(ulong steamUserId, IMyEntity entity)
         {
             var e = entity as MyEntity;
             if (e != null)
                 SetControlledEntity(steamUserId, e);
         }
 
-        void IMyPlayerCollection.TryExtendControl(ModAPI.Interfaces.IMyControllableEntity entityWithControl, ModAPI.IMyEntity entityGettingControl)
+        void IMyPlayerCollection.TryExtendControl(IMyControllableEntity entityWithControl, IMyEntity entityGettingControl)
         {
             var e1 = entityWithControl as Sandbox.Game.Entities.IMyControllableEntity;
             var e2 = entityGettingControl as MyEntity;
@@ -73,7 +77,7 @@ namespace Sandbox.Game.Multiplayer
                 TryExtendControl(e1, e2);
         }
 
-        bool IMyPlayerCollection.TryReduceControl(ModAPI.Interfaces.IMyControllableEntity entityWhichKeepsControl, ModAPI.IMyEntity entityWhichLoosesControl)
+        bool IMyPlayerCollection.TryReduceControl(IMyControllableEntity entityWhichKeepsControl, IMyEntity entityWhichLoosesControl)
         {
             var e1 = entityWhichKeepsControl as Sandbox.Game.Entities.IMyControllableEntity;
             var e2 = entityWhichLoosesControl as MyEntity;
@@ -82,7 +86,7 @@ namespace Sandbox.Game.Multiplayer
             return false;
         }
 
-        ModAPI.IMyPlayer IMyPlayerCollection.GetPlayerControllingEntity(ModAPI.IMyEntity entity)
+        IMyPlayer IMyPlayerCollection.GetPlayerControllingEntity(IMyEntity entity)
         {
             var e = entity as MyEntity;        
             if (e != null)
@@ -106,6 +110,16 @@ namespace Sandbox.Game.Multiplayer
                     identities.Add(pair.Value);
                 }
             }
+        }
+
+        long IMyPlayerCollection.TryGetIdentityId(ulong steamId)
+        {
+            return TryGetIdentityId(steamId);
+        }
+
+        ulong IMyPlayerCollection.TryGetSteamId(long identityId)
+        {
+            return TryGetSteamId(identityId);
         }
     }
 }

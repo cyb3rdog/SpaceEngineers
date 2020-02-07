@@ -1,10 +1,9 @@
-﻿using Sandbox.Common;
-using Sandbox.Common.ObjectBuilders.Gui;
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Text;
 using VRage;
+using VRage.Game;
 using VRage.Input;
 using VRage.Library.Utils;
 using VRage.Utils;
@@ -27,8 +26,8 @@ namespace Sandbox.Graphics.GUI
         #region Styles
         public class StyleDefinition
         {
-            public MyFontEnum ItemFontHighlight;
-            public MyFontEnum ItemFontNormal;
+            public string ItemFontHighlight;
+            public string ItemFontNormal;
             public string ItemTextureHighlight;
 
             /// <summary>
@@ -217,9 +216,10 @@ namespace Sandbox.Graphics.GUI
         private RectangleF m_openedArea;
         private RectangleF m_openedItemArea;
 
-        private MyFontEnum m_selectedItemFont;
+        private string m_selectedItemFont;
 
         private MyGuiCompositeTexture m_scrollbarTexture;
+        private Vector4 m_textColor;
 
         private float m_textScaleWithLanguage;
 
@@ -290,12 +290,15 @@ namespace Sandbox.Graphics.GUI
             int openAreaItemsCount   = 10,
             Vector2? iconSize        = null,
             bool useScrollBarOffset  = false,
-            String toolTip    = null)
+            String toolTip           = null,
+            MyGuiDrawAlignEnum originAlign = MyGuiDrawAlignEnum.HORISONTAL_CENTER_AND_VERTICAL_CENTER,
+            Vector4? textColor       = null)
             : base( position: position,
                     size: size ?? (new Vector2(455f, 48f) / MyGuiConstants.GUI_OPTIMAL_SIZE),
                     colorMask: backgroundColor,
                     toolTip: toolTip,
-                    canHaveFocus: true)
+                    canHaveFocus: true,
+                    originAlign: originAlign)
         {
             Name = "Combobox";
 
@@ -305,6 +308,7 @@ namespace Sandbox.Graphics.GUI
             m_openAreaItemsCount             = openAreaItemsCount;
             m_middleIndex                    = Math.Max(m_openAreaItemsCount / 2 - 1, 0);
 
+            m_textColor = textColor.HasValue ? textColor.Value : Vector4.One;
             m_dropDownItemSize        = GetItemSize();
             m_comboboxItemDeltaHeight = m_dropDownItemSize.Y;
             m_mousePositionReinit     = true;
@@ -492,6 +496,10 @@ namespace Sandbox.Graphics.GUI
         //  Return value of selected item
         public StringBuilder GetSelectedValue()
         {
+            if (m_selected == null)
+            {
+                return null;
+            }
             return m_selected.Value;
         }
 
@@ -900,10 +908,10 @@ namespace Sandbox.Graphics.GUI
         ///     c. draw the display items
         ///     d. disable stencil
         /// </summary>
-        public override void Draw(float transitionAlpha)
+        public override void Draw(float transitionAlpha, float backgroundTransitionAlpha)
         {
             // In case of listbox mode, before calling parent's draw, reset background color, because it will draw unwanted texture for first item in list(texture, that is used normally for closed combobox)
-            base.Draw(transitionAlpha);
+            base.Draw(transitionAlpha, transitionAlpha);
 
             if (m_selected != null)
                 DrawSelectedItemText(transitionAlpha);
@@ -993,7 +1001,7 @@ namespace Sandbox.Graphics.GUI
                         item.Value,
                         itemPosition,
                         m_textScaleWithLanguage,
-                        ApplyColorMaskModifiers(Vector4.One, Enabled, transitionAlpha),
+                        ApplyColorMaskModifiers(m_textColor, Enabled, transitionAlpha),
                         MyGuiDrawAlignEnum.HORISONTAL_LEFT_AND_VERTICAL_TOP);
                     itemPosition.Y += ITEM_HEIGHT;
                 }
@@ -1014,7 +1022,7 @@ namespace Sandbox.Graphics.GUI
                                         m_selected.Value,
                                         textPos,
                                         m_textScaleWithLanguage,
-                                        ApplyColorMaskModifiers(Vector4.One, Enabled, transitionAlpha),
+                                        ApplyColorMaskModifiers(m_textColor, Enabled, transitionAlpha),
                                         MyGuiDrawAlignEnum.HORISONTAL_LEFT_AND_VERTICAL_CENTER);
             }
         }
@@ -1158,6 +1166,15 @@ namespace Sandbox.Graphics.GUI
             }            
             base.ShowToolTip();
             m_toolTip = tempTooltip;
+        }
+
+        public void ApplyStyle(StyleDefinition style)
+        {
+            if (style != null)
+            {
+                m_styleDef = style;
+                RefreshInternals();
+            }
         }
     }
 }

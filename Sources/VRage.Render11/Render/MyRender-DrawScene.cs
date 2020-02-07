@@ -1,55 +1,161 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Runtime.InteropServices;
-using System.Text;
-using SharpDX;
-using SharpDX.Direct3D;
+﻿using SharpDX;
 using SharpDX.Direct3D11;
-using VRage.Import;
-
-using VRageMath;
-using VRageMath.PackedVector;
-using VRageRender.Resources;
-using VRageRender.Vertex;
-using Buffer = SharpDX.Direct3D11.Buffer;
-using Matrix = VRageMath.Matrix;
-using Vector3 = VRageMath.Vector3;
-using Vector2 = VRageMath.Vector2;
-using BoundingFrustum = VRageMath.BoundingFrustum;
+using System;
+using System.Collections.Generic;
 using System.Diagnostics;
-using ParallelTasks;
-using System.Text.RegularExpressions;
+using System.IO;
+using VRage;
+using VRage.Utils;
+using VRageMath;
+using Matrix = VRageMath.Matrix;
+using Vector2 = VRageMath.Vector2;
+using VRage.OpenVRWrapper;
+using VRage.Profiler;
+using VRage.Render11.Common;
+using VRage.Render11.GeometryStage2;
+using VRage.Render11.GeometryStage2.Rendering;
+using VRage.Render11.LightingStage;
+using VRage.Render11.Profiler;
+using VRage.Render11.Resources;
+using VRage.Render11.Tools;
+using VRageRender.Messages;
+using ImageFileFormat = SharpDX.Direct3D9.ImageFileFormat;
 
 namespace VRageRender
 {
     partial class MyRender11
     {
-        static MyRCStats m_rcStats;
-        static MyPassStats m_passStats;
-        static MyPostprocessSettings m_postprocessSettings = MyPostprocessSettings.DefaultGame();
-        internal static MyPostprocessSettings Postprocess { get { return m_postprocessSettings; } }
+        static readonly Dictionary<string, Dictionary<int, MyPassStats>> m_passStats = new Dictionary<string, Dictionary<int, MyPassStats>>();
+        static MyPassStats m_passStatsTotals = new MyPassStats();
+        private static MyRenderDebugOverrides m_debugOverrides = new MyRenderDebugOverrides();
+        internal static MyRenderDebugOverrides DebugOverrides { get { return m_debugOverrides; } }
 
-        internal static void ResetStats()
+        internal static MyPostprocessSettings Postprocess = MyPostprocessSettings.Default;
+        private static MyGeometryRenderer m_dynamicGeometryRenderer;
+        private static MyGeometryRenderer m_staticGeometryRenderer;
+        internal static MyShadows DynamicShadows;
+        internal static MyShadows StaticShadows;
+        private static MyFoliageGeneratingPass m_foliageGenerator;
+        private static MyFoliageRenderingPass m_foliageRenderer;
+
+        private static readonly Queue<CommandList> m_commandLists = new Queue<CommandList>();
+
+        internal static MyFoliageGeneratingPass FoliageGenerator { get { return m_foliageGenerator; } }
+        internal static Dictionary<string, Dictionary<int, MyPassStats>> PassStats { get { return m_passStats; } }
+
+        private static void Init()
         {
-            MyImmediateRC.RC.Stats.Clear();
-            m_rcStats.Clear();
-            m_passStats.Clear();
+            m_dynamicGeometryRenderer = new MyGeometryRenderer(MyScene.DynamicRenderablesDBVH, DynamicShadows);
+            if (MyScene.SeparateGeometry)
+                m_staticGeometryRenderer = new MyGeometryRenderer(MyScene.StaticRenderablesDBVH, StaticShadows);
+
+            m_foliageGenerator = new MyFoliageGeneratingPass();
+            m_foliageRenderer = new MyFoliageRenderingPass();
         }
 
-        internal static void GatherStats(MyRCStats stats)
+        private static void InitShadowCascadeUpdateIntervals(int cascadeCount)
         {
-            m_rcStats.Gather(stats);
+            for (int cascadeIndex = 0; cascadeIndex < cascadeCount; ++cascadeIndex)
+            {
+                DynamicShadows.ShadowCascades.SetCascadeUpdateInterval(cascadeIndex,
+                    MyShadowCascades.DynamicShadowCascadeUpdateIntervals[cascadeIndex].Item1,
+                    MyShadowCascades.DynamicShadowCascadeUpdateIntervals[cascadeIndex].Item2);
+
+                if (MyScene.SeparateGeometry)
+                {
+                    StaticShadows.ShadowCascades.SetCascadeUpdateInterval(cascadeIndex,
+                        MyShadowCascades.VoxelShadowCascadeUpdateIntervals[cascadeIndex].Item1,
+                        MyShadowCascades.VoxelShadowCascadeUpdateIntervals[cascadeIndex].Item2);
+                }
+            }
+        }
+        private static void ResetShadows(int cascadeCount, int cascadeResolution)
+        {
+            if (DynamicShadows != null)
+                DynamicShadows.Reset(cascadeCount, cascadeResolution);
+            else
+                DynamicShadows = new MyShadows(cascadeCount, cascadeResolution);
+
+            if (StaticShadows != null)
+                StaticShadows.Reset(cascadeCount, cascadeResolution);
+            else if (MyScene.SeparateGeometry)
+                StaticShadows = new MyShadows(cascadeCount, cascadeResolution);
+
+            InitShadowCascadeUpdateIntervals(cascadeCount);
         }
 
-        internal static void GatherStats(MyPassStats stats)
+        private static void ResetStats()
         {
-            m_passStats.Gather(stats);
+            foreach (var stats in m_passStats)
+                stats.Value.Clear();
+            m_passStatsTotals.Clear();
+        }
+
+        internal static void GatherPassStats(int passHash, string passName, MyPassStats stats)
+        {
+            if (passName != null)
+            {
+                Dictionary<int, MyPassStats> statList;
+
+                if (!m_passStats.TryGetValue(passName, out statList))
+                {
+                    statList = new Dictionary<int, MyPassStats>();
+                    m_passStats[passName] = statList;
+                }
+
+                MyPassStats passStats;
+                if (statList.TryGetValue(passHash, out passStats))
+                {
+                    passStats.Gather(stats);
+                    statList[passHash] = passStats;
+                }
+                else
+                {
+                     statList[passHash] = stats;
+                }
+            }
+
+            m_passStatsTotals.Gather(stats);
         }
 
         private static void SetupCameraMatrices(MyRenderMessageSetCameraViewMatrix message)
         {
-            var viewMatrixAt0 = message.ViewMatrix;
+            SetupCameraMatricesInternal(message, MyRender11.Environment.Matrices, MyStereoRegion.FULLSCREEN);
+            if (MyStereoRender.Enable)
+            {
+                SetupCameraMatricesInternal(message, MyStereoRender.EnvMatricesLeftEye, MyStereoRegion.LEFT);
+                SetupCameraMatricesInternal(message, MyStereoRender.EnvMatricesRightEye, MyStereoRegion.RIGHT);
+            }
+        }
+
+        private static Matrix GetMatrixEyeTranslation(bool isLeftEye, Matrix view)
+        {
+            float Ipd_2 = 0.2f;
+            if (MyOpenVR.Static != null)
+                Ipd_2 = MyOpenVR.Ipd_2;
+
+            var invViewMatrix = Matrix.Transpose(view);
+            var eyePosition = (!isLeftEye ? invViewMatrix.Left : invViewMatrix.Right) * Ipd_2;
+            return Matrix.CreateTranslation(eyePosition);
+        }
+
+        private static void SetupCameraMatricesInternal(MyRenderMessageSetCameraViewMatrix message, MyEnvironmentMatrices envMatrices, MyStereoRegion typeofEnv)
+        {
+            var originalProjection = message.ProjectionMatrix;
+            var viewMatrix = message.ViewMatrix;
+            var cameraPosition = message.CameraPosition;
+
+            if (MyStereoRender.Enable)
+            {
+                if (MyOpenVR.Static != null && message.LastMomentUpdateIndex != 0)
+                {
+                    MatrixD origin = MatrixD.Identity;
+                    MyOpenVR.LMUMatrixGetOrigin(ref origin, message.LastMomentUpdateIndex);
+                    viewMatrix = MatrixD.Invert(origin);
+                }
+            }
+
+            var viewMatrixAt0 = viewMatrix;
             viewMatrixAt0.M14 = 0;
             viewMatrixAt0.M24 = 0;
             viewMatrixAt0.M34 = 0;
@@ -58,257 +164,498 @@ namespace VRageRender
             viewMatrixAt0.M43 = 0;
             viewMatrixAt0.M44 = 1;
 
-            var originalProjection = message.ProjectionMatrix;
-            var invOriginalProjection = Matrix.CreatePerspectiveFovInv(message.FOV, MyRender11.ResolutionF.X / MyRender11.ResolutionF.Y, message.NearPlane, message.FarPlane);
-            var complementaryProjection = Matrix.CreatePerspectiveFieldOfView(message.FOV, MyRender11.ResolutionF.X / MyRender11.ResolutionF.Y, message.FarPlane, message.NearPlane);
-            var invProj = Matrix.CreatePerspectiveFovInv(message.FOV, MyRender11.ResolutionF.X / MyRender11.ResolutionF.Y, message.FarPlane, message.NearPlane);
+            if (MyStereoRender.Enable)
+            {
+                if (MyOpenVR.Static != null)
+                {
+                    if (message.LastMomentUpdateIndex != 0)
+                    {
+                        var tViewMatrix = Matrix.Transpose(viewMatrix);
+                        var viewHMDat0 = MyOpenVR.ViewHMD;
+                        viewHMDat0.M14 = 0;
+                        viewHMDat0.M24 = 0;
+                        viewHMDat0.M34 = 0;
+                        viewHMDat0.M41 = 0;
+                        viewHMDat0.M42 = 0;
+                        viewHMDat0.M43 = 0;
+                        viewHMDat0.M44 = 1;
 
-            var invView = Matrix.Transpose(viewMatrixAt0);
-            invView.M41 = (float)message.CameraPosition.X;
-            invView.M42 = (float)message.CameraPosition.Y;
-            invView.M43 = (float)message.CameraPosition.Z;
+                        //cameraPosition += tViewMatrix.Up * MyOpenVR.ViewHMD.Translation.Y;
+                        //cameraPosition += tViewMatrix.Backward * MyOpenVR.ViewHMD.Translation.X;
+                        //cameraPosition += tViewMatrix.Right * MyOpenVR.ViewHMD.Translation.Z;
 
-            MyEnvironment.ViewAt0 = viewMatrixAt0;
-            MyEnvironment.InvViewAt0 = Matrix.Transpose(viewMatrixAt0);
-            MyEnvironment.ViewProjectionAt0 = viewMatrixAt0 * complementaryProjection;
-            MyEnvironment.InvViewProjectionAt0 = invProj * Matrix.Transpose(viewMatrixAt0);
+                        viewMatrixAt0 = viewMatrixAt0 * viewHMDat0;
+                        viewMatrix = viewMatrix * viewHMDat0;
 
-            MyEnvironment.CameraPosition = message.CameraPosition;
-            MyEnvironment.View = message.ViewMatrix;
-            MyEnvironment.InvView = invView;
-            MyEnvironment.ViewProjection = message.ViewMatrix * complementaryProjection;
-            MyEnvironment.InvViewProjection = invProj * invView;
-            MyEnvironment.Projection = complementaryProjection;
-            MyEnvironment.InvProjection = invProj;
-            
-            MyEnvironment.NearClipping = message.NearPlane;
-            MyEnvironment.FarClipping = message.FarPlane;
-            MyEnvironment.FovY = message.FOV;
-            MyEnvironment.ViewFrustum = new BoundingFrustum(MyEnvironment.ViewProjection);
+                        if (!MyOpenVR.Debug2DImage && typeofEnv == MyStereoRegion.LEFT)
+                        {
+                            viewMatrixAt0 = GetMatrixEyeTranslation(true, viewMatrixAt0) * viewMatrixAt0;
+                            viewMatrix = GetMatrixEyeTranslation(true, viewMatrix) * viewMatrix;
+                        }
+                        else if (!MyOpenVR.Debug2DImage && typeofEnv == MyStereoRegion.RIGHT)
+                        {
+                            viewMatrixAt0 = GetMatrixEyeTranslation(false, viewMatrixAt0) * viewMatrixAt0;
+                            viewMatrix = GetMatrixEyeTranslation(false, viewMatrix) * viewMatrix;
+                        }
+                    }
+                }
+                else
+                {
+                    if (!MyOpenVR.Debug2DImage && typeofEnv == MyStereoRegion.LEFT)
+                    {
+                        viewMatrixAt0 = GetMatrixEyeTranslation(true, viewMatrixAt0) * viewMatrixAt0;
+                        viewMatrix = GetMatrixEyeTranslation(true, viewMatrix) * viewMatrix;
+                    }
+                    else if (!MyOpenVR.Debug2DImage && typeofEnv == MyStereoRegion.RIGHT)
+                    {
+                        viewMatrixAt0 = GetMatrixEyeTranslation(false, viewMatrixAt0) * viewMatrixAt0;
+                        viewMatrix = GetMatrixEyeTranslation(false, viewMatrix) * viewMatrix;
+                    }
+                }
+            }
+
+            float aspectRatio = MyRender11.ResolutionF.X / MyRender11.ResolutionF.Y;
+            if (typeofEnv != MyStereoRegion.FULLSCREEN)
+                aspectRatio /= 2;
+            Matrix projMatrix = Matrix.CreatePerspectiveFovRhInfiniteComplementary(message.FOV, aspectRatio, message.NearPlane);
+
+            cameraPosition.AssertIsValid();
+
+            envMatrices.ViewAt0 = viewMatrixAt0;
+            envMatrices.InvViewAt0 = Matrix.Invert(viewMatrixAt0);
+            envMatrices.ViewProjectionAt0 = viewMatrixAt0 * projMatrix;
+            envMatrices.InvViewProjectionAt0 = Matrix.Invert(viewMatrixAt0 * projMatrix);
+            envMatrices.CameraPosition = cameraPosition;
+            envMatrices.View = viewMatrix;
+            envMatrices.ViewD = viewMatrix;
+            envMatrices.OriginalProjectionD = originalProjection;
+            envMatrices.InvView = Matrix.Invert(viewMatrix);
+            envMatrices.ViewProjection = viewMatrix * projMatrix;
+            envMatrices.InvViewProjection = Matrix.Invert(viewMatrix * projMatrix);
+            envMatrices.Projection = projMatrix;
+            envMatrices.InvProjection = Matrix.Invert(projMatrix);
+            envMatrices.ViewProjectionD = envMatrices.ViewD * (MatrixD)projMatrix;
+            envMatrices.NearClipping = message.NearPlane;
+            envMatrices.FarClipping = message.FarPlane;
+            envMatrices.LargeDistanceFarClipping = message.FarPlane * 500.0f;
+
+            int width = MyRender11.ViewportResolution.X;
+            int height = MyRender11.ViewportResolution.Y;
+            float fovH = message.FOV;
+            envMatrices.FovH = fovH;
+            envMatrices.FovV = (float)(2 * Math.Atan(Math.Tan(fovH / 2.0) * (height/ (double) width)));
+
+            MyUtils.Init(ref envMatrices.ViewFrustumD);
+            envMatrices.ViewFrustumD.Matrix = envMatrices.ViewProjectionD;
+
+            MyUtils.Init(ref envMatrices.ViewFrustumClippedD);
+            envMatrices.ViewFrustumClippedD.Matrix = envMatrices.ViewD * envMatrices.OriginalProjectionD;
         }
 
-        private static void TransferPerformanceStats()
-        {
-            m_rcStats.Gather(MyImmediateRC.RC.Stats);
-
-            MyPerformanceCounter.PerCameraDraw11Write.MeshesDrawn = m_passStats.Meshes;
-            MyPerformanceCounter.PerCameraDraw11Write.SubmeshesDrawn = m_passStats.Submeshes;
-            MyPerformanceCounter.PerCameraDraw11Write.ObjectConstantsChanges = m_passStats.ObjectConstantsChanges;
-            MyPerformanceCounter.PerCameraDraw11Write.MaterialConstantsChanges = m_passStats.ObjectConstantsChanges;
-            MyPerformanceCounter.PerCameraDraw11Write.TrianglesDrawn = m_passStats.Triangles;
-            MyPerformanceCounter.PerCameraDraw11Write.InstancesDrawn = m_passStats.Instances;
-
-            MyPerformanceCounter.PerCameraDraw11Write.Draw = m_rcStats.Draw;
-            MyPerformanceCounter.PerCameraDraw11Write.DrawInstanced = m_rcStats.DrawInstanced;
-            MyPerformanceCounter.PerCameraDraw11Write.DrawIndexed = m_rcStats.DrawIndexed;
-            MyPerformanceCounter.PerCameraDraw11Write.DrawIndexedInstanced = m_rcStats.DrawIndexedInstanced;
-            MyPerformanceCounter.PerCameraDraw11Write.DrawAuto = m_rcStats.DrawAuto;
-            MyPerformanceCounter.PerCameraDraw11Write.SetVB = m_rcStats.SetVB;
-            MyPerformanceCounter.PerCameraDraw11Write.SetIB = m_rcStats.SetIB;
-            MyPerformanceCounter.PerCameraDraw11Write.SetIL = m_rcStats.SetIL;
-            MyPerformanceCounter.PerCameraDraw11Write.SetVS = m_rcStats.SetVS;
-            MyPerformanceCounter.PerCameraDraw11Write.SetPS = m_rcStats.SetPS;
-            MyPerformanceCounter.PerCameraDraw11Write.SetGS = m_rcStats.SetGS;
-            MyPerformanceCounter.PerCameraDraw11Write.SetCB = m_rcStats.SetCB;
-            MyPerformanceCounter.PerCameraDraw11Write.SetRasterizerState = m_rcStats.SetRasterizerState;
-            MyPerformanceCounter.PerCameraDraw11Write.SetBlendState = m_rcStats.SetBlendState;
-            MyPerformanceCounter.PerCameraDraw11Write.BindShaderResources = m_rcStats.BindShaderResources;
-        }
+        internal static readonly HashSet<MyRenderableComponent> PendingComponentsToUpdate = new HashSet<MyRenderableComponent>();
+        private static readonly List<MyRenderableComponent> m_pendingComponentsToRemove = new List<MyRenderableComponent>();
 
         static void UpdateActors()
         {
-            foreach (var renderable in MyComponentFactory<MyRenderableComponent>.GetAll())
+            ProfilerShort.Begin("UpdateActors");
+            ProfilerShort.Begin("MyRenderableComponent rebuild dirty");
+            Debug.Assert(m_pendingComponentsToRemove.Count == 0, "Temporary list not cleared after use");
+            foreach (var renderableComponent in PendingComponentsToUpdate)
             {
-                if (renderable.IsVisible)
-                {
-                    renderable.OnFrameUpdate();
-                }
+                renderableComponent.RebuildRenderProxies();
+
+                if (!renderableComponent.Owner.RenderDirty)
+                    m_pendingComponentsToRemove.Add(renderableComponent);
             }
+
+            foreach (var renderableComponent in m_pendingComponentsToRemove)
+            {
+                PendingComponentsToUpdate.Remove(renderableComponent);
+            }
+            m_pendingComponentsToRemove.Clear();
+  
+
+            ProfilerShort.BeginNextBlock("MyInstanceLodComponent OnFrameUpdate");
+            foreach (var instanceLodComponent in MyComponentFactory<MyInstanceLodComponent>.GetAll())
+            {
+                instanceLodComponent.OnFrameUpdate();
+            }
+            ProfilerShort.End();
+            ProfilerShort.End();
         }
 
         static bool m_resetEyeAdaptation = false;
 
-        private static void DrawGameScene(bool blitToBackbuffer)
+        private static void PrepareGameScene()
         {
+            ProfilerShort.Begin("PrepareGameScene");
+
+            ProfilerShort.Begin("Stats");
             ResetStats();
+
+            ProfilerShort.BeginNextBlock("GBuffer clear");
+            MyGBuffer.Main.Clear(VRageMath.Color.Black);
+            //TODO: Find out why clearing to White affects result image
+            //MyGBuffer.Main.Clear(MyEnvironment.BackgroundColor);
+
+            ProfilerShort.BeginNextBlock("Constants");
+            MySceneMaterials.PreFrame();
             MyCommon.UpdateFrameConstants();
+            ProfilerShort.End();
+
+            ProfilerShort.End();
+        }
+
+        private static void ExecuteCommandLists(Queue<CommandList> commandLists)
+        {
+            ProfilerShort.Begin("Execute command lists");
+            while (commandLists.Count > 0)
+            {
+                var commandList = commandLists.Dequeue();
+                MyRender11.RC.ExecuteCommandList(commandList, false);
+                commandList.Dispose();
+            }
+            ProfilerShort.End();
+        }
+
+        private static void SendGlobalOutputMessages()
+        {
+            ProfilerShort.Begin("SendGlobalOutputMessages");
+            ProfilerShort.Begin("Root");
+            foreach (var groupRootComponent in MyComponentFactory<MyGroupRootComponent>.GetAll())
+            {
+                if (true)
+                {
+                    BoundingBoxD bb = BoundingBoxD.CreateInvalid();
+
+                    foreach (var child in groupRootComponent.m_children)
+                    {
+                        if (child.IsVisible)
+                        {
+                            bb.Include(child.Aabb);
+                        }
+                    }
+
+                    if (MyRender11.Environment.Matrices.ViewFrustumClippedD.Contains(bb) != VRageMath.ContainmentType.Disjoint)
+                    {
+                        MyRenderProxy.VisibleObjectsWrite.Add(groupRootComponent.Owner.ID);
+                    }
+                }
+            }
+
+            ProfilerShort.BeginNextBlock("Clipmap");
+            foreach (var id in MyClipmapFactory.ClipmapByID.Keys)
+            {
+                MyRenderProxy.VisibleObjectsWrite.Add(id);
+            }
+            ProfilerShort.End();
+            ProfilerShort.End();
+        }
+
+        // Returns the final image and copies it to renderTarget if non-null
+        private static IRtvTexture DrawGameScene(IRtvBindable renderTarget, out IBorrowedRtvTexture debugAmbientOcclusion)
+        {
+            MyGpuProfiler.IC_BeginBlockAlways("ClearAndGeometryRender");
+
+            PrepareGameScene();
 
             // todo: shouldn't be necessary
             if (true)
             {
-                MyImmediateRC.RC.Clear();
-                MyImmediateRC.RC.Context.ClearState();
+                ProfilerShort.Begin("Clear");
+                MyRender11.RC.ClearState();
+                ProfilerShort.End();
             }
 
-            MyRender11.GetRenderProfiler().StartProfilingBlock("MyGeometryRenderer.Render");
-            MyGpuProfiler.IC_BeginBlock("MyGeometryRenderer.Render");
-            MyGeometryRenderer.Render();
+            if (MyStereoRender.Enable && MyStereoRender.EnableUsingStencilMask)
+            {
+                ProfilerShort.Begin("MyStereoStencilMask.Draw");
+                MyGpuProfiler.IC_BeginBlock("MyStereoStencilMask.Draw");
+                MyStereoStencilMask.Draw();
+                MyGpuProfiler.IC_EndBlock();
+                ProfilerShort.End();
+            }
+
+            ProfilerShort.Begin("MyLights.Update");
+            MyLights.Update();
+            ProfilerShort.End();
+
+            ProfilerShort.Begin("DynamicGeometryRenderer");
+            MyCullQuery cullQuery = m_dynamicGeometryRenderer.PrepareCullQuery(true); // it is used to share rendering settings between the old and the new pipeline
+            ProfilerShort.End();
+
+            MyGpuProfiler.IC_BeginBlock("NewGeometryRenderer");
+            ProfilerShort.Begin("NewGeometryRenderer");
+            IGeometrySrvStrategy geometrySrvStrategy = MyManagers.GeometrySrvResolver.GetGeometrySrvStrategy();
+            if (MyDebugGeometryStage2.EnableNewGeometryPipeline)
+                MyManagers.GeometryRenderer.Render(cullQuery, geometrySrvStrategy);
+            ProfilerShort.End();
             MyGpuProfiler.IC_EndBlock();
-            MyRender11.GetRenderProfiler().EndProfilingBlock();
+            
+            MyGpuProfiler.IC_BeginBlock("MyGeometryRenderer.Render");
+            Debug.Assert(m_commandLists.Count == 0, "Not all command lists executed last frame!");
+            ProfilerShort.Begin("DynamicGeometryRenderer");
+            m_dynamicGeometryRenderer.Render(m_commandLists);
+            ProfilerShort.End();    // End function block
+            if (MyScene.SeparateGeometry)
+            {
+                ProfilerShort.Begin("StaticGeometryRenderer");
+                m_staticGeometryRenderer.Render(m_commandLists); // , false);
+                ProfilerShort.End();    // End function block
+            }
+
+            SendGlobalOutputMessages();
+            ExecuteCommandLists(m_commandLists);
+            MyGpuProfiler.IC_EndBlock();
+
+#if !UNSHARPER_TMP
+            MyManagers.EnvironmentProbe.FinalizeEnvProbes();
+#endif
 
             // cleanup context atfer deferred lists
-            if (MyRender11.DeferredContextsEnabled)
+            if (true)
             {
-                MyImmediateRC.RC.Clear();
+                ProfilerShort.Begin("Clear3");
+                MyRender11.RC.ClearState();
+                ProfilerShort.End();
             }
 
-            // todo: shouldn't be necessary
-            if(true)
-            {
-                MyImmediateRC.RC.Clear();
-                MyImmediateRC.RC.Context.ClearState();
-            }
+            MyGpuProfiler.IC_EndBlockAlways();
 
-            MyRender11.GetRenderProfiler().StartProfilingBlock("Render foliage");
-            MyGpuProfiler.IC_BeginBlock("Render foliage");
-            MyFoliageRenderer.Render();
+            IBorrowedRtvTexture gbuffer1Copy = MyGBuffer.Main.GetGbuffer1CopyRtv();
+
+            ProfilerShort.Begin("Render decals - Opaque");
+            MyGpuProfiler.IC_BeginBlock("Render decals - Opaque");
+            MyScreenDecals.Draw(gbuffer1Copy, false);
             MyGpuProfiler.IC_EndBlock();
-            MyRender11.GetRenderProfiler().EndProfilingBlock();
 
+            IBorrowedDepthStencilTexture depthStencilCopy = null; // Highlights need the depth state before foliage
+            if (MyHighlight.HasHighlights)
+                depthStencilCopy = MyGBuffer.Main.GetDepthStencilCopyRtv();
+
+            ProfilerShort.BeginNextBlock("Render foliage");
+            MyGpuProfiler.IC_BeginBlockAlways("RenderFoliage");
+            m_foliageRenderer.Render();
+            MyGpuProfiler.IC_EndBlockAlways();
+
+            MyGpuProfiler.IC_BeginBlock("GBuffer Resolve");
+            ProfilerShort.BeginNextBlock("MySceneMaterials.MoveToGPU");
             MySceneMaterials.MoveToGPU();
 
-            MyRender11.GetRenderProfiler().StartProfilingBlock("Postprocessing");
-            MyGpuProfiler.IC_BeginBlock("Postprocessing");
-            if (MultisamplingEnabled)
-            {
-                MyRender11.Context.ClearDepthStencilView(MyScreenDependants.m_resolvedDepth.m_DSV, DepthStencilClearFlags.Depth | DepthStencilClearFlags.Stencil, 1, 0);
-                MyGpuProfiler.IC_BeginBlock("MarkAAEdges");
-                MyAAEdgeMarking.Run();
-                MyGpuProfiler.IC_EndBlock();
-                MyDepthResolve.Run(MyScreenDependants.m_resolvedDepth, MyGBuffer.Main.DepthStencil.Depth);
-            }
+            MyRender11.RC.ResetTargets();
 
-            MyGpuProfiler.IC_BeginBlock("MarkCascades");
-            MyShadows.MarkCascadesInStencil();
+            IBorrowedRtvTexture ambientOcclusionRtv = MyManagers.RwTexturesPool.BorrowRtv("MyScreenDependants.AmbientOcclusion", 
+                ResolutionI.X, ResolutionI.Y, SharpDX.DXGI.Format.R8_UNorm);
+            debugAmbientOcclusion = ambientOcclusionRtv; // Pass the texture to the outside
+
+            int nPasses = MyStereoRender.Enable ? 2 : 1;
+            for (int i = 0; i < nPasses; i++)
+            {
+                if (MyStereoRender.Enable)
+                    MyStereoRender.RenderRegion = i == 0 ? MyStereoRegion.LEFT : MyStereoRegion.RIGHT;
+
+                MyGBuffer.Main.ResolveMultisample();
+
+                ProfilerShort.BeginNextBlock("Shadows");
+                MyGpuProfiler.IC_BeginBlockAlways("Shadows");
+                IBorrowedUavTexture postProcessedShadows;
+                if (MyScene.SeparateGeometry)
+                {
+                    MyShadowCascadesPostProcess.Combine(MyShadowCascades.CombineShadowmapArray, DynamicShadows.ShadowCascades, StaticShadows.ShadowCascades);
+                    postProcessedShadows = DynamicShadows.ShadowCascades.PostProcess(MyShadowCascades.CombineShadowmapArray);
+                    //MyShadowCascadesPostProcess.Combine(MyShadowCascades.CombineShadowmapArray,
+                    //    DynamicShadows.ShadowCascades, StaticShadows.ShadowCascades);
+                    //postProcessedShadows =
+                    //    DynamicShadows.ShadowCascades.PostProcess(MyShadowCascades.CombineShadowmapArray);
+                }
+                else
+                {
+                    postProcessedShadows = DynamicShadows.ShadowCascades.PostProcess(DynamicShadows.ShadowCascades.CascadeShadowmapArray);
+                    //postProcessedShadows = MyManagers.Shadow.Evaluate();
+                }
+                MyGpuProfiler.IC_EndBlockAlways();
+
+                if (MySSAO.Params.Enabled && Settings.User.AmbientOcclusionEnabled
+                    && m_debugOverrides.Postprocessing && m_debugOverrides.SSAO)
+                {
+                    ProfilerShort.BeginNextBlock("SSAO");
+                    MyGpuProfiler.IC_BeginBlockAlways("SSAO");
+                    MySSAO.Run(ambientOcclusionRtv, MyGBuffer.Main);
+
+                    if (MySSAO.Params.UseBlur)
+                    {
+                        IBorrowedRtvTexture ambientOcclusionHelper = MyManagers.RwTexturesPool.BorrowRtv("MyScreenDependants.AmbientOcclusionHelper", 
+                            ResolutionI.X, ResolutionI.Y, SharpDX.DXGI.Format.R8_UNorm);
+
+                        MyBlur.Run(ambientOcclusionRtv, ambientOcclusionHelper, ambientOcclusionRtv, clearColor: Color4.White);
+                        ambientOcclusionHelper.Release();
+                    }
+                    MyGpuProfiler.IC_EndBlockAlways();
+                }
+                else if (MyHBAO.Params.Enabled && Settings.User.AmbientOcclusionEnabled
+                         && m_debugOverrides.Postprocessing && m_debugOverrides.SSAO)
+                {
+                    ProfilerShort.BeginNextBlock("HBAO");
+                    MyGpuProfiler.IC_BeginBlock("HBAO");
+                    MyHBAO.Run(ambientOcclusionRtv, MyGBuffer.Main);
+                    MyGpuProfiler.IC_EndBlock();
+                }
+                else
+                {
+                    MyRender11.RC.ClearRtv(ambientOcclusionRtv, Color4.White);
+                }
+
+                ProfilerShort.BeginNextBlock("Lights");
+                MyGpuProfiler.IC_BeginBlockAlways("Lights");
+                if (m_debugOverrides.Lighting)
+                    MyLightsRendering.Render(postProcessedShadows, ambientOcclusionRtv);
+                MyGpuProfiler.IC_EndBlockAlways();
+                postProcessedShadows.Release();
+
+                if (MyRender11.DebugOverrides.Flares)
+                    MyLightsRendering.DrawFlares();
+            }
+            MyStereoRender.RenderRegion = MyStereoRegion.FULLSCREEN;
             MyGpuProfiler.IC_EndBlock();
 
-
-            MyGpuProfiler.IC_BeginBlock("Shadows resolve");
-            MyShadowsResolve.Run();
+            ProfilerShort.BeginNextBlock("Occlusion Queries");
+            MyGpuProfiler.IC_BeginBlock("Occlusion Queries");
+            MyOcclusionQueryRenderer.Render(RC, MyGBuffer.Main.ResolvedDepthStencil, MyGBuffer.Main.LBuffer);
             MyGpuProfiler.IC_EndBlock();
 
-            MyGpuProfiler.IC_BeginBlock("SSAO");
-            if (Postprocess.EnableSsao)
-            {
-                MySSAO.Run(MyScreenDependants.m_ambientOcclusion, MyGBuffer.Main, MyRender11.MultisamplingEnabled ? MyScreenDependants.m_resolvedDepth.Depth : MyGBuffer.Main.DepthStencil.Depth);
-            }
-            else
-            {
-                MyRender11.Context.ClearRenderTargetView(MyScreenDependants.m_ambientOcclusion.m_RTV, Color4.White);
-            }
-            MyGpuProfiler.IC_EndBlock();
+            // Rendering for VR is solved inside of Transparent rendering
+            ProfilerShort.BeginNextBlock("Transparent Pass");
+            MyGpuProfiler.IC_BeginBlockAlways("TransparentPass");
+            if (m_debugOverrides.Transparent)
+                MyTransparentRendering.Render(gbuffer1Copy);
+            MyGpuProfiler.IC_EndBlockAlways();
 
-            MyGpuProfiler.IC_BeginBlock("Lights");
-            MyLightRendering.Render();
-            MyGpuProfiler.IC_EndBlock();
+            gbuffer1Copy.Release();
 
-            MyRender11.GetRenderProfiler().StartProfilingBlock("Billboards");
-            MyGpuProfiler.IC_BeginBlock("Billboards");
-            MyRender11.Context.ClearRenderTargetView((MyScreenDependants.m_particlesRT as IRenderTargetBindable).RTV, new Color4(0, 0, 0, 0));
-            if (MyRender11.MultisamplingEnabled)
-            {
-                MyBillboardRenderer.Render(MyScreenDependants.m_particlesRT, MyScreenDependants.m_resolvedDepth, MyScreenDependants.m_resolvedDepth.Depth);
-            }
-            else
-            {
-                MyBillboardRenderer.Render(MyScreenDependants.m_particlesRT, MyGBuffer.Main.DepthStencil, MyGBuffer.Main.DepthStencil.Depth);
-            }
-
-            MyBlendTargets.Run(MyGBuffer.Main.Get(MyGbufferSlot.LBuffer), MyScreenDependants.m_particlesRT);
-            MyGpuProfiler.IC_EndBlock();
-            MyRender11.GetRenderProfiler().EndProfilingBlock();
-
+            ProfilerShort.BeginNextBlock("PostProcess");
+            MyGpuProfiler.IC_BeginBlockAlways("PostProcess");
             MyGpuProfiler.IC_BeginBlock("Luminance reduction");
-            MyBindableResource avgLum = null;
-             
-            if (MyRender11.MultisamplingEnabled)
-            {
-                //MyLBufferResolve.Run(MyGBuffer.Main.Get(MyGbufferSlot.LBufferResolved), MyGBuffer.Main.Get(MyGbufferSlot.LBuffer), MyGBuffer.Main.DepthStencil.Stencil);
+            IBorrowedUavTexture avgLum = null;
 
-                MyImmediateRC.RC.Context.ResolveSubresource(MyGBuffer.Main.Get(MyGbufferSlot.LBuffer).m_resource, 0, MyGBuffer.Main.Get(MyGbufferSlot.LBufferResolved).m_resource, 0, SharpDX.DXGI.Format.R11G11B10_Float);
-            }
-            if (m_resetEyeAdaptation)
+            if (MyRender11.Postprocess.EnableEyeAdaptation)
             {
-                MyImmediateRC.RC.Context.ClearUnorderedAccessView(m_prevLum.m_UAV, Int4.Zero);
-                m_resetEyeAdaptation = false;
-            }
-            avgLum = MyLuminanceAverage.Run(m_reduce0, m_reduce1, MyGBuffer.Main.Get(MyGbufferSlot.LBuffer), m_prevLum, m_localLum);
-            
-            MyGpuProfiler.IC_EndBlock();
+                if (m_resetEyeAdaptation)
+                {
+                    MyLuminanceAverage.Reset();
+                    m_resetEyeAdaptation = false;
+                }
 
-            if(MyRender11.Settings.ShowLuminanceHistogram)
-            {
-                var src = MyGBuffer.Main.Get(MyGbufferSlot.LBuffer) as MyRenderTarget;
-                MyLuminanceDebugTools.CreateHistogram(src.m_SRV, src.m_resolution, src.m_samples.X);
-            }
-
-            
-            MyGpuProfiler.IC_BeginBlock("Bloom");
-            var bloom = MyBloom.Run(MyGBuffer.Main.Get(MyGbufferSlot.LBuffer), avgLum);
-            MyGpuProfiler.IC_EndBlock();
-
-            MyBindableResource tonemapped;
-            if (MyRender11.FxaaEnabled)
-            {
-                tonemapped = m_rgba8_linear;
+                avgLum = MyLuminanceAverage.Run(MyGBuffer.Main.LBuffer);
             }
             else
             {
-                tonemapped = m_uav3;
+                avgLum = MyLuminanceAverage.Skip();
             }
+
+            MyGpuProfiler.IC_EndBlock();
+
+            IBorrowedUavTexture histogram = null;
+            if (MyRender11.Settings.DisplayHistogram)
+                histogram = MyHdrDebugTools.CreateHistogram(MyGBuffer.Main.LBuffer, MyGBuffer.Main.SamplesCount);
+            if (MyRender11.Settings.DisplayHdrIntensity)
+            {
+                MyHdrDebugTools.DisplayHdrIntensity(MyGBuffer.Main.LBuffer);
+            }
+
+            MyGpuProfiler.IC_BeginBlock("Bloom");
+            IBorrowedUavTexture bloom;
+            if (m_debugOverrides.Postprocessing && m_debugOverrides.Bloom)
+            {
+                bloom = MyBloom.Run(MyGBuffer.Main.LBuffer, MyGBuffer.Main.GBuffer2, MyGBuffer.Main.ResolvedDepthStencil.SrvDepth);
+            }
+            else
+            {
+                bloom = MyManagers.RwTexturesPool.BorrowUav("bloom_EightScreenUavHDR", MyRender11.ResolutionI.X / 8, MyRender11.ResolutionI.Y / 8, MyGBuffer.LBufferFormat);
+                MyRender11.RC.ClearRtv(bloom, Color4.Black);
+            }
+            MyGpuProfiler.IC_EndBlock();
 
             MyGpuProfiler.IC_BeginBlock("Tone mapping");
-            MyToneMapping.Run(tonemapped, MyGBuffer.Main.Get(MyGbufferSlot.LBuffer), avgLum, bloom, MyRender11.Settings.EnableTonemapping && Postprocess.EnableTonemapping);
+            IBorrowedUavTexture tonemapped = MyToneMapping.Run(MyGBuffer.Main.LBuffer, avgLum, bloom, Postprocess.EnableTonemapping && m_debugOverrides.Postprocessing && m_debugOverrides.Tonemapping);
+            bloom.Release();
             MyGpuProfiler.IC_EndBlock();
 
-            MyBindableResource renderedImage;
+            IRtvTexture renderedImage;
 
-            if (MyRender11.FxaaEnabled)
+            IBorrowedCustomTexture fxaaTarget = null;
+            bool fxaa = MyRender11.FxaaEnabled;
+            if (fxaa)
             {
+                fxaaTarget = MyManagers.RwTexturesPool.BorrowCustom("MyRender11.FXAA.Rgb8");
                 MyGpuProfiler.IC_BeginBlock("FXAA");
-                MyFXAA.Run(m_rgba8_0.GetView(new MyViewKey { Fmt = SharpDX.DXGI.Format.R8G8B8A8_UNorm, View = MyViewEnum.RtvView }), tonemapped);
+                MyFXAA.Run(fxaaTarget.Linear, tonemapped);
                 MyGpuProfiler.IC_EndBlock();
 
-                renderedImage = m_rgba8_0.GetView(new MyViewKey { Fmt = SharpDX.DXGI.Format.R8G8B8A8_UNorm_SRgb, View = MyViewEnum.SrvView });
+                renderedImage = fxaaTarget.SRgb;
             }
             else
             {
-                //renderedImage = (tonemapped as MyCustomTexture).GetView(new MyViewKey { Fmt = SharpDX.DXGI.Format.R8G8B8A8_UNorm_SRgb, View = MyViewEnum.SrvView });
                 renderedImage = tonemapped;
             }
 
-            m_finalImage = renderedImage;
 
-            if(blitToBackbuffer)
+            ProfilerShort.Begin("MyHighlight.Run");
+            MyHighlight.Run(renderedImage, fxaaTarget, depthStencilCopy);
+            ProfilerShort.End();
+
+            if (depthStencilCopy != null)
+                depthStencilCopy.Release();
+
+            if (renderTarget != null)
             {
-                MyCopyToRT.Run(Backbuffer, renderedImage);
+                MyCopyToRT.Run(renderTarget, renderedImage);
             }
 
-            if(MyRender11.Settings.ShowLuminanceHistogram)
+            if (MyRender11.Settings.DisplayHistogram)
             {
-                MyLuminanceDebugTools.DisplayHistogram(Backbuffer.m_RTV);
+                if (renderTarget != null && avgLum != null)
+                    MyHdrDebugTools.DisplayHistogram(renderTarget, avgLum, histogram);
             }
+            MyGpuProfiler.IC_EndBlockAlways();
+            ProfilerShort.End();
 
+            if (fxaaTarget != null)
+                fxaaTarget.Release();
+            if (histogram != null)
+                histogram.Release();
+            avgLum.Release();
+            tonemapped.Release();
+
+            // HOTFIX: MyDebugTextureDisplay uses borrowed textures. If we place MyDebugTextureDisplay to the different location, we will have problem with borrowed textures (comment by Michal)
+            ProfilerShort.Begin("MyDebugTextureDisplay.Draw");
+            MyGpuProfiler.IC_BeginBlock("MyDebugTextureDisplay.Draw");
+            MyDebugTextureDisplay.Draw(MyRender11.Backbuffer);
             MyGpuProfiler.IC_EndBlock();
-            MyRender11.GetRenderProfiler().EndProfilingBlock();
-        }
+            ProfilerShort.End();
 
-        static MyBindableResource m_finalImage;
+            return renderedImage;
+        }
 
         private static void TakeCustomSizedScreenshot(Vector2 rescale)
         {
+            IRtvTexture m_finalImage;
+
             var resCpy = m_resolution;
 
             m_resolution = new Vector2I(resCpy * rescale);
             CreateScreenResources();
 
-            DrawGameScene(false);
+            IBorrowedRtvTexture dummy;
+            m_finalImage = DrawGameScene(null, out dummy);
+            dummy.Release();
             m_resetEyeAdaptation = true;
 
-            // uav3 stores final colors
-            var surface = new MyRenderTarget(m_finalImage.GetSize().X, m_finalImage.GetSize().Y, SharpDX.DXGI.Format.R8G8B8A8_UNorm_SRgb, 1, 0);
+            MyBorrowedRwTextureManager texManager = MyManagers.RwTexturesPool;
+            var surface = texManager.BorrowRtv("MyRender11.TakeCustomSizedScreenshot",
+                m_finalImage.Size.X, m_finalImage.Size.Y, SharpDX.DXGI.Format.R8G8B8A8_UNorm_SRgb, 1, 0);
             MyCopyToRT.Run(surface, m_finalImage);
-            SaveScreenshotFromResource(surface.m_resource);
+            MyCopyToRT.ClearAlpha(surface);
+            SaveScreenshotFromResource(surface);
             surface.Release();
 
             m_resolution = resCpy;
@@ -317,50 +664,37 @@ namespace VRageRender
 
         private static void UpdateSceneFrame()
         {
-            var desc = new RasterizerStateDescription();
-            desc.FillMode = FillMode.Solid;
-            desc.CullMode = CullMode.None;
-            desc.IsFrontCounterClockwise = true;
-
-            desc.DepthBias = 25000;
-            desc.DepthBiasClamp = 2;
-            desc.SlopeScaledDepthBias = 1;
-
-            MyPipelineStates.Modify(m_shadowRasterizerState, desc);
-
-
+            MySimpleProfiler.Begin("Textures");
+            ProfilerShort.Begin("LoadMeshes");
             MyMeshes.Load();
+            ProfilerShort.End();
+
+            ProfilerShort.Begin("QueryTexturesFromEntities");
             QueryTexturesFromEntities();
-            MyTextures.Load();
+            ProfilerShort.End();
+            ProfilerShort.Begin("MyTextures.Load");
+            MyManagers.FileTextures.LoadAllRequested();
+            ProfilerShort.End();
+            ProfilerShort.Begin("GatherTextures");
             GatherTextures();
-            MyComponents.UpdateCullProxies();
-            MyComponents.ProcessEntities();
-            MyComponents.SendVisible();
+            ProfilerShort.End();
+            MySimpleProfiler.End("Textures");
 
             MyBillboardRenderer.OnFrameStart();
 
-            MyRender11.GetRenderProfiler().StartProfilingBlock("RebuildProxies");
-            foreach (var renderable in MyComponentFactory<MyRenderableComponent>.GetAll())
-            {
-                renderable.RebuildRenderProxies();
-            }
-            MyRender11.GetRenderProfiler().EndProfilingBlock();
-
-            MyRender11.GetRenderProfiler().StartProfilingBlock("UpdateProxies");
             UpdateActors();
-            MyRender11.GetRenderProfiler().EndProfilingBlock();
 
             MyBigMeshTable.Table.MoveToGPU();
 
-            MyRender11.GetRenderProfiler().StartProfilingBlock("Update merged groups");
-            MyRender11.GetRenderProfiler().StartProfilingBlock("UpdateBeforeDraw");
+            ProfilerShort.Begin("Update merged groups");
+            ProfilerShort.Begin("UpdateBeforeDraw");
             foreach (var r in MyComponentFactory<MyGroupRootComponent>.GetAll())
             {
                 r.UpdateBeforeDraw();
             }
-            MyRender11.GetRenderProfiler().EndProfilingBlock();
+            ProfilerShort.End();
 
-            MyRender11.GetRenderProfiler().StartProfilingBlock("MoveToGPU");
+            ProfilerShort.Begin("MoveToGPU");
             foreach (var r in MyComponentFactory<MyGroupRootComponent>.GetAll())
             {
                 foreach (var val in r.m_materialGroups.Values)
@@ -369,73 +703,34 @@ namespace VRageRender
                     val.MoveToGPU();
                 }
             }
-            MyRender11.GetRenderProfiler().EndProfilingBlock();
-            MyRender11.GetRenderProfiler().EndProfilingBlock();
+            ProfilerShort.End();
+            ProfilerShort.End();
 
-            MyRender11.GetRenderProfiler().StartProfilingBlock("Fill foliage streams");
+            ProfilerShort.Begin("Fill foliage streams");
             MyGpuProfiler.IC_BeginBlock("Fill foliage streams");
-            MyGPUFoliageGenerating.GetInstance().PerFrame();
-            MyGPUFoliageGenerating.GetInstance().Begin();
-            foreach (var foliage in MyComponentFactory<MyFoliageComponent>.GetAll())
-            {
-                if (foliage.m_owner.CalculateCameraDistance() < MyRender11.RenderSettings.FoliageDetails.GrassDrawDistance())
-                {
-                    foliage.FillStreams();
-                }
-                else
-                {
-                    foliage.InvalidateStreams();
-                }
-            }
-            MyGPUFoliageGenerating.GetInstance().End();
+            m_foliageGenerator.PerFrame();
+            m_foliageGenerator.Begin();
+            MyFoliageComponents.Update();
+            m_foliageGenerator.End();
             MyGpuProfiler.IC_EndBlock();
-            MyRender11.GetRenderProfiler().EndProfilingBlock();
+            ProfilerShort.End();
 
             MyCommon.MoveToNextFrame();
         }
 
-        //private static void DrawScene()
-        //{
-        //    DrawGameScene(true, true);
-
-        //    if (m_screenshot.HasValue)
-        //    { 
-        //        if(m_screenshot.Value.SizeMult == Vector2.One)
-        //        {
-        //            SaveScreenshotFromResource(Backbuffer.m_resource);
-        //        }
-        //        else
-        //        {
-        //            TakeCustomSizedScreenshot(m_screenshot.Value.SizeMult);
-        //        }
-        //    }
-
-        //    TransferPerformanceStats();
-        //}
-
-        static void SaveResourceToFile(Resource res, string path, ImageFileFormat fmt)
+        private static void SaveScreenshotFromResource(IResource res)
         {
-            try
-            {
-                Resource.ToFile(MyRender11.Context, res, fmt, path);
-
-                MyRenderProxy.ScreenshotTaken(true, path, false);
-            }
-            catch (SharpDX.SharpDXException e)
-            {
-                MyRender11.Log.WriteLine("SaveResourceToFile()");
-                MyRender11.Log.IncreaseIndent();
-                    MyRender11.Log.WriteLine(String.Format("Failed to save screenshot {0}: {1}", path, e));
-                MyRender11.Log.DecreaseIndent();
-
-                MyRenderProxy.ScreenshotTaken(false, path, false);
-            }
+            bool result = MyTextureData.ToFile(res, m_screenshot.Value.SavePath, m_screenshot.Value.Format);
+            MyRenderProxy.ScreenshotTaken(result, m_screenshot.Value.SavePath, m_screenshot.Value.ShowNotification);
+            m_screenshot = null;
         }
 
-        private static void SaveScreenshotFromResource(Resource res)
+        private static MyBackbuffer m_lastScreenDataResource = null;
+        private static Stream m_lastDataStream = null;
+
+        private static unsafe byte[] GetScreenData(IResource res, byte[] screenData, ImageFileFormat fmt)
         {
-            SaveResourceToFile(res, m_screenshot.Value.SavePath, m_screenshot.Value.Format);
-            m_screenshot = null;
+            return MyTextureData.ToData(res, screenData, fmt);
         }
     }
 }

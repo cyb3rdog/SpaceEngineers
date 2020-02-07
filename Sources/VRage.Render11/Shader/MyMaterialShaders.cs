@@ -1,19 +1,57 @@
-﻿using SharpDX;
-using SharpDX.Direct3D11;
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
+
+using SharpDX;
+using SharpDX.Direct3D11;
+using SharpDX.Direct3D;
+using VRage;
 using VRage.FileSystem;
-using VRage.Library.Utils;
 using VRage.Utils;
-using VRage.Utils;
+using VRage.Render11.Resources;
+using VRage.Import;
+using VRage.Profiler;
+using VRageRender.Import;
 
 
 namespace VRageRender
 {
+    [Flags]
+    enum MyShaderUnifiedFlags
+    {
+        NONE = 0,
+        DEPTH_ONLY = 1 << 0,
+
+        // only one!
+        ALPHA_MASKED = 1 << 1,
+        TRANSPARENT = 1 << 2,
+        DITHERED = 1 << 3,
+        USE_SHADOW_CASCADES = 1 << 4,
+        ALPHA_MASK_ARRAY = 1 << 5,
+        DITHERED_LOD = 1 << 6,
+        STATIC_DECAL = 1 << 7,
+        STATIC_DECAL_CUTOUT = 1 << 8,
+
+        USE_SKINNING = 1 << 9,
+        USE_VOXEL_DATA = 1 << 10,
+        USE_VOXEL_MORPHING = 1 << 11,
+
+        // only one!
+        USE_CUBE_INSTANCING = 1 << 12,
+        USE_DEFORMED_CUBE_INSTANCING = 1 << 13,
+        USE_GENERIC_INSTANCING = 1 << 14,
+        USE_MERGE_INSTANCING = 1 << 15,
+
+        // only on USE_MERGE_INSTANCING
+        USE_SINGLE_INSTANCE = 1 << 16,
+
+        // no restriction
+        USE_TEXTURE_INDICES = 1 << 17,
+    }
+
     struct MyMaterialShadersBundleId
     {
         internal int Index;
@@ -41,6 +79,7 @@ namespace VRageRender
         internal MyStringId Pass;
         internal VertexLayoutId Layout;
         internal MyShaderUnifiedFlags Flags;
+        internal MyFileTextureEnum TextureTypes;
         internal string Name { get { return String.Format("[{0}][{1}]_{2}", Pass.ToString(), Material.ToString(), Flags); } }
     }
 
@@ -53,96 +92,89 @@ namespace VRageRender
 
     struct MyMaterialShaderInfo
     {
-        internal string Declarations;
-        internal string VertexShaderSource;
-        internal string PixelShaderSource;
-    }
-
-    struct MyMaterialPassInfo
-    {
-        internal string VertexStageTemplate;
-        internal string PixelStageTemplate;
+        internal string VertexShaderFilename;
+        internal string VertexShaderFilepath;
+        internal string PixelShaderFilename;
+        internal string PixelShaderFilepath;
     }
 
     static class MyMaterialShaders
     {
-        internal static void AddMaterialShaderFlagMacros(StringBuilder sb, MyShaderUnifiedFlags flags)
+        public const string GEOMETRY_FOLDER = "Geometry";
+
+        public const string GBUFFER_PASS = "GBuffer";
+        public const string DEPTH_PASS = "Depth";
+        public const string FORWARD_PASS = "Forward";
+        public const string HIGHLIGHT_PASS = "Highlight";
+        public const string FOLIAGE_STREAMING_PASS = "FoliageStreaming";
+        public const string STATIC_GLASS_PASS = "StaticGlass";
+
+        public static MyStringId GBUFFER_PASS_ID = X.TEXT_(GBUFFER_PASS);
+        public static MyStringId DEPTH_PASS_ID = X.TEXT_(DEPTH_PASS);
+        public static MyStringId FORWARD_PASS_ID = X.TEXT_(FORWARD_PASS);
+        public static MyStringId HIGHLIGHT_PASS_ID = X.TEXT_(HIGHLIGHT_PASS);
+        public static MyStringId FOLIAGE_STREAMING_PASS_ID = X.TEXT_(FOLIAGE_STREAMING_PASS);
+        public static MyStringId STATIC_GLASS_PASS_ID = X.TEXT_(STATIC_GLASS_PASS);
+
+        public static MyStringId DEFAULT_MATERIAL_TAG = X.TEXT_("Standard");
+        public static MyStringId ALPHA_MASKED_MATERIAL_TAG = X.TEXT_("AlphaMasked");
+        public static MyStringId TRIPLANAR_SINGLE_MATERIAL_TAG = X.TEXT_("TriplanarSingle");
+        public static MyStringId TRIPLANAR_MULTI_MATERIAL_TAG = X.TEXT_("TriplanarMulti");
+        public static MyStringId TRIPLANAR_DEBRIS_MATERIAL_TAG = X.TEXT_("TriplanarDebris");
+
+        internal static void AddMaterialShaderFlagMacrosTo(List<ShaderMacro> list, MyShaderUnifiedFlags flags, MyFileTextureEnum textureTypes = MyFileTextureEnum.UNSPECIFIED)
         {
             if ((flags & MyShaderUnifiedFlags.DEPTH_ONLY) > 0)
-            {
-                sb.AppendLine("#define DEPTH_ONLY");
-            }
-            if ((flags & MyShaderUnifiedFlags.ALPHAMASK) > 0)
-            {
-                sb.AppendLine("#define ALPHA_MASKED");
-            }
+                list.Add(new ShaderMacro("DEPTH_ONLY", null));
+            if ((flags & MyShaderUnifiedFlags.ALPHA_MASKED) > 0)
+                list.Add(new ShaderMacro("ALPHA_MASKED", null));
+            if ((flags & MyShaderUnifiedFlags.ALPHA_MASK_ARRAY) > 0)
+                list.Add(new ShaderMacro("ALPHA_MASK_ARRAY", null));
             if ((flags & MyShaderUnifiedFlags.TRANSPARENT) > 0)
-            {
-                sb.AppendLine("#define TRANSPARENT");
-            }
+                list.Add(new ShaderMacro("TRANSPARENT", null));
             if ((flags & MyShaderUnifiedFlags.DITHERED) > 0)
-            {
-                sb.AppendLine("#define DITHERED");
-            }
-            if ((flags & MyShaderUnifiedFlags.FOLIAGE) > 0)
-            {
-                sb.AppendLine("#define FOLIAGE");
-            }
+                list.Add(new ShaderMacro("DITHERED", null));
+            if ((flags & MyShaderUnifiedFlags.DITHERED_LOD) > 0)
+                list.Add(new ShaderMacro("DITHERED_LOD", null));
             if ((flags & MyShaderUnifiedFlags.USE_SKINNING) > 0)
+                list.Add(new ShaderMacro("USE_SKINNING", null));
+            if ((flags & MyShaderUnifiedFlags.STATIC_DECAL) > 0)
             {
-                sb.AppendLine("#define USE_SKINNING");
+                Debug.Assert(textureTypes != MyFileTextureEnum.UNSPECIFIED);
+                list.Add(new ShaderMacro("STATIC_DECAL", null));
+                list.AddRange(MyMeshMaterials1.GetMaterialTextureMacros(textureTypes));
             }
+            if ((flags & MyShaderUnifiedFlags.STATIC_DECAL_CUTOUT) > 0)
+                list.Add(new ShaderMacro("STATIC_DECAL_CUTOUT", null));
             if ((flags & MyShaderUnifiedFlags.USE_CUBE_INSTANCING) > 0)
-            {
-                sb.AppendLine("#define USE_CUBE_INSTANCING");
-            }
+                list.Add(new ShaderMacro("USE_CUBE_INSTANCING", null));
             if ((flags & MyShaderUnifiedFlags.USE_DEFORMED_CUBE_INSTANCING) > 0)
-            {
-                sb.AppendLine("#define USE_DEFORMED_CUBE_INSTANCING");
-            }
+                list.Add(new ShaderMacro("USE_DEFORMED_CUBE_INSTANCING", null));
             if ((flags & MyShaderUnifiedFlags.USE_GENERIC_INSTANCING) > 0)
-            {
-                sb.AppendLine("#define USE_GENERIC_INSTANCING");
-            }
+                list.Add(new ShaderMacro("USE_GENERIC_INSTANCING", null));
             if ((flags & MyShaderUnifiedFlags.USE_MERGE_INSTANCING) > 0)
+                list.Add(new ShaderMacro("USE_MERGE_INSTANCING", null));
+            if ((flags & MyShaderUnifiedFlags.USE_SINGLE_INSTANCE) > 0)
             {
-                sb.AppendLine("#define USE_MERGE_INSTANCING");
+                Debug.Assert((flags & MyShaderUnifiedFlags.USE_MERGE_INSTANCING) > 0);
+                list.Add(new ShaderMacro("USE_SINGLE_INSTANCE", null));
             }
             if ((flags & MyShaderUnifiedFlags.USE_VOXEL_MORPHING) > 0)
-            {
-                sb.AppendLine("#define USE_VOXEL_MORPHING");
-            }
+                list.Add(new ShaderMacro("USE_VOXEL_MORPHING", null));
+            if ((flags & MyShaderUnifiedFlags.USE_VOXEL_DATA) > 0)
+                list.Add(new ShaderMacro("USE_VOXEL_DATA", null));
+            if ((flags & MyShaderUnifiedFlags.USE_TEXTURE_INDICES) > 0)
+                list.Add(new ShaderMacro("USE_TEXTURE_INDICES", null));
         }
 
-        static Dictionary<MyStringId, MyMaterialShaderInfo> MaterialSources = new Dictionary<MyStringId, MyMaterialShaderInfo>();
-        static Dictionary<MyStringId, MyMaterialPassInfo> MaterialPassSources = new Dictionary<MyStringId, MyMaterialPassInfo>();
+        static Dictionary<MyStringId, MyMaterialShaderInfo> MaterialSources = new Dictionary<MyStringId, MyMaterialShaderInfo>(MyStringId.Comparer);
 
-        static Dictionary<int, MyMaterialShadersBundleId> HashIndex = new Dictionary<int,MyMaterialShadersBundleId>();
+        static Dictionary<int, MyMaterialShadersBundleId> HashIndex = new Dictionary<int, MyMaterialShadersBundleId>();
         static MyFreelist<MyMaterialShadersInfo> BundleInfo = new MyFreelist<MyMaterialShadersInfo>(64);
-        internal static MyMaterialShadersBundle[] Bundles = new MyMaterialShadersBundle [64];
+        internal static MyMaterialShadersBundle[] Bundles = new MyMaterialShadersBundle[64];
 
-        static string m_vertexTemplateBase;
-        static string m_pixelTemplateBase;
-
-        static MyMaterialShaders()
-        {
-            LoadTemplates();
-        }
-
-        static void LoadTemplates()
-        {
-            using (var stream = MyFileSystem.OpenRead(Path.Combine(MyFileSystem.ContentPath, MyShaders.ShadersContentPath, "vertex_template_base.h")))
-            {
-                m_vertexTemplateBase = new StreamReader(stream).ReadToEnd();
-            }
-
-            using (var stream = MyFileSystem.OpenRead(Path.Combine(MyFileSystem.ContentPath, MyShaders.ShadersContentPath, "pixel_template_base.h")))
-            {
-                m_pixelTemplateBase = new StreamReader(stream).ReadToEnd();
-            }
-        }
-
-        internal static MyMaterialShadersBundleId Get(MyStringId material, MyStringId materialPass, VertexLayoutId vertexLayout, MyShaderUnifiedFlags flags)
+        internal static MyMaterialShadersBundleId Get(MyStringId material, MyStringId materialPass,
+            VertexLayoutId vertexLayout, MyShaderUnifiedFlags flags, MyFileTextureEnum textureTypes)
         {
             int hash = 0;
             MyHashHelper.Combine(ref hash, material.GetHashCode());
@@ -150,7 +182,7 @@ namespace VRageRender
             MyHashHelper.Combine(ref hash, vertexLayout.GetHashCode());
             MyHashHelper.Combine(ref hash, unchecked((int)flags));
 
-            if(HashIndex.ContainsKey(hash))
+            if (HashIndex.ContainsKey(hash))
             {
                 return HashIndex[hash];
             }
@@ -164,7 +196,8 @@ namespace VRageRender
                 Material = material,
                 Pass = materialPass,
                 Layout = vertexLayout,
-                Flags = flags
+                Flags = flags,
+                TextureTypes = textureTypes,
             };
             Bundles[id.Index] = new MyMaterialShadersBundle { };
 
@@ -173,11 +206,14 @@ namespace VRageRender
             return id;
         }
 
+        private static void ClearSources()
+        {
+            MaterialSources.Clear();
+        }
+
         internal static void Recompile()
         {
-            LoadTemplates();
-            MaterialSources.Clear();
-            MaterialPassSources.Clear();
+            ClearSources();
 
             foreach (var id in HashIndex.Values)
             {
@@ -185,104 +221,48 @@ namespace VRageRender
             }
         }
 
-        static void PrefetchMaterialSources(MyStringId id)
+        internal static void GetMaterialSources(MyStringId id, out MyMaterialShaderInfo info)
         {
-            if(!MaterialSources.ContainsKey(id))
+            if (!MaterialSources.TryGetValue(id, out info))
             {
-                var info = new MyMaterialShaderInfo();
+                info = new MyMaterialShaderInfo();
 
-                using (var stream = MyFileSystem.OpenRead(Path.Combine(MyFileSystem.ContentPath, MyShaders.ShadersContentPath, "materials", id.ToString()), "declarations.h"))
-                {
-                    info.Declarations = new StreamReader(stream).ReadToEnd();
-                }
-                using (var stream = MyFileSystem.OpenRead(Path.Combine(MyFileSystem.ContentPath, MyShaders.ShadersContentPath, "materials", id.ToString()), "vertex.h"))
-                {
-                    info.VertexShaderSource = new StreamReader(stream).ReadToEnd();
-                }
-                using (var stream = MyFileSystem.OpenRead(Path.Combine(MyFileSystem.ContentPath, MyShaders.ShadersContentPath, "materials", id.ToString()), "pixel.h"))
-                {
-                    info.PixelShaderSource = new StreamReader(stream).ReadToEnd();
-                }
+                info.VertexShaderFilename = Path.Combine(MaterialsFolder, id.ToString(), "Vertex.hlsl"); ;
+                info.VertexShaderFilepath = Path.Combine(MyShaders.ShadersPath, info.VertexShaderFilename);
+                info.PixelShaderFilename = Path.Combine(MaterialsFolder, id.ToString(), "Pixel.hlsl");
+                info.PixelShaderFilepath = Path.Combine(MyShaders.ShadersPath, info.PixelShaderFilename);
 
                 MaterialSources[id] = info;
             }
         }
 
-        static void PrefetchPassSources(MyStringId id)
+        static void InitBundle(MyMaterialShadersBundleId id, bool invalidateCache = false)
         {
-            if (!MaterialPassSources.ContainsKey(id))
-            {
-                var info = new MyMaterialPassInfo();
-
-                using (var stream = MyFileSystem.OpenRead(Path.Combine(MyFileSystem.ContentPath, MyShaders.ShadersContentPath, "passes", id.ToString()), "vertex_stage.hlsl"))
-                {
-                    info.VertexStageTemplate = new StreamReader(stream).ReadToEnd();
-                }
-                using (var stream = MyFileSystem.OpenRead(Path.Combine(MyFileSystem.ContentPath, MyShaders.ShadersContentPath, "passes", id.ToString()), "pixel_stage.hlsl"))
-                {
-                    info.PixelStageTemplate = new StreamReader(stream).ReadToEnd();
-                }
-
-                MaterialPassSources[id] = info;
-            }
-        }
-
-        static void InitBundle(MyMaterialShadersBundleId id)
-        {
-            Debug.Assert(m_vertexTemplateBase != null);
-            Debug.Assert(m_pixelTemplateBase != null);
-
             var info = BundleInfo.Data[id.Index];
 
-            PrefetchMaterialSources(info.Material);
-            PrefetchPassSources(info.Pass);
+            var macroList = new List<ShaderMacro>();
+            macroList.Add(GetRenderingPassMacro(info.Pass.String));
+            AddMaterialShaderFlagMacrosTo(macroList, info.Flags, info.TextureTypes);
+            macroList.AddRange(info.Layout.Info.Macros);
 
-            // vertex shader
+            ProfilerShort.Begin("MyShaders.MaterialCompile");
 
-            StringBuilder source = new StringBuilder();
-            source.Append(MyRender11.GlobalShaderHeader);
-            AddMaterialShaderFlagMacros(source, info.Flags);
-            source.Append(m_vertexTemplateBase);
-            source.Replace("__VERTEXINPUT_DECLARATIONS__",
-                info.Layout.Info.SourceDeclarations);
-            source.Replace("__VERTEXINPUT_TRANSFER__",
-                info.Layout.Info.SourceDataMove);
-            source.Replace("__MATERIAL_DECLARATIONS__",
-                MaterialSources[info.Material].Declarations);
-            source.Replace("__MATERIAL_VERTEXPROGRAM__",
-                MaterialSources[info.Material].VertexShaderSource);
-            source.AppendLine();
-            source.AppendLine(MaterialPassSources[info.Pass].VertexStageTemplate);
+            MyMaterialShaderInfo sources;
+            GetMaterialSources(info.Material, out sources);
 
-            var vsName = String.Format("[{0}][{1}]_{2}_{3}", info.Pass.ToString(), info.Material.ToString(), "vs", info.Flags);
+            ShaderMacro[] macros = macroList.ToArray();
 
-            var vsSource = source.ToString();
+            string vsDescriptor = GetShaderDescriptor(sources.VertexShaderFilename, info.Material.String, info.Pass.String, info.Layout);
+            byte[] vsBytecode = MyShaders.Compile(sources.VertexShaderFilepath, macros, MyShaderProfile.vs_5_0, vsDescriptor, invalidateCache);
 
-            source.Clear();
+            string psDescriptor = GetShaderDescriptor(sources.PixelShaderFilename, info.Material.String, info.Pass.String, info.Layout);
+            byte[] psBytecode = MyShaders.Compile(sources.PixelShaderFilepath, macros, MyShaderProfile.ps_5_0, psDescriptor, invalidateCache);
 
-            // pixel shader
-
-            source.Append(MyRender11.GlobalShaderHeader);
-            AddMaterialShaderFlagMacros(source, info.Flags);
-            source.Append(m_pixelTemplateBase);
-            source.Replace("__MATERIAL_DECLARATIONS__", MaterialSources[info.Material].Declarations);
-            source.Replace("__MATERIAL_PIXELPROGRAM__", MaterialSources[info.Material].PixelShaderSource);
-            source.AppendLine();
-            source.AppendLine(MaterialPassSources[info.Pass].PixelStageTemplate);
-
-            
-            var psName = String.Format("[{0}][{1}]_{2}_{3}", info.Pass.ToString(), info.Material.ToString(), "ps", info.Flags);
-            var psSource = source.ToString();
-
-
-            var vsBytecode = MyShaders.Compile(vsSource, "__vertex_shader", "vs_5_0", vsName, false);
-            var psBytecode = MyShaders.Compile(psSource, "__pixel_shader", "ps_5_0", psName, false);
-
+            ProfilerShort.End();
 
             // input layous
-
             bool canChangeBundle = vsBytecode != null && psBytecode != null;
-            if(canChangeBundle)
+            if (canChangeBundle)
             {
                 if (Bundles[id.Index].IL != null)
                 {
@@ -301,31 +281,121 @@ namespace VRageRender
                 }
 
                 try
-                { 
+                {
                     Bundles[id.Index].VS = new VertexShader(MyRender11.Device, vsBytecode);
+                    Bundles[id.Index].VS.DebugName = vsDescriptor;
                     Bundles[id.Index].PS = new PixelShader(MyRender11.Device, psBytecode);
+                    Bundles[id.Index].PS.DebugName = psDescriptor;
                     Bundles[id.Index].IL = info.Layout.Elements.Length > 0 ? new InputLayout(MyRender11.Device, vsBytecode, info.Layout.Elements) : null;
                 }
-                catch(SharpDXException e)
+                catch (SharpDXException e)
                 {
-                    vsBytecode = MyShaders.Compile(vsSource, "__vertex_shader", "vs_5_0", vsName, true);
-                    psBytecode = MyShaders.Compile(psSource, "__pixel_shader", "ps_5_0", psName, true);
-
-                    Bundles[id.Index].VS = new VertexShader(MyRender11.Device, vsBytecode);
-                    Bundles[id.Index].PS = new PixelShader(MyRender11.Device, psBytecode);
-                    Bundles[id.Index].IL = info.Layout.Elements.Length > 0 ? new InputLayout(MyRender11.Device, vsBytecode, info.Layout.Elements) : null;
+                    if (!invalidateCache)
+                    {
+                        InitBundle(id, true);
+                        return;
+                    }
+                    string message = "Failed to initialize material shader" + info.Name + " for vertex " + info.Layout.Info.Components.GetString();
+                    MyRender11.Log.WriteLine(message);
+                    throw new MyRenderException(message, MyRenderExceptionEnum.Unassigned);
                 }
             }
-            else if (Bundles[id.Index].VS == null && Bundles[id.Index].PS == null)
+            else //if (Bundles[id.Index].VS == null && Bundles[id.Index].PS == null)
             {
-                MyRender11.Log.WriteLine("Failed to compile material shader" + info.Name + " for vertex " + String.Join(", ", info.Layout.Info.Components.Select(x => x.ToString())));
-                throw new MyRenderException("Failed to compile material shader" + info.Name, MyRenderExceptionEnum.Unassigned);
+                string message = "Failed to compile material shader" + info.Name + " for vertex " + info.Layout.Info.Components.GetString();
+                MyRender11.Log.WriteLine(message);
+                
+                if (vsBytecode == null && psBytecode != null)
+                    message = "vsByteCode is null, descriptor: " + vsDescriptor;
+                else if (vsBytecode != null && psBytecode == null)
+                    message = "psByteCode is null, descriptor: " + psDescriptor;
+                else
+                    message = "vsByteCode and psByteCode are null, vsDescriptor: " + vsDescriptor + "; psDescriptor: " + psDescriptor;
+                MyRender11.Log.WriteLine(message);
+
+#if DEBUG
+                if (Debugger.IsAttached)
+                {
+                    Debugger.Break();
+                    ClearSources();
+                    InitBundle(id, invalidateCache);
+                }
+#else
+                if (Bundles[id.Index].VS == null && Bundles[id.Index].PS == null)
+                    throw new MyRenderException(message, MyRenderExceptionEnum.Unassigned);
+#endif
+            }
+        }
+
+        public static string GetShaderDescriptor(string shaderFilename, string material, string pass, VertexLayoutId layout)
+        {
+            return String.Format("{0}, {1}_{2}_{3}", shaderFilename, material, pass, layout.Info.Components.GetString());
+        }
+
+        public static string MaterialsFolder
+        {
+            get { return Path.Combine(GEOMETRY_FOLDER, "Materials"); }
+        }
+
+        public static string PassesFolder
+        {
+            get { return Path.Combine(GEOMETRY_FOLDER, "Passes"); }
+        }
+
+        internal static ShaderMacro GetRenderingPassMacro(string pass)
+        {
+            const string RENDERING_PASS = "RENDERING_PASS";
+            switch (pass)
+            {
+                case GBUFFER_PASS:
+                    return new ShaderMacro(RENDERING_PASS, 0);
+                case DEPTH_PASS:
+                    return new ShaderMacro(RENDERING_PASS, 1);
+                case FORWARD_PASS:
+                    return new ShaderMacro(RENDERING_PASS, 2);
+                case HIGHLIGHT_PASS:
+                    return new ShaderMacro(RENDERING_PASS, 3);
+                case FOLIAGE_STREAMING_PASS:
+                    return new ShaderMacro(RENDERING_PASS, 4);
+                case STATIC_GLASS_PASS:
+                    return new ShaderMacro(RENDERING_PASS, 5);
+                default:
+                    throw new Exception();
+            }
+        }
+
+        internal static MyStringId MapTechniqueToDefaultPass(MyMeshDrawTechnique technique)
+        {
+            switch (technique)
+            {
+                case MyMeshDrawTechnique.GLASS:
+                    return STATIC_GLASS_PASS_ID;
+                default:
+                    return GBUFFER_PASS_ID;
+            }
+        }
+
+        internal static MyStringId MapTechniqueToShaderMaterial(MyMeshDrawTechnique technique)
+        {
+            switch (technique)
+            {
+                case MyMeshDrawTechnique.VOXEL_MAP_SINGLE:
+                    return TRIPLANAR_SINGLE_MATERIAL_TAG;
+                case MyMeshDrawTechnique.VOXEL_MAP_MULTI:
+                    return TRIPLANAR_MULTI_MATERIAL_TAG;
+                case MyMeshDrawTechnique.VOXELS_DEBRIS:
+                    return TRIPLANAR_DEBRIS_MATERIAL_TAG;
+                case MyMeshDrawTechnique.ALPHA_MASKED:
+                case MyMeshDrawTechnique.FOLIAGE:
+                    return ALPHA_MASKED_MATERIAL_TAG;
+                default:
+                    return DEFAULT_MATERIAL_TAG;
             }
         }
 
         internal static void OnDeviceEnd()
         {
-            foreach(var id in HashIndex.Values)
+            foreach (var id in HashIndex.Values)
             {
                 if (Bundles[id.Index].IL != null)
                 {

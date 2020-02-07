@@ -9,6 +9,7 @@ using Sandbox.Game.Gui;
 using VRage;
 using VRageMath;
 using Sandbox.Graphics;
+using VRage.Game;
 using VRage.Utils;
 
 namespace Sandbox.Game.Gui
@@ -19,8 +20,8 @@ namespace Sandbox.Game.Gui
         {
             public StringBuilder Name;
             public StringBuilder Value;
-            public MyFontEnum? NameFont;
-            public MyFontEnum? ValueFont;
+            public string NameFont;
+            public string ValueFont;
             public bool Visible;
             public Data()
             {
@@ -33,8 +34,8 @@ namespace Sandbox.Game.Gui
         private readonly List<Data> m_items;
         private int m_count;
 
-        public MyFontEnum DefaultNameFont;
-        public MyFontEnum DefaultValueFont;
+        public string DefaultNameFont;
+        public string DefaultValueFont;
         public float LineSpacing;
         public bool ShowBackgroundFog;
 
@@ -73,8 +74,8 @@ namespace Sandbox.Game.Gui
         }
 
         public MyHudNameValueData(int itemCount,
-            MyFontEnum defaultNameFont = MyFontEnum.Blue,
-            MyFontEnum defaultValueFont = MyFontEnum.White,
+            string defaultNameFont = MyFontEnum.Blue,
+            string defaultValueFont = MyFontEnum.White,
             float lineSpacing      = MyGuiConstants.HUD_LINE_SPACING,
             bool showBackgroundFog = false)
         {
@@ -178,7 +179,7 @@ namespace Sandbox.Game.Gui
                 var size = new Vector2(Math.Abs(namesTopLeft.X - valuesTopRight.X),
                                        LineSpacing);
 
-                MyGuiScreenHudBase.DrawFog(ref center, ref size);
+                MyGuiTextShadows.DrawShadow(ref center, ref size);
 
                 namesTopLeft.Y   += lineOffset;
                 valuesTopRight.Y += lineOffset;

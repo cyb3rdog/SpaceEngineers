@@ -4,7 +4,7 @@ using Sandbox.Game.GameSystems.Conveyors;
 
 namespace Sandbox.Game.Entities
 {
-    internal class MyUpgradableBlockComponent
+    public class MyUpgradableBlockComponent
     {
         public HashSet<ConveyorLinePosition> ConnectionPositions
         {
@@ -22,6 +22,11 @@ namespace Sandbox.Game.Entities
 
         public void Refresh(MyCubeBlock parent)
         {
+            if (parent.BlockDefinition.Model == null)
+            {
+                return;
+            }
+
             ConnectionPositions.Clear();
             var positions = MyMultilineConveyorEndpoint.GetLinePositions(parent, "detector_upgrade");
             foreach (var position in positions)

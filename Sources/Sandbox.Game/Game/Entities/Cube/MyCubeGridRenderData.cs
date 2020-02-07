@@ -1,19 +1,16 @@
-﻿using System;
+﻿using Sandbox.Game.Components;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Text;
-using System.Threading.Tasks;
-using Sandbox.Engine.Utils;
-using VRage.Import;
+using VRage;
+using VRage.Game.Models;
+using VRage.Library.Utils;
+using VRage.Profiler;
+using VRage.Utils;
 using VRageMath;
 using VRageRender;
-using Sandbox.Definitions;
-using Sandbox.Graphics;
-using VRage;
-using Sandbox.Game.Components;
-using VRage;
-using VRage.Library.Utils;
 
 namespace Sandbox.Game.Entities.Cube
 {
@@ -23,7 +20,10 @@ namespace Sandbox.Game.Entities.Cube
         /// Cell cube count per axis (cell is 30x30x30)
         /// </summary>
         public static int SplitCellCubeCount = 30;
-        
+
+        private const int MAX_DECALS_PER_CUBE = 30;
+        private Dictionary<Vector3I, List<MyDecalPartIdentity>> m_cubeDecals = new Dictionary<Vector3I, List<MyDecalPartIdentity>>();
+
         Vector3 m_basePos;
         Dictionary<Vector3I, MyCubeGridRenderCell> m_cells = new Dictionary<Vector3I, MyCubeGridRenderCell>();
 
@@ -71,7 +71,7 @@ namespace Sandbox.Game.Entities.Cube
             var pos = (point0 + point1) * 0.5f;
             Vector3I direction = Vector3I.Round((point0 - point1) / m_gridRender.GridSize);
 
-            MyEdgeInfo info = new MyEdgeInfo(ref pos, ref direction, ref normal0, ref normal1, ref color, MyLibraryUtils.GetHash(owner.BlockDefinition.EdgeType));
+            MyEdgeInfo info = new MyEdgeInfo(ref pos, ref direction, ref normal0, ref normal1, ref color, MyStringHash.GetOrCompute(owner.BlockDefinition.EdgeType));
             var cell = GetCell(pos);
             if (cell.AddEdgeInfo(hash, info, owner))
                 m_dirtyCells.Add(cell);
@@ -86,15 +86,10 @@ namespace Sandbox.Game.Entities.Cube
                 m_dirtyCells.Add(cell);
         }
 
-        // hack/optimization that prevents fast shooting turrets from cause rebuild in almost every frame
-        int m_rebuildDirtyCounter;
-        int m_nextRebuildDirtyCount;
         public void RebuildDirtyCells(RenderFlags renderFlags)
         {
-            ++m_rebuildDirtyCounter;
-            if (m_rebuildDirtyCounter < m_nextRebuildDirtyCount || m_dirtyCells.Count == 0)
+            if (m_dirtyCells.Count == 0)
                 return;
-            m_nextRebuildDirtyCount = m_rebuildDirtyCounter + 10; // change if stuttering is still noticable
             foreach (var cell in m_dirtyCells)
             {
                 ProfilerShort.Begin("Cell rebuild");
@@ -118,6 +113,7 @@ namespace Sandbox.Game.Entities.Cube
 
         internal MyCubeGridRenderCell GetCell(Vector3 pos)
         {
+            // NOTE: Cell position != cube position
             Vector3I cellPos = Vector3I.Round((pos - m_basePos) / (SplitCellCubeCount * m_gridRender.GridSize));
             MyCubeGridRenderCell result;
             if (!m_cells.TryGetValue(cellPos, out result))
@@ -129,12 +125,88 @@ namespace Sandbox.Game.Entities.Cube
             return result;
         }
 
+        public void AddDecal(Vector3I position, MyCubeGridHitInfo gridHitInfo, uint decalId)
+        {
+            MyCube cube;
+            bool found = m_gridRender.CubeGrid.TryGetCube(position, out cube);
+            if (!found)
+                return;
+
+            if (gridHitInfo.CubePartIndex != -1)
+            {
+                var part = cube.Parts[gridHitInfo.CubePartIndex];
+                var cell = GetCell(part.InstanceData.Translation);
+                cell.AddCubePartDecal(part, decalId);
+            }
+
+            List<MyDecalPartIdentity> decals;
+            found = m_cubeDecals.TryGetValue(position, out decals);
+            if (!found)
+            {
+                decals = new List<MyDecalPartIdentity>();
+                m_cubeDecals[position] = decals;
+            }
+
+            if (decals.Count > MAX_DECALS_PER_CUBE)
+            {
+                RemoveDecal(position, decals, 0);
+                decals.RemoveAt(0);
+            }
+
+            decals.Add(new MyDecalPartIdentity() { DecalId = decalId, CubePartIndex = gridHitInfo.CubePartIndex });
+        }
+
+        public void RemoveDecals(Vector3I position)
+        {
+            List<MyDecalPartIdentity> decals;
+            if (m_cubeDecals.TryGetValue(position, out decals))
+            {
+                MyCube cube = null;
+                for (int it = 0; it < decals.Count; it++)
+                    RemoveDecal(position, decals, it, ref cube);
+
+                decals.Clear();
+            }
+        }
+
+        private void RemoveDecal(Vector3I position, List<MyDecalPartIdentity> decals, int index)
+        {
+            MyCube cube = null;
+            RemoveDecal(position, decals, index, ref cube);
+        }
+
+        private void RemoveDecal(Vector3I position, List<MyDecalPartIdentity> decals, int index, ref MyCube cube)
+        {
+            MyDecalPartIdentity decal = decals[index];
+            MyDecals.RemoveDecal(decal.DecalId);
+
+            if (cube == null)
+            {
+                bool found = m_gridRender.CubeGrid.TryGetCube(position, out cube);
+                if (!found)
+                    return;
+            }
+
+            if (decal.CubePartIndex != -1)
+            {
+                var part = cube.Parts[decal.CubePartIndex];
+                var cell = GetCell(position);
+                cell.RemoveCubePartDecal(part, decal.DecalId);
+            }
+        }
+
         internal void DebugDraw()
         {
             foreach (var cell in m_cells)
             {
                 cell.Value.DebugDraw();
             }
+        }
+
+        struct MyDecalPartIdentity
+        {
+            public uint DecalId;
+            public int CubePartIndex;
         }
     }
 }

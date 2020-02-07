@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using VRage.ModAPI;
 
 namespace Sandbox.ModAPI.Ingame
 {
@@ -10,6 +11,7 @@ namespace Sandbox.ModAPI.Ingame
         /// <summary>
         /// Param - active
         /// </summary>
+        float MaxRange { get; }
         float LeftExtend { get; }
         float RightExtend { get; }
         float TopExtend { get; }
@@ -17,11 +19,13 @@ namespace Sandbox.ModAPI.Ingame
         float FrontExtend { get; }
         float BackExtend { get; }
 
+        bool PlayProximitySound { get; }
         bool DetectPlayers { get; }
         bool DetectFloatingObjects { get; }
         bool DetectSmallShips { get; }
         bool DetectLargeShips { get; }
         bool DetectStations { get; }
+        bool DetectSubgrids { get; }
         bool DetectAsteroids { get; }
         
         bool DetectOwner { get; }
@@ -31,6 +35,7 @@ namespace Sandbox.ModAPI.Ingame
 
         bool IsActive { get; }
 
-        IMyEntity LastDetectedEntity { get; }
+        MyDetectedEntityInfo LastDetectedEntity { get; }
+        void DetectedEntities(List<MyDetectedEntityInfo> entities);
     }
 }

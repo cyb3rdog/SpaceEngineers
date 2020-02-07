@@ -11,12 +11,16 @@ using Sandbox.Game.Gui;
 using Sandbox.Game.GUI;
 using Sandbox.Game.Localization;
 using Sandbox.Game.Multiplayer;
+using Sandbox.Game.Screens;
 using Sandbox.Game.World;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Runtime.InteropServices;
+using System.Runtime.Serialization.Formatters.Binary;
 using System.Text;
+using Sandbox.Game.GUI.DebugInputComponents;
 using VRage;
 using VRage;
 using VRage.Audio;
@@ -25,7 +29,9 @@ using VRage.Utils;
 using VRage.Win32;
 using Color = VRageMath.Color;
 using Vector2 = VRageMath.Vector2;
-
+using VRage.Game;
+using VRage.Profiler;
+using VRageRender;
 
 #endregion
 
@@ -33,8 +39,10 @@ namespace Sandbox.Graphics.GUI
 {
     public class MyDX9Gui : IMyGuiSandbox
     {
+#if !XB1
         [DllImport("user32.dll")]
         public static extern IntPtr GetForegroundWindow();
+#endif // !XB1
 
         public static int TotalGamePlayTimeInMilliseconds;
 
@@ -43,7 +51,7 @@ namespace Sandbox.Graphics.GUI
         MyGuiScreenMessageBox m_currentModErrorsMessageBox;
         MyGuiScreenDebugBase m_currentStatisticsScreen;
 
-        bool m_debugScreensEnabled   = true;
+        bool m_debugScreensEnabled = true;
 
         StringBuilder m_debugText = new StringBuilder();
 
@@ -154,7 +162,17 @@ namespace Sandbox.Graphics.GUI
             UserDebugInputComponents.Add(new MyMichalDebugInputComponent());
             UserDebugInputComponents.Add(new MyAsteroidsDebugInputComponent());
             UserDebugInputComponents.Add(new MyRendererStatsComponent());
-
+            UserDebugInputComponents.Add(new MyPlanetsDebugInputComponent());
+            UserDebugInputComponents.Add(new MyRenderDebugInputComponent());
+            UserDebugInputComponents.Add(new MyComponentsDebugInputComponent());
+            UserDebugInputComponents.Add(new MyVoxelDebugInputComponent());
+#if !XB1 // XB1_NOOPENVRWRAPPER
+            UserDebugInputComponents.Add(new MyVRDebugInputComponent());
+#endif // !XB1
+            UserDebugInputComponents.Add(new MyResearchDebugInputComponent());
+            UserDebugInputComponents.Add(new MyVisualScriptingDebugInputComponent());
+            UserDebugInputComponents.Add(new MyAIDebugInputComponent());
+            UserDebugInputComponents.Add(new MyAlesDebugInputComponent());
             LoadDebugInputsFromConfig();
         }
 
@@ -163,15 +181,22 @@ namespace Sandbox.Graphics.GUI
         /// </summary>
         public void LoadData()
         {
+            ProfilerShort.Begin("MyScreenManager.LoadData");
             MyScreenManager.LoadData();
+            ProfilerShort.BeginNextBlock("MyGuiManager.LoadData");
             MyGuiManager.LoadData();
+            ProfilerShort.End();
 
+            ProfilerShort.Begin("MyLanguage.CurrentLanguage set");
             MyLanguage.CurrentLanguage = MySandboxGame.Config.Language;
+            ProfilerShort.End();
 
             if (MyFakes.SHOW_AUDIO_DEV_SCREEN)
             {
+                ProfilerShort.Begin("MyGuiScreenDebugAudio");
                 MyGuiScreenDebugAudio audioDebug = new MyGuiScreenDebugAudio();
                 AddScreen(audioDebug);
+                ProfilerShort.End();
             }
         }
 
@@ -191,6 +216,7 @@ namespace Sandbox.Graphics.GUI
 
         private void EnableSoundsBasedOnWindowFocus()
         {
+#if !XB1
             if (MySandboxGame.Static.WindowHandle == GetForegroundWindow() && MyScreenManager.GetScreenWithFocus() != null)
             { // allow
                 // this works bad (	0007128: BUG B - audio sliders are broken)
@@ -203,6 +229,7 @@ namespace Sandbox.Graphics.GUI
                 //MyAudio.Static.SetAllVolume(0,0);
                 MyAudio.Static.Mute = true;
             }
+#endif // !XB1
         }
 
         public bool OpenSteamOverlay(string url)
@@ -270,7 +297,7 @@ namespace Sandbox.Graphics.GUI
                     {
                         if (newPressf12)
                         {
-                            MyDebugDrawSettings.DEBUG_DRAW_COLLISION_PRIMITIVES = !MyDebugDrawSettings.DEBUG_DRAW_COLLISION_PRIMITIVES;
+                            MyDebugDrawSettings.DEBUG_DRAW_PHYSICS = !MyDebugDrawSettings.DEBUG_DRAW_PHYSICS;
                             if (!m_shapeRenderingMessageBoxShown)
                             {
                                 m_shapeRenderingMessageBoxShown = true;
@@ -318,6 +345,10 @@ namespace Sandbox.Graphics.GUI
 
                 bool inputHandled = false;
 
+                if (MySession.Static != null && MySession.Static.CreativeMode
+                      || MyInput.Static.ENABLE_DEVELOPER_KEYS)
+                    F12Handling();
+
                 if (MyInput.Static.ENABLE_DEVELOPER_KEYS)
                 {
                     //  Statistics screen
@@ -343,6 +374,7 @@ namespace Sandbox.Graphics.GUI
                         //Reload textures
                         if (MyInput.Static.IsKeyPress(MyKeys.LeftShift))
                         {
+                            MyDefinitionManager.Static.ReloadDecalMaterials();
                             VRageRender.MyRenderProxy.ReloadTextures();
                         }
                         else
@@ -359,31 +391,9 @@ namespace Sandbox.Graphics.GUI
                     //WS size
                     if (MyInput.Static.IsNewKeyPressed(MyKeys.F3) && MyInput.Static.IsKeyPress(MyKeys.LeftShift))
                     {
+#if !XB1
                         WinApi.SetProcessWorkingSetSize(Process.GetCurrentProcess().Handle, -1, -1);
-                    }
-
-                    if (MyInput.Static.IsNewKeyPressed(MyKeys.F12))
-                    {
-                        ShowDeveloperDebugScreen();
-                    }
-
-                    if (MyFakes.ALT_AS_DEBUG_KEY)
-                    {
-                        MyScreenManager.InputToNonFocusedScreens = MyInput.Static.IsAnyAltKeyPressed() && !MyInput.Static.IsKeyPress(MyKeys.Tab);
-                    }
-                    else
-                    {
-                        MyScreenManager.InputToNonFocusedScreens = MyInput.Static.IsKeyPress(MyKeys.ScrollLock) && !MyInput.Static.IsKeyPress(MyKeys.Tab);
-                    }
-
-                    if (MyScreenManager.InputToNonFocusedScreens != m_wasInputToNonFocusedScreens)
-                    {
-                        if (MyScreenManager.InputToNonFocusedScreens && m_currentDebugScreen != null)
-                        {
-                            SetMouseCursorVisibility(MyScreenManager.InputToNonFocusedScreens);
-                        }
-
-                        m_wasInputToNonFocusedScreens = MyScreenManager.InputToNonFocusedScreens;
+#endif // !XB1
                     }
 
                     inputHandled = HandleDebugInput();
@@ -395,6 +405,53 @@ namespace Sandbox.Graphics.GUI
             finally
             {
                 ProfilerShort.End();
+            }
+        }
+        private void F12Handling()
+        {
+            if (MyInput.Static.IsNewKeyPressed(MyKeys.F12))
+            {
+                if (MyInput.Static.ENABLE_DEVELOPER_KEYS)
+                    ShowDeveloperDebugScreen();
+                else
+                {
+                    if (m_currentDebugScreen is MyGuiScreenDebugDeveloper)
+                    {
+                        RemoveScreen(m_currentDebugScreen);
+                        m_currentDebugScreen = null;
+                    }
+                    else
+                    {
+                        MyGuiSandbox.AddScreen(MyGuiSandbox.CreateMessageBox(
+                           messageCaption: MyTexts.Get(MyCommonTexts.MessageBoxF12Question),
+                           messageText: MyTexts.Get(MyCommonTexts.MessageBoxTextF12Question),
+                           buttonType: MyMessageBoxButtonsType.YES_NO,
+                           callback: delegate(MyGuiScreenMessageBox.ResultEnum result)
+                           {
+                               if (result == MyGuiScreenMessageBox.ResultEnum.YES)
+                                   ShowDeveloperDebugScreen();
+                           }));
+                    }
+                }
+            }
+
+            if (MyFakes.ALT_AS_DEBUG_KEY)
+            {
+                MyScreenManager.InputToNonFocusedScreens = MyInput.Static.IsAnyAltKeyPressed() && !MyInput.Static.IsKeyPress(MyKeys.Tab);
+            }
+            else
+            {
+                MyScreenManager.InputToNonFocusedScreens = MyInput.Static.IsKeyPress(MyKeys.ScrollLock) && !MyInput.Static.IsKeyPress(MyKeys.Tab);
+            }
+
+            if (MyScreenManager.InputToNonFocusedScreens != m_wasInputToNonFocusedScreens)
+            {
+                if (MyScreenManager.InputToNonFocusedScreens && m_currentDebugScreen != null)
+                {
+                    SetMouseCursorVisibility(MyScreenManager.InputToNonFocusedScreens);
+                }
+
+                m_wasInputToNonFocusedScreens = MyScreenManager.InputToNonFocusedScreens;
             }
         }
 
@@ -439,12 +496,12 @@ namespace Sandbox.Graphics.GUI
                 RemoveScreen(m_currentModErrorsMessageBox);
             }
 
-            var errorMessage = MyTexts.Get(MySpaceTexts.MessageBoxErrorModLoadingFailure);
+            var errorMessage = MyTexts.Get(MyCommonTexts.MessageBoxErrorModLoadingFailure);
             errorMessage.Append("\n");
 
             foreach (var error in errors)
             {
-                if (error.Severity == ErrorSeverity.Critical && error.ModName != null)
+                if (error.Severity == TErrorSeverity.Critical && error.ModName != null)
                 {
                     errorMessage.Append("\n");
                     errorMessage.Append(error.ModName);
@@ -452,7 +509,7 @@ namespace Sandbox.Graphics.GUI
             }
             errorMessage.Append("\n");
 
-            m_currentModErrorsMessageBox = MyGuiSandbox.CreateMessageBox(messageText: errorMessage, messageCaption: MyTexts.Get(MySpaceTexts.MessageBoxCaptionError));
+            m_currentModErrorsMessageBox = MyGuiSandbox.CreateMessageBox(messageText: errorMessage, messageCaption: MyTexts.Get(MyCommonTexts.MessageBoxCaptionError));
             AddScreen(m_currentModErrorsMessageBox);
         }
 
@@ -487,32 +544,36 @@ namespace Sandbox.Graphics.GUI
         //  Sends input (keyboard/mouse) to screen which has focus (top-most)
         public void HandleInputAfterSimulation()
         {
-            bool cameraControllerMovementAllowed = MyScreenManager.GetScreenWithFocus() == MyGuiScreenGamePlay.Static && MyGuiScreenGamePlay.Static != null && !MyScreenManager.InputToNonFocusedScreens;
-            bool lookAroundEnabled = MyInput.Static.IsGameControlPressed(MyControlsSpace.LOOKAROUND) || (MySession.ControlledEntity != null && MySession.ControlledEntity.PrimaryLookaround);
-            
-            //After respawn, the controlled object might be null
-            bool shouldStopControlledObject = MySession.ControlledEntity != null && (!cameraControllerMovementAllowed && m_cameraControllerMovementAllowed != cameraControllerMovementAllowed);
-
             if (MySession.Static != null)
             {
-                bool movementAllowedInPause = MySession.GetCameraControllerEnum() == MyCameraControllerEnum.Spectator ||
-                                              MySession.GetCameraControllerEnum() == MyCameraControllerEnum.SpectatorDelta ||
-                                              MySession.GetCameraControllerEnum() == MyCameraControllerEnum.SpectatorFixed;
-                bool rotationAllowedInPause = movementAllowedInPause || MySession.GetCameraControllerEnum() == MyCameraControllerEnum.ThirdPersonSpectator;
-                MyCameraControllerEnum cce = MySession.GetCameraControllerEnum();
+                bool cameraControllerMovementAllowed = MyScreenManager.GetScreenWithFocus() == MyGuiScreenGamePlay.Static && MyGuiScreenGamePlay.Static != null && !MyScreenManager.InputToNonFocusedScreens;
+                bool lookAroundEnabled = MyInput.Static.IsGameControlPressed(MyControlsSpace.LOOKAROUND) || (MySession.Static.ControlledEntity != null && MySession.Static.ControlledEntity.PrimaryLookaround);
+
+                //After respawn, the controlled object might be null
+                bool shouldStopControlledObject = MySession.Static.ControlledEntity != null && (!cameraControllerMovementAllowed && m_cameraControllerMovementAllowed != cameraControllerMovementAllowed);
+
+                bool movementAllowedInPause = MySession.Static.GetCameraControllerEnum() == MyCameraControllerEnum.Spectator ||
+                                              MySession.Static.GetCameraControllerEnum() == MyCameraControllerEnum.SpectatorDelta ||
+                                              MySession.Static.GetCameraControllerEnum() == MyCameraControllerEnum.SpectatorFixed ||
+                                              MySession.Static.GetCameraControllerEnum() == MyCameraControllerEnum.SpectatorOrbit;
+                bool rotationAllowedInPause = movementAllowedInPause;   //GK: consider removing if in the future is not different from movementAllowed
+                bool devScreenFlag = MyScreenManager.GetScreenWithFocus() is MyGuiScreenDebugBase && !MyInput.Static.IsAnyAltKeyPressed();
+                MyCameraControllerEnum cce = MySession.Static.GetCameraControllerEnum();
 
                 float rollIndicator = MyInput.Static.GetRoll();
                 Vector2 rotationIndicator = MyInput.Static.GetRotation();
                 VRageMath.Vector3 moveIndicator = MyInput.Static.GetPositionDelta();
 
-                if (MySandboxGame.IsPaused)
+                var focusScreen = MyScreenManager.GetScreenWithFocus();
+
+                if (MySandboxGame.IsPaused && focusScreen is MyGuiScreenGamePlay)
                 {
                     if (!movementAllowedInPause && !rotationAllowedInPause)
                         return;
 
                     if (!movementAllowedInPause)
                         moveIndicator = VRageMath.Vector3.Zero;
-                    if (!rotationAllowedInPause)
+                    if (!rotationAllowedInPause || devScreenFlag)
                     {
                         rollIndicator = 0.0f;
                         rotationIndicator = Vector2.Zero;
@@ -529,7 +590,7 @@ namespace Sandbox.Graphics.GUI
 
                         if (!m_lookAroundEnabled && shouldStopControlledObject)
                         {
-                            MySession.ControlledEntity.MoveAndRotateStopped();
+                            MySession.Static.ControlledEntity.MoveAndRotateStopped();
                         }
                     }
 
@@ -547,14 +608,16 @@ namespace Sandbox.Graphics.GUI
                     }
                 }
 
+                MyScreenManager.HandleInputAfterSimulation();
+                
                 if (shouldStopControlledObject)
                 {
-                    MySession.ControlledEntity.MoveAndRotateStopped();
+                    MySession.Static.ControlledEntity.MoveAndRotateStopped();
                 }
-            }
 
-            m_cameraControllerMovementAllowed = cameraControllerMovementAllowed;
-            m_lookAroundEnabled = lookAroundEnabled;
+                m_cameraControllerMovementAllowed = cameraControllerMovementAllowed;
+                m_lookAroundEnabled = lookAroundEnabled;
+            }
         }
 
         private void SwitchTimingScreen()
@@ -567,13 +630,23 @@ namespace Sandbox.Graphics.GUI
             }
             else
             {
-                RemoveScreen(m_currentStatisticsScreen);
-                m_currentStatisticsScreen = null;
+                Debug.Assert(MyRenderProxy.DrawRenderStats != MyRenderProxy.MyStatsState.NoDraw);
+                if (MyRenderProxy.DrawRenderStats == MyRenderProxy.MyStatsState.ShouldFinish)
+                {
+                    // We finished cycling through stat groups
+                    RemoveScreen(m_currentStatisticsScreen);
+                    m_currentStatisticsScreen = null;
+                }
+                else
+                {
+                    MyRenderProxy.DrawRenderStats = MyRenderProxy.MyStatsState.MoveNext;
+                }
             }
         }
 
         private void SwitchStatisticsScreen()
         {
+#if !XB1
             if (!(m_currentStatisticsScreen is MyGuiScreenDebugStatistics))
             {
                 if (m_currentStatisticsScreen != null)
@@ -585,6 +658,9 @@ namespace Sandbox.Graphics.GUI
                 RemoveScreen(m_currentStatisticsScreen);
                 m_currentStatisticsScreen = null;
             }
+#else // XB1
+            System.Diagnostics.Debug.Assert(false, "XB1 TODO?");
+#endif // XB1
         }
 
         private void SwitchInputScreen()
@@ -605,9 +681,10 @@ namespace Sandbox.Graphics.GUI
         //  Update all screens
         public void Update(int totalTimeInMS)
         {
-            VRageRender.MyRenderProxy.GetRenderProfiler().StartProfilingBlock("MyGuiSandbox::Update");
+            VRageRender.MyRenderProxy.GetRenderProfiler().StartProfilingBlock("MyGuiSandbox::Update1");
 
             HandleRenderProfilerInput();
+            VRageRender.MyRenderProxy.GetRenderProfiler().StartNextBlock("MyGuiSandbox::Update2");
 
             TotalGamePlayTimeInMilliseconds = totalTimeInMS;
 
@@ -615,22 +692,31 @@ namespace Sandbox.Graphics.GUI
 
             MyGuiScreenBase screenWithFocus = MyScreenManager.GetScreenWithFocus();
 
+#if !XB1
             bool gameFocused = (MySandboxGame.Static.IsActive == true
                 &&
                 ((Sandbox.AppCode.MyExternalAppBase.Static == null && MySandboxGame.Static.WindowHandle == GetForegroundWindow())
                 ||
                 (Sandbox.AppCode.MyExternalAppBase.Static != null && !Sandbox.AppCode.MyExternalAppBase.IsEditorActive))
                 );
+#else // XB1
+            bool gameFocused = (MySandboxGame.Static.IsActive == true
+                &&
+                ((Sandbox.AppCode.MyExternalAppBase.Static == null)
+                ||
+                (Sandbox.AppCode.MyExternalAppBase.Static != null && !Sandbox.AppCode.MyExternalAppBase.IsEditorActive))
+                );
+#endif // XB1
 
+            VRageRender.MyRenderProxy.GetRenderProfiler().StartNextBlock("MyGuiSandbox::Update3");
             //We have to know current focus screen because of centerize mouse
             MyInput.Static.Update(gameFocused);
 
+            VRageRender.MyRenderProxy.GetRenderProfiler().StartNextBlock("MyGuiSandbox::Update4");
             MyGuiManager.Update(totalTimeInMS);
             MyGuiManager.MouseCursorPosition = MouseCursorPosition;
 
 
-            MyGuiManager.Camera = MySector.MainCamera != null ? MySector.MainCamera.WorldMatrix : VRageMath.MatrixD.Identity;
-            MyGuiManager.CameraView = MySector.MainCamera != null ? MySector.MainCamera.ViewMatrix : VRageMath.MatrixD.Identity;
             MyGuiManager.TotalTimeInMilliseconds = MySandboxGame.TotalTimeInMilliseconds;
 
             //We should not need this call
@@ -668,12 +754,6 @@ namespace Sandbox.Graphics.GUI
         {
             VRageRender.MyRenderProxy.GetRenderProfiler().StartProfilingBlock("MyGuiSandbox::Draw");
 
-            MyGuiManager.Camera = MySector.MainCamera != null ? MySector.MainCamera.WorldMatrix : VRageMath.MatrixD.Identity;
-            MyGuiManager.CameraView = MySector.MainCamera != null ? MySector.MainCamera.ViewMatrix : VRageMath.MatrixD.Identity;
-
-            TransparentGeometry.MyTransparentGeometry.Camera = MyGuiManager.Camera;
-            TransparentGeometry.MyTransparentGeometry.CameraView = MyGuiManager.CameraView; 
-
             ProfilerShort.Begin("ScreenManager.Draw");
             MyScreenManager.Draw();
             ProfilerShort.End();
@@ -701,6 +781,8 @@ namespace Sandbox.Graphics.GUI
                         m_debugText.ConcatFormat("{0} (Ctrl + numPad{1})", UserDebugInputComponents[i].GetName(), i);
                         m_debugText.AppendLine();
                         h += 0.0265f;
+                        if (MySession.Static != null)
+                            userInputComponent.DispatchUpdate();
                         userInputComponent.Draw();
                         drawBackground = true;
                     }
@@ -723,10 +805,15 @@ namespace Sandbox.Graphics.GUI
             var screenWithFocus = MyScreenManager.GetScreenWithFocus();
             if (((screenWithFocus != null) && (screenWithFocus.GetDrawMouseCursor() == true)) || (MyScreenManager.InputToNonFocusedScreens && MyScreenManager.GetScreensCount() > 1))
             {
+#if XB1
+                SetMouseCursorVisibility(false, false);
+                DrawMouseCursor(GetMouseOverTexture(screenWithFocus));
+#else
                 SetMouseCursorVisibility(hwCursor, false);
 
                 if (!hwCursor || MyFakes.FORCE_SOFTWARE_MOUSE_DRAW)
                     DrawMouseCursor(GetMouseOverTexture(screenWithFocus));
+#endif
             }
             else
             {
@@ -794,7 +881,7 @@ namespace Sandbox.Graphics.GUI
         public void BackToMainMenu()
         {
             AddIntroScreen();
-            MyGuiScreenMainMenu.AddMainMenu();
+            MyGuiSandbox.AddScreen(MyGuiSandbox.CreateScreen(MyPerGameSettings.GUI.MainMenu));
         }
 
         public float GetDefaultTextScaleWithLanguage()
@@ -889,9 +976,17 @@ namespace Sandbox.Graphics.GUI
         {
             MySandboxGame.Config.DebugInputComponents.Dictionary.Clear();
 
+            var inputs = MySandboxGame.Config.DebugInputComponents;
             foreach (var debugInput in UserDebugInputComponents)
             {
-                MySandboxGame.Config.DebugInputComponents[debugInput.GetName()] = debugInput.Enabled.ToString();
+                var name = debugInput.GetName();
+
+                MyConfig.MyDebugInputData data;
+                inputs.Dictionary.TryGetValue(name, out data);
+                data.Enabled = debugInput.Enabled;
+                data.Data = debugInput.InputData;
+
+                inputs[name] = data;
             }
 
             MySandboxGame.Config.Save();
@@ -905,7 +1000,14 @@ namespace Sandbox.Graphics.GUI
                 {
                     if (UserDebugInputComponents[i].GetName() == pair.Key)
                     {
-                        UserDebugInputComponents[i].Enabled = bool.Parse(pair.Value.ToString());
+                        UserDebugInputComponents[i].Enabled = pair.Value.Enabled;
+                        try
+                        {
+                            UserDebugInputComponents[i].InputData = pair.Value.Data;
+                        }
+                        catch
+                        {
+                        }
                     }
                 }
             }

@@ -10,26 +10,35 @@ using Sandbox.Game.Entities.Character;
 using Sandbox.Game.GUI;
 using Sandbox.Game.Localization;
 using Sandbox.Game.Multiplayer;
-using Sandbox.Game.Screens;
 using Sandbox.Game.Screens.Helpers;
 using Sandbox.Game.SessionComponents;
+using Sandbox.Game.VoiceChat;
 using Sandbox.Game.World;
 using Sandbox.Graphics;
 using Sandbox.Graphics.GUI;
-using Sandbox.Graphics.Render;
 using Sandbox.ModAPI;
 using Sandbox.ModAPI.Interfaces;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using Sandbox.Engine.Networking;
 using VRage;
-using VRage;
+using VRage.Audio;
 using VRage.Input;
-using VRage.Library.Utils;
 using VRage.Utils;
 using VRageMath;
-
+using VRageRender;
+using VRage.Game.Entity;
+using VRage.Data.Audio;
+using VRage.Game;
+using VRage.Game.ModAPI.Interfaces;
+using Sandbox.Game.Audio;
+using Sandbox.Game.SessionComponents.Clipboard;
+using VRage.Profiler;
+using VRageRender.Messages;
+using VRageRender.Utils;
+using VRage.Library.Utils;
 
 #endregion
 
@@ -37,25 +46,64 @@ namespace Sandbox.Game.Gui
 {
     public class MyGuiScreenGamePlay : MyGuiScreenBase
     {
-        private int count = 0;
+        private bool audioSet = false;
         public static MyGuiScreenGamePlay Static;
+
+        //GK: Used for Double Click Detection when Shooting with Character. Could be added to MyCharacter only also but maybe used in future for ships too.
+        private int[] m_lastBeginShootTime;
+        public static bool[] DoubleClickDetected { get; private set; }
 
         public static MyGuiScreenBase ActiveGameplayScreen = null;
         public static MyGuiScreenBase TmpGameplayScreenHolder = null;
+        public static bool DisableInput = false;
         IMyControlMenuInitializer m_controlMenu = null;
 
         #region Properties
 
         public bool CanSwitchCamera
         {
-            get 
+            get
             {
-                if (!MyCubeBuilder.Static.Clipboard.AllowSwitchCameraMode || !MySession.Static.Settings.Enable3rdPersonView)
+                if (!MyClipboardComponent.Static.Clipboard.AllowSwitchCameraMode || !MySession.Static.Settings.Enable3rdPersonView)
                     return false;
-                MyCameraControllerEnum cameraControllerEnum = MySession.GetCameraControllerEnum();
+                MyCameraControllerEnum cameraControllerEnum = MySession.Static.GetCameraControllerEnum();
                 bool isValidController = (cameraControllerEnum == MyCameraControllerEnum.Entity || cameraControllerEnum == MyCameraControllerEnum.ThirdPersonSpectator);
-                return (!MySession.Static.CameraController.ForceFirstPersonCamera && isValidController);
+                //by Gregory: removed ForceFirstPersonCamera check it is consider a bug by the users
+                //return (!MySession.Static.CameraController.ForceFirstPersonCamera && isValidController);
+                return (isValidController);
             }
+        }
+
+        private static bool SpectatorEnabled
+        {
+            get
+            {
+                if (MySession.Static == null)
+                    return false;
+
+                if (MySession.Static.CreativeToolsEnabled(Sync.MyId))
+                {
+                    return true;
+                }
+
+                if (!MySession.Static.SurvivalMode)
+                    return true;
+
+                if (MyMultiplayer.Static != null && MySession.Static.LocalHumanPlayer != null && MySession.Static.LocalHumanPlayer.IsAdmin)
+                    return true;
+                if (!MyFinalBuildConstants.IS_OFFICIAL || MyInput.Static.ENABLE_DEVELOPER_KEYS)
+                    return true;
+
+                return MySession.Static.Settings.EnableSpectator;
+            }
+        }
+
+        // Hack to be able to draw cursor for gameplay screen.
+        // Still better than creating empty screen for that purpose.
+        public bool MouseCursorVisible
+        {
+            get { return DrawMouseCursor; }
+            set { DrawMouseCursor = value; }
         }
 
         #endregion
@@ -74,24 +122,14 @@ namespace Sandbox.Game.Gui
             m_canShareInput = false;
             CanBeHidden = false;
             m_isAlwaysFirst = true;
+            DisableInput = false;
 
             m_controlMenu = Activator.CreateInstance(MyPerGameSettings.ControlMenuInitializerType) as IMyControlMenuInitializer;
 
             MyGuiScreenCubeBuilder.ReinitializeBlockScrollbarPosition();
-        }
 
-        public static void StartLoading(Action loadingAction)
-        {
-            var newGameplayScreen = new MyGuiScreenGamePlay();
-            newGameplayScreen.OnLoadingAction += loadingAction;
-
-            var loadScreen = new MyGuiScreenLoading(newGameplayScreen, MyGuiScreenGamePlay.Static);
-            loadScreen.OnScreenLoadingFinished += delegate
-            {
-                MyModAPIHelper.OnSessionLoaded();
-                MyGuiSandbox.AddScreen(MyGuiSandbox.CreateScreen(MyPerGameSettings.GUI.HUDScreen));
-            };
-            MyGuiSandbox.AddScreen(loadScreen);
+            m_lastBeginShootTime = new int[(int)MyEnum<MyShootActionEnum>.Range.Max + 1];
+            DoubleClickDetected = new bool[m_lastBeginShootTime.Length];
         }
 
         #endregion
@@ -111,7 +149,6 @@ namespace Sandbox.Game.Gui
             base.LoadData();
 
             MyCharacter.Preload();
-
             MySandboxGame.Log.DecreaseIndent();
             MySandboxGame.Log.WriteLine("MyGuiScreenGamePlay.LoadData - END");
         }
@@ -151,6 +188,14 @@ namespace Sandbox.Game.Gui
 
             base.UnloadContent();
 
+            MyXAudio2 audio = MyAudio.Static as MyXAudio2;
+            if (audio != null)
+            {
+                MyEntity3DSoundEmitter.ClearEntityEmitters();
+                audio.ClearSounds();
+            }
+            MyHud.ScreenEffects.FadeScreen(1, 0);
+
             //  Do GC collect as last step. Reason is that after we loaded new level, a lot of garbage is created and we want to clear it now and not wait until GC decides so.
             GC.Collect();
 
@@ -167,11 +212,27 @@ namespace Sandbox.Game.Gui
         public override void HandleInput(bool receivedFocusInThisUpdate)
         {
             bool handled = false;
-            if (MyCubeBuilder.Static != null)
+
+            if (MyClipboardComponent.Static != null)
+            {
+                ProfilerShort.Begin("CubeBuilder input");
+                handled = MyClipboardComponent.Static.HandleGameInput();
+                ProfilerShort.End();
+            }
+
+            if (!handled && MyCubeBuilder.Static != null)
+            {
+                ProfilerShort.Begin("CubeBuilder input");
                 handled = MyCubeBuilder.Static.HandleGameInput();
+                ProfilerShort.End();
+            }
 
             if (!handled)
+            {
+                ProfilerShort.Begin("BaseInput");
                 base.HandleInput(receivedFocusInThisUpdate);
+                ProfilerShort.End();
+            }
         }
 
         public override void InputLost()
@@ -180,15 +241,55 @@ namespace Sandbox.Game.Gui
                 MyCubeBuilder.Static.InputLost();
         }
 
+        private static void SetAudioVolumes()
+        {
+            MyAudio.Static.StopMusic();
+            MyAudio.Static.ChangeGlobalVolume(1f, 5f);
+
+            if (MyPerGameSettings.UseMusicController && MyFakes.ENABLE_MUSIC_CONTROLLER && MySandboxGame.Config.EnableDynamicMusic && MySandboxGame.IsDedicated == false && MyMusicController.Static == null)
+                MyMusicController.Static = new MyMusicController(MyAudio.Static.GetAllMusicCues());
+
+            MyAudio.Static.MusicAllowed = (MyMusicController.Static == null);
+            if (MyMusicController.Static != null)
+                MyMusicController.Static.Active = true;
+            else
+                MyAudio.Static.PlayMusic(new MyMusicTrack() { TransitionCategory = MyStringId.GetOrCompute("Default") });
+        }
+
         //  This method is called every update (but only if application has focus)
         public override void HandleUnhandledInput(bool receivedFocusInThisUpdate)
         {
-            if (MyInput.Static.ENABLE_DEVELOPER_KEYS || (MySession.Static != null && MySession.Static.Settings.EnableSpectator))
+            //  Launch main menu
+            var controlledObject = MySession.Static.ControlledEntity;
+            var currentCameraController = MySession.Static.CameraController;
+            MyStringId context = controlledObject != null ? controlledObject.ControlContext : MySpaceBindingCreator.CX_BASE;
+
+            if (MyInput.Static.IsNewKeyPressed(MyKeys.Escape)
+                || MyControllerHelper.IsControl(context, MyControlsGUI.MAIN_MENU, MyControlStateType.NEW_PRESSED))
+            {
+                MyGuiAudio.PlaySound(MyGuiSounds.HudMouseClick);
+
+                //Allow changing video options from game in DX version
+                MyGuiSandbox.AddScreen(MyGuiSandbox.CreateScreen(MyPerGameSettings.GUI.MainMenu, MySandboxGame.IsPaused == false));
+            }
+
+            if (DisableInput)
+            {
+                if (MySession.Static.GetComponent<MySessionComponentCutscenes>().IsCutsceneRunning && (MyMultiplayer.Static == null || MyMultiplayer.Static.IsServer))
+                {
+                    if (MyInput.Static.IsNewKeyPressed(MyKeys.Enter) || MyInput.Static.IsNewKeyPressed(MyKeys.Space))
+                        MySession.Static.GetComponent<MySessionComponentCutscenes>().CutsceneSkip();
+                }
+                MySession.Static.ControlledEntity.MoveAndRotate(Vector3.Zero, Vector2.Zero, 0f);
+                return;
+            }
+
+            if (MyInput.Static.ENABLE_DEVELOPER_KEYS || (MySession.Static != null && MySession.Static.Settings.EnableSpectator) || (MyMultiplayer.Static != null && MySession.Static.LocalHumanPlayer != null && MySession.Static.CreativeToolsEnabled(MySession.Static.LocalHumanPlayer.Id.SteamId)))
             {
                 //Set camera to player
                 if (MyInput.Static.IsNewGameControlPressed(MyControlsSpace.SPECTATOR_NONE))
                 {
-                    if (MySession.ControlledEntity != null)
+                    if (MySession.Static.ControlledEntity != null)
                     { //we already are controlling this object
 
                         if (MyFinalBuildConstants.IS_OFFICIAL)
@@ -197,7 +298,7 @@ namespace Sandbox.Game.Gui
                         }
                         else
                         {
-                            var cameraController = MySession.GetCameraControllerEnum();
+                            var cameraController = MySession.Static.GetCameraControllerEnum();
                             if (cameraController != MyCameraControllerEnum.Entity && cameraController != MyCameraControllerEnum.ThirdPersonSpectator)
                             {
                                 SetCameraController();
@@ -205,7 +306,7 @@ namespace Sandbox.Game.Gui
                             else
                             {
                                 var entities = MyEntities.GetEntities().ToList();
-                                int lastKnownIndex = entities.IndexOf(MySession.ControlledEntity.Entity);
+                                int lastKnownIndex = entities.IndexOf(MySession.Static.ControlledEntity.Entity);
 
                                 var entitiesList = new List<MyEntity>();
                                 if (lastKnownIndex + 1 < entities.Count)
@@ -221,22 +322,22 @@ namespace Sandbox.Game.Gui
                                 for (int i = 0; i < entitiesList.Count; i++)
                                 {
                                     var character = entitiesList[i] as MyCharacter;
-                                    if (character != null && !character.IsDead)
+                                    if (character != null && !character.IsDead && character.ControllerInfo.Controller == null)
                                     {
                                         newControlledObject = character;
                                         break;
                                     }
                                 }
 
-                                if (MySession.LocalHumanPlayer != null && newControlledObject != null)
+                                if (MySession.Static.LocalHumanPlayer != null && newControlledObject != null)
                                 {
-                                    MySession.LocalHumanPlayer.Controller.TakeControl(newControlledObject);
+                                    MySession.Static.LocalHumanPlayer.Controller.TakeControl(newControlledObject);
                                 }
                             }
 
                             // We could have activated the cube builder in spectator, so deactivate it now
-                            if (MyCubeBuilder.Static.IsActivated && !(MySession.ControlledEntity is MyCharacter))
-                                MyCubeBuilder.Static.Deactivate();
+                            if (!(MySession.Static.ControlledEntity is MyCharacter))
+                                MySession.Static.GameFocusManager.Clear();//MyCubeBuilder.Static.Deactivate();
                         }
                     }
                 }
@@ -244,44 +345,75 @@ namespace Sandbox.Game.Gui
                 //Set camera to following third person
                 if (MyInput.Static.IsNewGameControlPressed(MyControlsSpace.SPECTATOR_DELTA))
                 {
-                    if (MySession.ControlledEntity != null)
+                    if (SpectatorEnabled)
                     {
-                        MySession.SetCameraController(MyCameraControllerEnum.SpectatorDelta);
+                        MySpectatorCameraController.Static.TurnLightOff();
+                        MySession.Static.SetCameraController(MyCameraControllerEnum.SpectatorDelta);
+                    }
+
+                    if (MyInput.Static.IsAnyCtrlKeyPressed())
+                    {
+                        if (MySession.Static.ControlledEntity != null)
+                        {
+                            MySpectator.Static.Position = MySession.Static.ControlledEntity.Entity.PositionComp.GetPosition() + MySpectator.Static.ThirdPersonCameraDelta;
+                            MySpectator.Static.SetTarget(MySession.Static.ControlledEntity.Entity.PositionComp.GetPosition(), MySession.Static.ControlledEntity.Entity.PositionComp.WorldMatrix.Up);
+                            MySpectatorCameraController.Static.TrackedEntity = MySession.Static.ControlledEntity.Entity.EntityId;
+                        }
+                        else
+                        {
+                            var target = MyCubeGrid.GetTargetEntity();
+                            if (target != null)
+                            {
+                                MySpectator.Static.Position = target.PositionComp.GetPosition() + MySpectator.Static.ThirdPersonCameraDelta;
+                                MySpectator.Static.SetTarget(target.PositionComp.GetPosition(), target.PositionComp.WorldMatrix.Up);
+                                MySpectatorCameraController.Static.TrackedEntity = target.EntityId;
+                            }
+                        }
                     }
                 }
 
                 //Set camera to spectator
                 if (MyInput.Static.IsNewGameControlPressed(MyControlsSpace.SPECTATOR_FREE))
                 {
-                    if (MySession.GetCameraControllerEnum() != MyCameraControllerEnum.Spectator)
+                    if (SpectatorEnabled)
                     {
-                        MySession.SetCameraController(MyCameraControllerEnum.Spectator);
-                    }
-                    else if (MyInput.Static.IsAnyShiftKeyPressed())
-                    {
-                        MyFakes.ENABLE_DEVELOPER_SPECTATOR_CONTROLS = !MyFakes.ENABLE_DEVELOPER_SPECTATOR_CONTROLS;
-                    }
+                        if (MyInput.Static.IsAnyShiftKeyPressed())
+                        {
+                            MySession.Static.SetCameraController(MyCameraControllerEnum.SpectatorOrbit);
+                            MySpectatorCameraController.Static.Reset();
+                        }
+                        else
+                        {
+                            MySession.Static.SetCameraController(MyCameraControllerEnum.Spectator);
+                        }
 
-                    if (MyInput.Static.IsAnyCtrlKeyPressed() && MySession.ControlledEntity != null)
-                    {
-                        MySpectator.Static.Position = (Vector3D)MySession.ControlledEntity.Entity.PositionComp.GetPosition() + MySpectator.Static.ThirdPersonCameraDelta;
-                        MySpectator.Static.Target = (Vector3D)MySession.ControlledEntity.Entity.PositionComp.GetPosition();
+                        if (MyInput.Static.IsAnyCtrlKeyPressed() && MySession.Static.ControlledEntity != null)
+                        {
+                            MySpectator.Static.Position = MySession.Static.ControlledEntity.Entity.PositionComp.GetPosition() + MySpectator.Static.ThirdPersonCameraDelta;
+                            MySpectator.Static.SetTarget(MySession.Static.ControlledEntity.Entity.PositionComp.GetPosition(), MySession.Static.ControlledEntity.Entity.PositionComp.WorldMatrix.Up);
+                        }
                     }
                 }
 
                 //Set camera to static spectator, non movable
                 if (MyInput.Static.IsNewGameControlPressed(MyControlsSpace.SPECTATOR_STATIC))
                 {
-                    if (MySession.ControlledEntity != null)
+                    if (MySession.Static.ControlledEntity != null)
                     {
-                        MySession.SetCameraController(MyCameraControllerEnum.SpectatorFixed);
+                        MySpectatorCameraController.Static.TurnLightOff();
+                        MySession.Static.SetCameraController(MyCameraControllerEnum.SpectatorFixed);
 
                         if (MyInput.Static.IsAnyCtrlKeyPressed())
                         {
-                            MySpectator.Static.Position = (Vector3D)MySession.ControlledEntity.Entity.PositionComp.GetPosition() + MySpectator.Static.ThirdPersonCameraDelta;
-                            MySpectator.Static.Target = (Vector3D)MySession.ControlledEntity.Entity.PositionComp.GetPosition();
+                            MySpectator.Static.Position = MySession.Static.ControlledEntity.Entity.PositionComp.GetPosition() + MySpectator.Static.ThirdPersonCameraDelta;
+                            MySpectator.Static.SetTarget(MySession.Static.ControlledEntity.Entity.PositionComp.GetPosition(), MySession.Static.ControlledEntity.Entity.PositionComp.WorldMatrix.Up);
                         }
                     }
+                }
+
+                if (MySession.Static != null && MySession.Static.CameraController == MySpectator.Static && (MySession.Static.CreativeMode || MySession.Static.CreativeToolsEnabled(Sync.MyId)) && MyInput.Static.IsNewKeyPressed(MyKeys.Space) && MyInput.Static.IsAnyCtrlKeyPressed())
+                {
+                    MyMultiplayer.TeleportControlledEntity(MySpectator.Static.Position);
                 }
 
                 //Open console
@@ -298,24 +430,12 @@ namespace Sandbox.Game.Gui
             }
 
             // Switch view - cockpit on/off, third person
-            if (MyInput.Static.IsNewGameControlPressed(MyControlsSpace.CAMERA_MODE) && CanSwitchCamera)
+            if ((MyInput.Static.IsNewGameControlPressed(MyControlsSpace.CAMERA_MODE)
+                || MyControllerHelper.IsControl(MyControllerHelper.CX_CHARACTER, MyControlsSpace.CAMERA_MODE))
+                && CanSwitchCamera)
             {
                 MyGuiAudio.PlaySound(MyGuiSounds.HudClick);
                 SwitchCamera();
-                //if (MySession.IsCameraControlledObject())
-                //{
-                //    //MySession.SetCameraController(MyCameraControllerEnum.ThirdPersonSpectator);
-                //    MySession.Static.CameraController.IsInFirstPersonView = true;
-                //}
-                //else
-                //{
-                //    MySession.Static.CameraController.IsInFirstPersonView = false;
-                //}
-                ////else if (MySession.GetCameraControllerEnum() == MyCameraControllerEnum.ThirdPersonSpectator)
-                ////{
-                ////    if (MySession.ControlledObject is IMyCameraController)
-                ////        MySession.SetCameraController(MyCameraControllerEnum.Entity, MySession.ControlledObject.Entity);
-                ////}
             }
 
             if (MyInput.Static.IsNewGameControlPressed(MyControlsSpace.HELP_SCREEN))
@@ -337,6 +457,11 @@ namespace Sandbox.Game.Gui
 
                     MySandboxGame.Config.Save();
                 }
+                else if (MyInput.Static.IsAnyShiftKeyPressed() && MyPerGameSettings.GUI.PerformanceWarningScreen != null)
+                {
+                    MyGuiAudio.PlaySound(MyGuiSounds.HudMouseClick);
+                    MyGuiSandbox.AddScreen(MyGuiScreenGamePlay.ActiveGameplayScreen = MyGuiSandbox.CreateScreen(MyPerGameSettings.GUI.PerformanceWarningScreen));
+                }
                 else
                     if (MyGuiScreenGamePlay.ActiveGameplayScreen == null)
                     {
@@ -356,32 +481,38 @@ namespace Sandbox.Game.Gui
                 MyHud.LocationMarkers.Visible = !MyHud.LocationMarkers.Visible;
             }
 
-            var controlledObject = MySession.ControlledEntity;
-            var currentCameraController = MySession.Static.CameraController;
-
-            if (MyInput.Static.IsNewGameControlPressed(MyControlsSpace.MISSION_SETTINGS) && MyGuiScreenGamePlay.ActiveGameplayScreen == null 
+            if (MyInput.Static.IsNewGameControlPressed(MyControlsSpace.MISSION_SETTINGS) && MyGuiScreenGamePlay.ActiveGameplayScreen == null
                 && MyPerGameSettings.Game == Sandbox.Game.GameEnum.SE_GAME
                 && MyFakes.ENABLE_MISSION_TRIGGERS)
-                {
-                MyGuiSandbox.AddScreen(new Sandbox.Game.Screens.MyGuiScreenMissionTriggers());
-            }
-
-            // HACK! Do NOT add anything that relies on use objects here!
-            // Letting certain use objects which are targeted handle any kind of events, circumventing all normal use object mechanisms.
-            // Only used by ropes (and it should stay that way).
-            var controlledCharacter = controlledObject as MyCharacter;
-            bool handledByUseObject = false;
-            if (controlledCharacter != null && controlledCharacter.UseObject != null)
             {
-                handledByUseObject = controlledCharacter.UseObject.HandleInput();
+                if (MySession.Static.Settings.ScenarioEditMode)
+                    MyGuiSandbox.AddScreen(new Sandbox.Game.Screens.MyGuiScreenMissionTriggers());
+                else
+                    if (MySession.Static.IsScenario)
+                        MyGuiSandbox.AddScreen(new Sandbox.Game.Screens.MyGuiScreenBriefing());
             }
 
-            MyStringId context = controlledObject != null ? controlledObject.ControlContext : MySpaceBindingCreator.CX_BASE;
+            bool handledByUseObject = false;
+            if (MySession.Static.ControlledEntity is VRage.Game.Entity.UseObject.IMyUseObject)
+            {
+                handledByUseObject = (MySession.Static.ControlledEntity as VRage.Game.Entity.UseObject.IMyUseObject).HandleInput();
+            }
 
             if (controlledObject != null && !handledByUseObject)
             {
                 if (!MySandboxGame.IsPaused)
                 {
+                    if (MyFakes.ENABLE_NON_PUBLIC_GUI_ELEMENTS && MyInput.Static.IsNewKeyPressed(MyKeys.F2))
+                    {
+                        if (MyInput.Static.IsAnyShiftKeyPressed() && !MyInput.Static.IsAnyCtrlKeyPressed() && !MyInput.Static.IsAnyAltKeyPressed())
+                        {
+                            if (MySession.Static.Settings.GameMode == VRage.Library.Utils.MyGameModeEnum.Creative)
+                                MySession.Static.Settings.GameMode = VRage.Library.Utils.MyGameModeEnum.Survival;
+                            else
+                                MySession.Static.Settings.GameMode = VRage.Library.Utils.MyGameModeEnum.Creative;
+                        }
+                    }
+
                     if (context == MySpaceBindingCreator.CX_BUILD_MODE || context == MySpaceBindingCreator.CX_CHARACTER || context == MySpaceBindingCreator.CX_SPACESHIP)
                     {
                         if (MyControllerHelper.IsControl(context, MyControlsSpace.PRIMARY_TOOL_ACTION, MyControlStateType.NEW_PRESSED))
@@ -392,21 +523,55 @@ namespace Sandbox.Game.Gui
                             }
                             else
                             {
+                                if (context == MySpaceBindingCreator.CX_CHARACTER)  //GK: Handle Double Click for MyCharacter only (for now)
+                                {
+                                    if (MySandboxGame.TotalGamePlayTimeInMilliseconds - m_lastBeginShootTime[(int)MyShootActionEnum.PrimaryAction] < MyGuiConstants.DOUBLE_CLICK_DELAY)
+                                    {
+                                        DoubleClickDetected[(int)MyShootActionEnum.PrimaryAction] = true;
+                                    }
+                                    else
+                                    {
+                                        DoubleClickDetected[(int)MyShootActionEnum.PrimaryAction] = false;
+                                        m_lastBeginShootTime[(int)MyShootActionEnum.PrimaryAction] = MySandboxGame.TotalGamePlayTimeInMilliseconds;
+                                    }
+                                }
                                 controlledObject.BeginShoot(MyShootActionEnum.PrimaryAction);
                             }
                         }
 
                         if (MyControllerHelper.IsControl(context, MyControlsSpace.PRIMARY_TOOL_ACTION, MyControlStateType.NEW_RELEASED))
                         {
+                            if (MySandboxGame.TotalGamePlayTimeInMilliseconds - m_lastBeginShootTime[(int)MyShootActionEnum.PrimaryAction] > MyGuiConstants.DOUBLE_CLICK_DELAY)
+                            {
+                                DoubleClickDetected[(int)MyShootActionEnum.PrimaryAction] = false;
+                            }
                             controlledObject.EndShoot(MyShootActionEnum.PrimaryAction);
+                            DoubleClickDetected[(int)MyShootActionEnum.PrimaryAction] = false;
                         }
                         if (MyControllerHelper.IsControl(context, MyControlsSpace.SECONDARY_TOOL_ACTION, MyControlStateType.NEW_PRESSED))
                         {
+                            if (context == MySpaceBindingCreator.CX_CHARACTER)  //GK: Handle Double Click for MyCharacter only (for now)
+                            {
+                                if (MySandboxGame.TotalGamePlayTimeInMilliseconds - m_lastBeginShootTime[(int)MyShootActionEnum.SecondaryAction] < MyGuiConstants.DOUBLE_CLICK_DELAY)
+                                {
+                                    DoubleClickDetected[(int)MyShootActionEnum.SecondaryAction] = true;
+                                }
+                                else
+                                {
+                                    DoubleClickDetected[(int)MyShootActionEnum.SecondaryAction] = false;
+                                    m_lastBeginShootTime[(int)MyShootActionEnum.SecondaryAction] = MySandboxGame.TotalGamePlayTimeInMilliseconds;
+                                }
+                            }
                             controlledObject.BeginShoot(MyShootActionEnum.SecondaryAction);
                         }
                         if (MyControllerHelper.IsControl(context, MyControlsSpace.SECONDARY_TOOL_ACTION, MyControlStateType.NEW_RELEASED))
                         {
+                            if (MySandboxGame.TotalGamePlayTimeInMilliseconds - m_lastBeginShootTime[(int)MyShootActionEnum.SecondaryAction] > MyGuiConstants.DOUBLE_CLICK_DELAY)
+                            {
+                                DoubleClickDetected[(int)MyShootActionEnum.SecondaryAction] = false;
+                            }
                             controlledObject.EndShoot(MyShootActionEnum.SecondaryAction);
+                            DoubleClickDetected[(int)MyShootActionEnum.SecondaryAction] = false;
                         }
                     }
 
@@ -437,9 +602,31 @@ namespace Sandbox.Game.Gui
                             controlledObject.UseFinished();
                         }
 
+                        if (MyControllerHelper.IsControl(context, MyControlsSpace.PICK_UP, MyControlStateType.NEW_PRESSED))
+                        {
+                            // Key press
+                            if (currentCameraController != null)
+                            {
+                                if (!currentCameraController.HandlePickUp())
+                                    controlledObject.PickUp();
+                            }
+                            else
+                            {
+                                controlledObject.PickUp();
+                            }
+                        }
+                        else if (MyControllerHelper.IsControl(context, MyControlsSpace.PICK_UP, MyControlStateType.PRESSED))
+                        {
+                            controlledObject.PickUpContinues();
+                        }
+                        else if (MyControllerHelper.IsControl(context, MyControlsSpace.PICK_UP, MyControlStateType.NEW_RELEASED))
+                        {
+                            controlledObject.PickUpFinished();
+                        }
+
                         //Temp fix until spectators are implemented as entities
                         //Prevents controlled object from getting input while spectator mode is enabled
-                        if (!(MySession.Static.CameraController is MySpectatorCameraController && MySpectatorCameraController.Static.SpectatorCameraMovement == MySpectatorCameraMovementEnum.UserControlled))
+                        if (!MySession.Static.IsCameraUserControlledSpectator())
                         {
                             if (MyControllerHelper.IsControl(context, MyControlsSpace.CROUCH, MyControlStateType.NEW_PRESSED))
                             {
@@ -449,10 +636,10 @@ namespace Sandbox.Game.Gui
                             {
                                 controlledObject.Down();
                             }
-                            if (MyControllerHelper.IsControl(context, MyControlsSpace.SPRINT, MyControlStateType.PRESSED))
-                            {
-                                controlledObject.Sprint();
-                            }
+
+                            // MZ: fixed issue that sometimes character was sprinting even without holding the control
+                            controlledObject.Sprint(MyControllerHelper.IsControl(context, MyControlsSpace.SPRINT, MyControlStateType.PRESSED));
+                            
                             if (MyControllerHelper.IsControl(context, MyControlsSpace.JUMP, MyControlStateType.NEW_PRESSED))
                             {
                                 controlledObject.Jump();
@@ -482,13 +669,22 @@ namespace Sandbox.Game.Gui
                         }
                         if (MyControllerHelper.IsControl(context, MyControlsSpace.THRUSTS, MyControlStateType.NEW_PRESSED))
                         {
-                            MyGuiAudio.PlaySound(MyGuiSounds.HudClick);
+                            if (controlledObject is MyCharacter == false)
+                                MyGuiAudio.PlaySound(MyGuiSounds.HudClick);
                             controlledObject.SwitchThrusts();
                         }
                         if (MyControllerHelper.IsControl(context, MyControlsSpace.HEADLIGHTS, MyControlStateType.NEW_PRESSED))
                         {
-                            MyGuiAudio.PlaySound(MyGuiSounds.HudClick);
-                            controlledObject.SwitchLights();
+                            //Switch lights only on Spectator Mode
+                            if (MySession.Static.IsCameraUserControlledSpectator())
+                            {
+                                MySpectatorCameraController.Static.SwitchLight();
+                            }
+                            else
+                            {
+                                MyGuiAudio.PlaySound(MyGuiSounds.HudClick);
+                                controlledObject.SwitchLights();
+                            }
                         }
                         if (MyControllerHelper.IsControl(context, MyControlsSpace.TOGGLE_REACTORS, MyControlStateType.NEW_PRESSED))
                         {
@@ -497,7 +693,6 @@ namespace Sandbox.Game.Gui
                         }
                         if (MyControllerHelper.IsControl(context, MyControlsSpace.LANDING_GEAR, MyControlStateType.NEW_PRESSED))
                         {
-                            MyGuiAudio.PlaySound(MyGuiSounds.HudClick);
                             controlledObject.SwitchLeadingGears();
                         }
                         if (MyControllerHelper.IsControl(context, MyControlsSpace.SUICIDE, MyControlStateType.NEW_PRESSED))
@@ -510,86 +705,100 @@ namespace Sandbox.Game.Gui
                         }
                     }
                 }
-                if (MyControllerHelper.IsControl(context, MyControlsSpace.TERMINAL, MyControlStateType.NEW_PRESSED) && MyGuiScreenGamePlay.ActiveGameplayScreen == null)
+                else
                 {
-                    MyGuiAudio.PlaySound(MyGuiSounds.HudClick);
-                    controlledObject.ShowTerminal();
+                    controlledObject.EndShoot(MyShootActionEnum.PrimaryAction);
+                    controlledObject.EndShoot(MyShootActionEnum.SecondaryAction);
                 }
 
-                if (MyControllerHelper.IsControl(context, MyControlsSpace.INVENTORY, MyControlStateType.NEW_PRESSED) && MyGuiScreenGamePlay.ActiveGameplayScreen == null)
+                if (MySandboxGame.IsPaused == false)
                 {
-                    MyGuiAudio.PlaySound(MyGuiSounds.HudClick);
-                    controlledObject.ShowInventory();
-                }
-
-                if (MyControllerHelper.IsControl(context, MyControlsSpace.CONTROL_MENU, MyControlStateType.NEW_PRESSED) && MyGuiScreenGamePlay.ActiveGameplayScreen == null)
-                {
-                    MyGuiAudio.PlaySound(MyGuiSounds.HudClick);
-                    m_controlMenu.OpenControlMenu(controlledObject);
-                }
-
-                if (!MyCompilationSymbols.RenderProfiling && MyControllerHelper.IsControl(context, MyControlsSpace.CHAT_SCREEN, MyControlStateType.NEW_PRESSED))
-                {
-                    if (MyGuiScreenChat.Static == null)
+                    if (MyControllerHelper.IsControl(context, MyControlsSpace.TERMINAL, MyControlStateType.NEW_PRESSED) && MyGuiScreenGamePlay.ActiveGameplayScreen == null)
                     {
-                        Vector2 chatPos = new Vector2(0.01f, 0.84f);
-                        chatPos = MyGuiScreenHudBase.ConvertHudToNormalizedGuiPosition(ref chatPos);
-                        MyGuiScreenChat chatScreen = new MyGuiScreenChat(chatPos);
-                        MyGuiSandbox.AddScreen(chatScreen);
+                        MyGuiAudio.PlaySound(MyGuiSounds.HudClick);
+                        controlledObject.ShowTerminal();
+                    }
+
+                    if (MyControllerHelper.IsControl(context, MyControlsSpace.INVENTORY, MyControlStateType.NEW_PRESSED) && MyGuiScreenGamePlay.ActiveGameplayScreen == null)
+                    {
+                        MyGuiAudio.PlaySound(MyGuiSounds.HudClick);
+                        controlledObject.ShowInventory();
+                    }
+
+                    if (MyControllerHelper.IsControl(context, MyControlsSpace.CONTROL_MENU, MyControlStateType.NEW_PRESSED) && MyGuiScreenGamePlay.ActiveGameplayScreen == null)
+                    {
+                        MyGuiAudio.PlaySound(MyGuiSounds.HudClick);
+                        m_controlMenu.OpenControlMenu(controlledObject);
                     }
                 }
             }
+            if (!VRage.Profiler.MyRenderProfiler.ProfilerVisible && MyControllerHelper.IsControl(context, MyControlsSpace.CHAT_SCREEN, MyControlStateType.NEW_PRESSED))
+            {
+                if (MyGuiScreenChat.Static == null)
+                {
+                    Vector2 chatPos = new Vector2(0.025f, 0.84f);
+                    chatPos = MyGuiScreenHudBase.ConvertHudToNormalizedGuiPosition(ref chatPos);
+                    MyGuiScreenChat chatScreen = new MyGuiScreenChat(chatPos);
+                    MyGuiSandbox.AddScreen(chatScreen);
+                }
+            }
 
+            if (MyPerGameSettings.VoiceChatEnabled && MyVoiceChatSessionComponent.Static != null)
+            {
+                if (MyControllerHelper.IsControl(context, MyControlsSpace.VOICE_CHAT, MyControlStateType.NEW_PRESSED))
+                {
+                    MyVoiceChatSessionComponent.Static.StartRecording();
+                }
+                else if (MyVoiceChatSessionComponent.Static.IsRecording && !MyControllerHelper.IsControl(context, MyControlsSpace.VOICE_CHAT, MyControlStateType.PRESSED))
+                {
+                    MyVoiceChatSessionComponent.Static.StopRecording();
+                }
+            }
+
+             
             MoveAndRotatePlayerOrCamera();
 
             // Quick save or quick load.
             if (MyInput.Static.IsNewKeyPressed(MyKeys.F5))
             {
-                MyGuiAudio.PlaySound(MyGuiSounds.HudMouseClick);
-                var currentSession = MySession.Static.CurrentPath;
-
-                if (MyInput.Static.IsAnyShiftKeyPressed())
+                if (!MySession.Static.IsScenario)
                 {
-                    if (MySession.Static.ClientCanSave || Sync.IsServer)
+                    MyGuiAudio.PlaySound(MyGuiSounds.HudMouseClick);
+                    var currentSession = MySession.Static.CurrentPath;
+
+                    if (MyInput.Static.IsAnyShiftKeyPressed())
                     {
-                        if (!MyAsyncSaving.InProgress)
+                        if (Sync.IsServer)
                         {
-                            var messageBox = MyGuiSandbox.CreateMessageBox(
-                                buttonType: MyMessageBoxButtonsType.YES_NO,
-                                messageText: MyTexts.Get(MySpaceTexts.MessageBoxTextAreYouSureYouWantToQuickSave),
-                                messageCaption: MyTexts.Get(MySpaceTexts.MessageBoxCaptionPleaseConfirm),
-                                callback: delegate(MyGuiScreenMessageBox.ResultEnum callbackReturn)
-                                {
-                                    if (callbackReturn == MyGuiScreenMessageBox.ResultEnum.YES)
-                                        MyAsyncSaving.Start(() => MySector.ResetEyeAdaptation = true);//black screen after save
-                                });
-                            messageBox.SkipTransition = true;
-                            messageBox.CloseBeforeCallback = true;
-                            MyGuiSandbox.AddScreen(messageBox);
+                            if (!MyAsyncSaving.InProgress)
+                            {
+                                var messageBox = MyGuiSandbox.CreateMessageBox(
+                                    buttonType: MyMessageBoxButtonsType.YES_NO,
+                                    messageText: MyTexts.Get(MyCommonTexts.MessageBoxTextAreYouSureYouWantToQuickSave),
+                                    messageCaption: MyTexts.Get(MyCommonTexts.MessageBoxCaptionPleaseConfirm),
+                                    callback: delegate(MyGuiScreenMessageBox.ResultEnum callbackReturn)
+                                    {
+                                        if (callbackReturn == MyGuiScreenMessageBox.ResultEnum.YES)
+                                            MyAsyncSaving.Start(() => MySector.ResetEyeAdaptation = true);//black screen after save
+                                    });
+                                messageBox.SkipTransition = true;
+                                messageBox.CloseBeforeCallback = true;
+                                MyGuiSandbox.AddScreen(messageBox);
+                            }
                         }
+                        else
+                            MyHud.Notifications.Add(MyNotificationSingletons.ClientCannotSave);
+                    }
+                    else if (Sync.IsServer)
+                    {
+                        ShowLoadMessageBox(currentSession);
                     }
                     else
-                        MyHud.Notifications.Add(MyNotificationSingletons.ClientCannotSave);
+                    {
+                        // Is multiplayer client, reconnect
+                        ShowReconnectMessageBox();
+                    }
                 }
-                else if (Sync.IsServer)
-                {
-                    ShowLoadMessageBox(currentSession);
-                }
-                else
-                {
-                    // Is multiplayer client, reconnect
-                    ShowReconnectMessageBox();
-                }
-            }
-
-            //  Launch main menu
-            if (MyInput.Static.IsNewKeyPressed(MyKeys.Escape)
-                || MyControllerHelper.IsControl(context, MyControlsGUI.MAIN_MENU, MyControlStateType.NEW_PRESSED))
-            {
-                MyGuiAudio.PlaySound(MyGuiSounds.HudMouseClick);
-
-                //Allow changing video options from game in DX version
-                MyGuiScreenMainMenu.AddMainMenu();
             }
 
             if (MyInput.Static.IsNewKeyPressed(MyKeys.F3))
@@ -597,15 +806,28 @@ namespace Sandbox.Game.Gui
                 if (Sync.MultiplayerActive)
                 {
                     MyGuiAudio.PlaySound(MyGuiSounds.HudMouseClick);
-                    MyGuiSandbox.AddScreen(new MyGuiScreenPlayers());
+                    MyGuiSandbox.AddScreen(MyGuiSandbox.CreateScreen(MyPerGameSettings.GUI.PlayersScreen));
                 }
                 else
                     MyHud.Notifications.Add(MyNotificationSingletons.MultiplayerDisabled);
             }
 
-            if (MyInput.Static.IsNewGameControlPressed(MyControlsSpace.BUILD_SCREEN) && MyGuiScreenGamePlay.ActiveGameplayScreen == null)
+            if (MyInput.Static.IsNewGameControlPressed(MyControlsSpace.FACTIONS_MENU) && !MyInput.Static.IsAnyCtrlKeyPressed())
             {
-                if (MyGuiScreenCubeBuilder.Static == null && (MySession.ControlledEntity is MyShipController || MySession.ControlledEntity is MyCharacter))
+                //if (MyToolbarComponent.CurrentToolbar.SelectedItem == null || (MyToolbarComponent.CurrentToolbar.SelectedItem != null && MyToolbarComponent.CurrentToolbar.SelectedItem.GetType() != typeof(MyToolbarItemVoxelHand)))
+                //{
+                MyGuiAudio.PlaySound(MyGuiSounds.HudMouseClick);
+                var screen = MyGuiSandbox.CreateScreen(MyPerGameSettings.GUI.FactionScreen);
+                MyScreenManager.AddScreenNow(screen);
+                //}
+            }
+
+            // Check if any of windows keys is not pressed.
+            bool windowKeyPressed = MyInput.Static.IsKeyPress(MyKeys.LeftWindows) || MyInput.Static.IsKeyPress(MyKeys.RightWindows);
+
+            if (!windowKeyPressed && MyInput.Static.IsNewGameControlPressed(MyControlsSpace.BUILD_SCREEN) && !MyInput.Static.IsAnyCtrlKeyPressed() && MyGuiScreenGamePlay.ActiveGameplayScreen == null)
+            {
+                if (MyPerGameSettings.GUI.EnableToolbarConfigScreen && MyGuiScreenCubeBuilder.Static == null && (MySession.Static.ControlledEntity is MyShipController || MySession.Static.ControlledEntity is MyCharacter))
                 {
                     int offset = 0;
                     if (MyInput.Static.IsAnyShiftKeyPressed()) offset += 6;
@@ -614,35 +836,37 @@ namespace Sandbox.Game.Gui
                     MyGuiSandbox.AddScreen(
                         MyGuiScreenGamePlay.ActiveGameplayScreen = MyGuiSandbox.CreateScreen(MyPerGameSettings.GUI.ToolbarConfigScreen,
                                                                                              offset,
-                                                                                             MySession.ControlledEntity as MyShipController)
+                                                                                             MySession.Static.ControlledEntity as MyShipController)
                     );
                 }
             }
 
-            if (MyInput.Static.IsNewGameControlPressed(MyControlsSpace.PAUSE_GAME))
+            if (MyInput.Static.IsNewGameControlPressed(MyControlsSpace.PAUSE_GAME) && Sync.Clients.Count < 2)
             {
-                MySandboxGame.UserPauseToggle();
+                MySandboxGame.PauseToggle();
             }
 
             if (MySession.Static != null)
             {
                 if (MyInput.Static.IsNewKeyPressed(MyKeys.F10))
                 {
-                    if (MyPerGameSettings.GUI.VoxelMapEditingScreen != null && MySession.Static.CreativeMode && MyInput.Static.IsAnyShiftKeyPressed())
-                    { // Shift+F10
+                    if (MyInput.Static.IsAnyAltKeyPressed())
+                    {
+                        // ALT + F10
+                        if (MySession.Static.IsAdminMenuEnabled && MyPerGameSettings.Game != GameEnum.UNKNOWN_GAME)
+                            MyGuiSandbox.AddScreen(MyGuiSandbox.CreateScreen(MyPerGameSettings.GUI.AdminMenuScreen));
+                        else
+                            MyHud.Notifications.Add(MyNotificationSingletons.AdminMenuNotAvailable);
+                    }
+                    else if (MyPerGameSettings.GUI.VoxelMapEditingScreen != null && (MySession.Static.CreativeToolsEnabled(Sync.MyId) || MySession.Static.CreativeMode) && MyInput.Static.IsAnyShiftKeyPressed())
+                    {
+                        // Shift + F10
                         MyGuiSandbox.AddScreen(MyGuiSandbox.CreateScreen(MyPerGameSettings.GUI.VoxelMapEditingScreen));
                     }
                     else
-                    { // F10
-                        if (MyFakes.ENABLE_BATTLE_SYSTEM && MySession.Static.Battle)
-                        {
-                            if (MyPerGameSettings.GUI.BattleBlueprintScreen != null)
-                                MyGuiSandbox.AddScreen(MyGuiSandbox.CreateScreen(MyPerGameSettings.GUI.BattleBlueprintScreen));
-                            else
-                                Debug.Fail("No battle blueprint screen");
-                        }
-                        else
-                            MyGuiSandbox.AddScreen(new MyGuiBlueprintScreen(MyCubeBuilder.Static.Clipboard));
+                    {
+                        // F10
+                        MyGuiSandbox.AddScreen(new MyGuiBlueprintScreen(MyClipboardComponent.Static.Clipboard, MySession.Static.CreativeMode || MySession.Static.CreativeToolsEnabled(Sync.MyId)));
                     }
                 }
             }
@@ -657,14 +881,11 @@ namespace Sandbox.Game.Gui
         //Game and editor shares this method
         public void MoveAndRotatePlayerOrCamera()
         {
-            // Don't move camera on screenshot
-            //if (MyGuiSandbox.GetScreenshot() != null)
-              //  return;
-
-            MyCameraControllerEnum cce = MySession.GetCameraControllerEnum();
+            MyCameraControllerEnum cce = MySession.Static.GetCameraControllerEnum();
             bool movementAllowedInPause = cce == MyCameraControllerEnum.Spectator;
             bool rotationAllowedInPause = movementAllowedInPause ||
                                           (cce == MyCameraControllerEnum.ThirdPersonSpectator && MyInput.Static.IsAnyAltKeyPressed());
+            bool devScreenFlag = MyScreenManager.GetScreenWithFocus() is MyGuiScreenDebugBase && !MyInput.Static.IsAnyAltKeyPressed();
 
             bool allowRoll = !MySessionComponentVoxelHand.Static.BuildMode;
             bool allowMove = !MySessionComponentVoxelHand.Static.BuildMode && !MyCubeBuilder.Static.IsBuildMode;
@@ -677,59 +898,74 @@ namespace Sandbox.Game.Gui
             //////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
             //First move control objects
-            if (MySession.ControlledEntity != null)// && MySession.ControlledObject != MySession.Static.CameraController)
+            if (MySession.Static.ControlledEntity != null)// && MySession.Static.ControlledObject != MySession.Static.CameraController)
             {
                 if (MySandboxGame.IsPaused)
                 {
+
                     if (!movementAllowedInPause && !rotationAllowedInPause)
                     {
                         return;
                     }
 
-                    if (!rotationAllowedInPause)
+                    if (!rotationAllowedInPause || devScreenFlag)
                     {
                         rotationIndicator = Vector2.Zero;
                     }
                     rollIndicator = 0.0f;
                 }
-                if (MySession.Static.CameraController is MySpectatorCameraController && MySpectatorCameraController.Static.SpectatorCameraMovement == MySpectatorCameraMovementEnum.UserControlled)
+                if (MySession.Static.IsCameraUserControlledSpectator())
                 {
                     MySpectatorCameraController.Static.MoveAndRotate(moveIndicator, rotationIndicator, rollIndicator);
                 }
-                else 
+                else
                 {
                     if (!MySession.Static.CameraController.IsInFirstPersonView)
                         MyThirdPersonSpectator.Static.UpdateZoom();
 
                     if (!MyInput.Static.IsGameControlPressed(MyControlsSpace.LOOKAROUND))
-                        MySession.ControlledEntity.MoveAndRotate(moveIndicator, rotationIndicator, rollIndicator);
+                    {
+                        MySession.Static.ControlledEntity.MoveAndRotate(moveIndicator, rotationIndicator, rollIndicator);
+                    }
                     else
                     {
-                        MySession.ControlledEntity.MoveAndRotate(moveIndicator, Vector2.Zero, rollIndicator);
+                        // Stop the controlled entity from rolling when the character tries to in freelook mode
+                        if (MySession.Static.ControlledEntity is MyRemoteControl)
+                        {
+                            rotationIndicator = Vector2.Zero;
+                            rollIndicator = 0f;
+                        }
+                        else if (MySession.Static.ControlledEntity is MyCockpit || !MySession.Static.CameraController.IsInFirstPersonView)
+                        {
+                            rotationIndicator = Vector2.Zero;
+                        }
+
+                        MySession.Static.ControlledEntity.MoveAndRotate(moveIndicator, rotationIndicator, rollIndicator);
                         if (!MySession.Static.CameraController.IsInFirstPersonView)
                             MyThirdPersonSpectator.Static.SaveSettings();
                     }
                 }
             }
-
-            //if (MyVideoModeManager.IsHardwareCursorUsed() && GetDrawMouseCursor() == false && !MySandboxGame.Static.IsMouseVisible)
-            //MyGuiInput.SetMouseToScreenCenter();
-
+            else
+                MySpectatorCameraController.Static.MoveAndRotate(moveIndicator, rotationIndicator, rollIndicator);
         }
 
-        private static void SetCameraController()
+        public static void SetCameraController()
         {
-            var remote = MySession.ControlledEntity.Entity as MyRemoteControl;
-            if (remote != null)
+            if (MySession.Static.ControlledEntity != null)
             {
-                if (remote.PreviousControlledEntity is IMyCameraController)
+                var remote = MySession.Static.ControlledEntity.Entity as MyRemoteControl;
+                if (remote != null)
                 {
-                    MySession.SetCameraController(MyCameraControllerEnum.Entity, remote.PreviousControlledEntity.Entity);
+                    if (remote.PreviousControlledEntity is IMyCameraController)
+                    {
+                        MySession.Static.SetCameraController(MyCameraControllerEnum.Entity, remote.PreviousControlledEntity.Entity);
+                    }
                 }
-            }
-            else
-            {
-                MySession.SetCameraController(MyCameraControllerEnum.Entity, MySession.ControlledEntity.Entity);
+                else
+                {
+                    MySession.Static.SetCameraController(MyCameraControllerEnum.Entity, MySession.Static.ControlledEntity.Entity);
+                }
             }
         }
         #endregion
@@ -738,43 +974,52 @@ namespace Sandbox.Game.Gui
 
         public void SwitchCamera()
         {
+            if (MySession.Static.CameraController == null)
+                return;
+
             MySession.Static.CameraController.IsInFirstPersonView = !MySession.Static.CameraController.IsInFirstPersonView;
 
-            if (MySession.GetCameraControllerEnum() == MyCameraControllerEnum.ThirdPersonSpectator)
+            if (MySession.Static.GetCameraControllerEnum() == MyCameraControllerEnum.ThirdPersonSpectator)
             {
                 MyEntityCameraSettings settings = null;
-                if (MySession.Static.Cameras.TryGetCameraSettings(MySession.LocalHumanPlayer.Id, MySession.ControlledEntity.Entity.EntityId, out settings))
-                    MyThirdPersonSpectator.Static.ResetDistance(settings.Distance);
-                else
-                    MyThirdPersonSpectator.Static.RecalibrateCameraPosition();
+                if (MySession.Static.LocalHumanPlayer != null && MySession.Static.ControlledEntity != null)
+                {
+                    if (MySession.Static.Cameras.TryGetCameraSettings(MySession.Static.LocalHumanPlayer.Id, MySession.Static.ControlledEntity.Entity.EntityId, out settings))
+                        MyThirdPersonSpectator.Static.ResetViewerDistance(settings.Distance);
+                    else
+                        MyThirdPersonSpectator.Static.RecalibrateCameraPosition();
+                }
             }
 
-            MySession.SaveControlledEntityCameraSettings(MySession.Static.CameraController.IsInFirstPersonView);
+            MySession.Static.SaveControlledEntityCameraSettings(MySession.Static.CameraController.IsInFirstPersonView);
         }
 
         public void ShowReconnectMessageBox()
         {
             var messageBox = MyGuiSandbox.CreateMessageBox(
                    buttonType: MyMessageBoxButtonsType.YES_NO,
-                   messageText: MyTexts.Get(MySpaceTexts.MessageBoxTextAreYouSureYouWantToReconnect),
-                   messageCaption: MyTexts.Get(MySpaceTexts.MessageBoxCaptionPleaseConfirm),
+                   messageText: MyTexts.Get(MyCommonTexts.MessageBoxTextAreYouSureYouWantToReconnect),
+                   messageCaption: MyTexts.Get(MyCommonTexts.MessageBoxCaptionPleaseConfirm),
                    callback: delegate(MyGuiScreenMessageBox.ResultEnum callbackReturn)
                    {
                        if (callbackReturn == MyGuiScreenMessageBox.ResultEnum.YES)
                        {
-                           if (MyMultiplayer.Static is MyMultiplayerLobby)
+                           if (MyMultiplayer.Static is MyMultiplayerLobbyClient)
                            {
                                var lobbyId = MyMultiplayer.Static.LobbyId;
-                               MyGuiScreenMainMenu.UnloadAndExitToMenu();
+                               MySessionLoader.UnloadAndExitToMenu();
                                MyJoinGameHelper.JoinGame(lobbyId);
                            }
                            else if (MyMultiplayer.Static is MyMultiplayerClient)
                            {
                                var server = (MyMultiplayer.Static as MyMultiplayerClient).Server;
-                               MyGuiScreenMainMenu.UnloadAndExitToMenu();
+                               MySessionLoader.UnloadAndExitToMenu();
                                MyJoinGameHelper.JoinGame(server);
                            }
-
+                           else
+                           {
+                               Debug.Fail("Unknown multiplayer kind");
+                           }
                        }
                    });
             messageBox.SkipTransition = true;
@@ -786,12 +1031,12 @@ namespace Sandbox.Game.Gui
         {
             var messageBox = MyGuiSandbox.CreateMessageBox(
                                    buttonType: MyMessageBoxButtonsType.YES_NO,
-                                   messageText: MyTexts.Get(MySpaceTexts.MessageBoxTextAreYouSureYouWantToQuickLoad),
-                                   messageCaption: MyTexts.Get(MySpaceTexts.MessageBoxCaptionPleaseConfirm),
+                                   messageText: MyTexts.Get(MyCommonTexts.MessageBoxTextAreYouSureYouWantToQuickLoad),
+                                   messageCaption: MyTexts.Get(MyCommonTexts.MessageBoxCaptionPleaseConfirm),
                                    callback: delegate(MyGuiScreenMessageBox.ResultEnum callbackReturn)
                                    {
                                        if (callbackReturn == MyGuiScreenMessageBox.ResultEnum.YES)
-                                           MyGuiScreenLoadSandbox.LoadSingleplayerSession(currentSession);
+                                           MySessionLoader.LoadSingleplayerSession(currentSession);
                                    });
             messageBox.SkipTransition = true;
             messageBox.CloseBeforeCallback = true;
@@ -810,13 +1055,20 @@ namespace Sandbox.Game.Gui
 
 
             //Needs to be in update, because several calculation are dependedt on camera position
-            MySector.MainCamera.SetViewMatrix(MySession.Static.CameraController.GetViewMatrix());
+            // MZ: position no longer needs to be updated
+            //MySector.MainCamera.SetViewMatrix(MySector.MainCamera.ViewMatrix);
 
             base.Update(hasFocus);
-            count++;
-            
+            if (audioSet == false && MySandboxGame.IsGameReady && MyAudio.Static != null && MyRenderProxy.VisibleObjectsRead != null && MyRenderProxy.VisibleObjectsRead.Count > 0)
+            {
+                SetAudioVolumes();
+                audioSet = true;
+                MyVisualScriptLogicProvider.GameIsReady = true;
+                MyHud.MinimalHud = false;
+            }
 
-            var s = MyScreenManager.TotalGamePlayTimeInMilliseconds;
+            if (MySession.Static.IsCameraUserControlledSpectator())
+                MySpectator.Static.Update();
 
             VRageRender.MyRenderProxy.GetRenderProfiler().EndProfilingBlock();
 
@@ -831,135 +1083,51 @@ namespace Sandbox.Game.Gui
         {
             VRageRender.MyRenderProxy.GetRenderProfiler().StartProfilingBlock("MyGuiScreenGamePlay::Draw");
 
-            //VRageRender.MyRenderProxy.DebugDrawSphere(
-            //    new Vector3D(-60.7171351205786, 34.002275028352, 78.131769977211),
-            //    0.02f,
-            //    Vector3.One,
-            //    1, true, true);
-
-            //VRageRender.MyRenderProxy.DebugDrawSphere(
-            //    new Vector3(-13.36391f, -1.974166f, -35.97278f),
-            //    0.2f,
-            //    Vector3.One,
-            //    1, true, true);
-
-            
-
-            //Vector3 target = new Vector3(-83.87779f, -62.17611f, -127.3294f);
-            //Vector3 pos = new Vector3(-87.42791f, -57.17604f, -139.3147f);
-
-            //VRageRender.MyRenderProxy.DebugDrawLine3D(
-            //    target, pos, Color.Green, Color.Yellow, false);
-
-            //if (MyCubeBuilder.Static.CurrentGrid != null)
-            //{
-            //    Matrix m = MyCubeBuilder.Static.CurrentGrid.WorldMatrix;
-            //    m.Translation = MySession.ControlledObject.WorldMatrix.Translation;
-            //    VRageRender.MyRenderProxy.DebugDrawAxis(m, 1, false);
-            //}
-
-            MySector.MainCamera.SetViewMatrix(MySession.Static.CameraController.GetViewMatrix());
-
-            VRageRender.MyRenderProxy.UpdateGodRaysSettings(
-                MySector.GodRaysProperties.Enabled,
-                MySector.GodRaysProperties.Density,
-                MySector.GodRaysProperties.Weight,
-                MySector.GodRaysProperties.Decay,
-                MySector.GodRaysProperties.Exposition,
-                false
-            );
-
-            VRageRender.MyRenderProxy.UpdateAntiAliasSettings(
-                MyPostProcessAntiAlias.Enabled
-            );
-
-            VRageRender.MyRenderProxy.UpdateVignettingSettings(
-                MyPostProcessVignetting.Enabled,
-                MyPostProcessVignetting.VignettingPower
-            );
-
-            VRageRender.MyRenderProxy.UpdateColorMappingSettings(
-                MyPostProcessColorMapping.Enabled
-            );
-
-            VRageRender.MyRenderProxy.UpdateChromaticAberrationSettings(
-                MyPostProcessChromaticAberration.Enabled,
-                MyPostProcessChromaticAberration.DistortionLens,
-                MyPostProcessChromaticAberration.DistortionCubic,
-                new Vector3(MyPostProcessChromaticAberration.DistortionWeightRed,
-                            MyPostProcessChromaticAberration.DistortionWeightGreen,
-                            MyPostProcessChromaticAberration.DistortionWeightBlue)
-            );
-
-            VRageRender.MyRenderProxy.UpdateContrastSettings(
-                MyPostProcessContrast.Enabled,
-                MyPostProcessContrast.Contrast,
-                MyPostProcessContrast.Hue,
-                MyPostProcessContrast.Saturation
-            );
-
-            VRageRender.MyRenderFogSettings fogSettings = new VRageRender.MyRenderFogSettings()
+            if (MyThirdPersonSpectator.Static != null)
+                MyThirdPersonSpectator.Static.Update();
+            if (MySector.MainCamera != null)
             {
-                Enabled = MySector.FogProperties.EnableFog,
-                FogNear = MySector.FogProperties.FogNear,
-                FogFar = MySector.FogProperties.FogFar,
+                // set new camera values
+                MySession.Static.CameraController.ControlCamera(MySector.MainCamera);
+                // update camera properties accordingly to the new settings - zoom, spring, shaking...
+                MySector.MainCamera.Update(MyEngineConstants.UPDATE_STEP_SIZE_IN_SECONDS);
+                // upload to renderer
+                MySector.MainCamera.UploadViewMatrixToRender();
+            }
+
+            MySector.UpdateSunLight();
+
+            MyRenderProxy.UpdateGameplayFrame(MySession.Static.GameplayFrameCounter);
+
+            MyRenderFogSettings fogSettings = new MyRenderFogSettings()
+            {
                 FogMultiplier = MySector.FogProperties.FogMultiplier,
-                FogBacklightMultiplier = MySector.FogProperties.FogBacklightMultiplier,
                 FogColor = MySector.FogProperties.FogColor,
-                FogDensity = MySector.FogProperties.FogDensity
+                FogDensity = MySector.FogProperties.FogDensity / 100.0f
             };
             VRageRender.MyRenderProxy.UpdateFogSettings(ref fogSettings);
 
-            VRageRender.MyRenderProxy.UpdateHDRSettings(
-                MyPostProcessHDR.DebugHDRChecked,
-                MyPostProcessHDR.Exposure,
-                MyPostProcessHDR.Threshold,
-                MyPostProcessHDR.BloomIntensity,
-                MyPostProcessHDR.BloomIntensityBackground,
-                MyPostProcessHDR.VerticalBlurAmount,
-                MyPostProcessHDR.HorizontalBlurAmount,
-                (int)MyPostProcessHDR.NumberOfBlurPasses
-            );
+            MyRenderProxy.UpdateSSAOSettings(ref MySector.SSAOSettings);
+            MyRenderProxy.UpdateHBAOSettings(ref MySector.HBAOSettings);
 
+            var envData = MySector.SunProperties.EnvironmentData;
+            envData.Skybox = !string.IsNullOrEmpty(MySession.Static.CustomSkybox) ? MySession.Static.CustomSkybox : MySector.EnvironmentDefinition.EnvironmentTexture;
+            envData.SkyboxOrientation = MySector.EnvironmentDefinition.EnvironmentOrientation.ToQuaternion();
+            envData.EnvironmentLight.SunLightDirection = -MySector.SunProperties.SunDirectionNormalized;
+            MyEnvironmentLightData.CalculateBackLightDirections(envData.EnvironmentLight.SunLightDirection, MySector.SunRotationAxis,
+                out envData.EnvironmentLight.BackLightDirection1, out envData.EnvironmentLight.BackLightDirection2);
 
-            VRageRender.MyRenderProxy.UpdateSSAOSettings(
-                MyPostProcessVolumetricSSAO2.Enabled,
-                MyPostProcessVolumetricSSAO2.ShowOnlySSAO,
-                MyPostProcessVolumetricSSAO2.UseBlur,
-                MyPostProcessVolumetricSSAO2.MinRadius,
-                MyPostProcessVolumetricSSAO2.MaxRadius,
-                MyPostProcessVolumetricSSAO2.RadiusGrowZScale,
-                MyPostProcessVolumetricSSAO2.CameraZFarScale * MySector.MainCamera.FarPlaneDistance,
-                MyPostProcessVolumetricSSAO2.Bias,
-                MyPostProcessVolumetricSSAO2.Falloff,
-                MyPostProcessVolumetricSSAO2.NormValue,
-                MyPostProcessVolumetricSSAO2.Contrast
-            );
+            envData.SunBillboardEnabled = MyFakes.ENABLE_SUN_BILLBOARD;
 
-            VRageRender.MyRenderProxy.UpdateRenderEnvironment(
-                -MySector.DirectionToSunNormalized,
-                MySector.SunProperties.SunDiffuse,
-                MySector.SunProperties.BackSunDiffuse,
-                MySector.SunProperties.SunSpecular,
-                MySector.SunProperties.SunIntensity,
-                MySector.SunProperties.BackSunIntensity,
-                true,
-                MySector.SunProperties.AmbientColor,
-                MySector.SunProperties.AmbientMultiplier,
-                MySector.SunProperties.EnvironmentAmbientIntensity,
-                MySector.SunProperties.BackgroundColor,
-                MySector.BackgroundTexture,
-                MySector.BackgroundOrientation,
-                MySector.SunProperties.SunSizeMultiplier,
-                MySector.DistanceToSun,
-                MySector.SunProperties.SunMaterial,
-                MySector.DayTime,
-                MySector.ResetEyeAdaptation
-            );
+            VRageRender.MyRenderProxy.UpdateRenderEnvironment(ref envData, MySector.ResetEyeAdaptation);
+
             MySector.ResetEyeAdaptation = false;
             VRageRender.MyRenderProxy.UpdateEnvironmentMap();
 
-            VRageRender.MyRenderProxy.SwitchProsprocessSettings(MyPostprocessSettingsWrapper.Settings);
+            MyRenderProxy.SwitchPostprocessSettings(ref MyPostprocessSettingsWrapper.Settings);
+
+            if (MyRenderProxy.SettingsDirty)
+                MyRenderProxy.SwitchRenderSettings(MyRenderProxy.Settings);
 
             VRageRender.MyRenderProxy.GetRenderProfiler().StartNextBlock("Main render");
 
@@ -973,15 +1141,12 @@ namespace Sandbox.Game.Gui
 
             VRageRender.MyRenderProxy.GetRenderProfiler().StartNextBlock("Draw HUD");
 
-            if (MySession.ControlledEntity != null && MySession.Static.CameraController != null)
-                MySession.ControlledEntity.DrawHud(MySession.Static.CameraController, MySession.LocalPlayerId);
-
-            VRageRender.MyRenderProxy.GetRenderProfiler().StartNextBlock("FillDebugScreen");
-            //FillDebugScreen();
-            VRageRender.MyRenderProxy.GetRenderProfiler().EndProfilingBlock();
+            if (MySession.Static.ControlledEntity != null && MySession.Static.CameraController != null)
+                MySession.Static.ControlledEntity.DrawHud(MySession.Static.CameraController, MySession.Static.LocalPlayerId);
 
             if (MySandboxGame.IsPaused && !MyHud.MinimalHud)
                 DrawPauseIndicator();
+            VRageRender.MyRenderProxy.GetRenderProfiler().EndProfilingBlock();
 
             return true;
         }
@@ -991,7 +1156,7 @@ namespace Sandbox.Game.Gui
             var fullscreenRect = MyGuiManager.GetSafeFullscreenRectangle();
             fullscreenRect.Height /= 18;
             var font = MyFontEnum.Red;
-            var text = MyTexts.Get(MySpaceTexts.GamePaused);
+            var text = MyTexts.Get(MyCommonTexts.GamePaused);
 
             MyGuiManager.DrawSpriteBatch(MyGuiConstants.TEXTURE_HUD_BG_MEDIUM_RED2.Texture, fullscreenRect, Color.White);
             MyGuiManager.DrawString(font, text, new Vector2(0.5f, 0.024f), 1.0f, drawAlign: MyGuiDrawAlignEnum.HORISONTAL_CENTER_AND_VERTICAL_CENTER);

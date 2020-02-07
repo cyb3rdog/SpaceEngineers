@@ -6,6 +6,8 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Text;
+using VRage.Game;
+using VRage.Game.Definitions;
 using VRageMath;
 
 namespace Sandbox.Definitions
@@ -20,6 +22,7 @@ namespace Sandbox.Definitions
         public string RightGlare;
         public string LeftLightBone;
         public string RightLightBone;
+        public Vector3 LightOffset;
         public float LightGlareSize;
         public string HeadBone;
         public string Camera3rdBone;
@@ -37,14 +40,39 @@ namespace Sandbox.Definitions
         public string SpineBone;
         public float BendMultiplier1st;
         public float BendMultiplier3rd;
-        public bool NeedsOxygen;
+        public bool UsesAtmosphereDetector;
+        public bool UsesReverbDetector;
+        [Obsolete("Dont ever use again.")]
+        public bool NeedsOxygen;        // handled in myobjectbuilder_character
+        public float OxygenConsumptionMultiplier;
         public float OxygenConsumption;
         public float PressureLevelForLowDamage;
         public float DamageAmountAtZeroPressure;
-        public float OxygenCapacity;
-        public string HelmetVariation;
-        public string DeathSoundName;
+        //public string HelmetVariation;
+        public bool LoopingFootsteps;
         public bool VisibleOnHud;
+        public bool UsableByPlayer;
+        public string PhysicalMaterial;
+        public float JumpForce;
+
+        // Sound Names
+        public string JumpSoundName;
+        public string JetpackIdleSoundName;
+        public string JetpackRunSoundName;
+        public string CrouchDownSoundName;
+        public string CrouchUpSoundName;
+        public string PainSoundName;
+        public string SuffocateSoundName;
+        public string DeathSoundName;
+        public string DeathBySuffocationSoundName;
+        public string IronsightActSoundName;
+        public string IronsightDeactSoundName;
+        public string FastFlySoundName;
+        public string HelmetOxygenNormalSoundName;
+        public string HelmetOxygenLowSoundName;
+        public string HelmetOxygenCriticalSoundName;
+        public string HelmetOxygenNoneSoundName;
+        public string MovementSoundName;
 
         // Bones for foot placement IK
         public bool FeetIKEnabled = false;
@@ -57,21 +85,34 @@ namespace Sandbox.Definitions
         public string RightAnkleBoneName;
         
         // Ragdoll data
+        public class RagdollBoneSet
+        {
+            public RagdollBoneSet(string bones, float radius)
+            {
+                Bones = bones.Split(' ');
+                CollisionRadius = radius;
+            }
+
+            public string[] Bones;
+            public float CollisionRadius;
+        }
         public string RagdollDataFile;
-        public Dictionary<string, string[]> RagdollBonesMappings = new Dictionary<string, string[]>();
+        public Dictionary<string, RagdollBoneSet> RagdollBonesMappings = new Dictionary<string, RagdollBoneSet>();
+        public Dictionary<string, string[]> RagdollPartialSimulations = new Dictionary<string, string[]>();
+        
         public string RagdollRootBody;
 
-        public Dictionary<MyCharacterMovementEnum, MyFeetIKSettings> FeetIKSettings;        
+        public Dictionary<MyCharacterMovementEnum, MyFeetIKSettings> FeetIKSettings;
 
-        public bool JetpackAvailable;
-        public float JetpackSlowdown;
-        public MyJetpackThrustDefinition[] Thrusts = new MyJetpackThrustDefinition[0];
+	    public List<SuitResourceDefinition> SuitResourceStorage = null;
+        public MyObjectBuilder_JetpackDefinition Jetpack = null;
         public Dictionary<string, string[]> BoneSets = new Dictionary<string, string[]>();
+        public Dictionary<float, string[]> BoneLODs = new Dictionary<float, string[]>();
         public Dictionary<string, string> AnimationNameToSubtypeName = new Dictionary<string, string>();
         public string[] MaterialsDisabledIn1st;
 
         public float Mass;
-        public float MaxHealth;
+        public float ImpulseLimit;
         public string RighHandItemBone;
 
         //Character control
@@ -96,9 +137,44 @@ namespace Sandbox.Definitions
         public float CharacterHeadSize;
         public float CharacterHeadHeight;
         public float CharacterCollisionScale;
+        public float CharacterCollisionHeight;
+        public float CharacterCollisionWidth;
+        public float CharacterCollisionCrouchHeight;
+
+        public float CharacterWidth;
+        public float CharacterHeight;
+        public float CharacterLength;
+
+        public MyObjectBuilder_InventoryDefinition InventoryDefinition;        
+        public bool EnableSpawnInventoryAsContainer = false;
+        public MyDefinitionId? InventorySpawnContainerId;
+        public bool SpawnInventoryOnBodyRemoval = false;
+
+        [Obsolete("Use MyComponentDefinitionBase and MyContainerDefinition to define enabled types of components on entities")]
+        public List<String> EnabledComponents = new List<String>();
+
+        public float LootingTime;
+
+        public string InitialAnimation;
+
+        public MyObjectBuilder_DeadBodyShape DeadBodyShape;
+
+        // name of used animation controller (definition)
+        public string AnimationController = null;
+
+        public float? MaxForce = null;
+        // align with support (terrain) - useful for animals
+        public MyEnumCharacterRotationToSupport RotationToSupport = MyEnumCharacterRotationToSupport.None;
+
+        /// <summary>
+        /// VRAGE TODO: TEMPORARY!
+        /// </summary>
+        public bool UseNewAnimationSystem { get { return AnimationController != null; } }
 
         protected override void Init(MyObjectBuilder_DefinitionBase objectBuilder)
         {
+            base.Init(objectBuilder);
+
             var builder = (MyObjectBuilder_CharacterDefinition)objectBuilder;
             Name = builder.Name;
             Model = builder.Model;
@@ -107,6 +183,7 @@ namespace Sandbox.Definitions
             RightGlare = builder.RightGlare;
             LeftLightBone = builder.LeftLightBone;
             RightLightBone = builder.RightLightBone;
+            LightOffset = builder.LightOffset;
             LightGlareSize = builder.LightGlareSize;
             HeadBone = builder.HeadBone;
             Camera3rdBone = builder.Camera3rdBone;
@@ -133,16 +210,41 @@ namespace Sandbox.Definitions
             LeftAnkleBoneName = builder.LeftAnkleBoneName;
             RightHipBoneName = builder.RightHipBoneName;
             RightKneeBoneName = builder.RightKneeBoneName;
-            RightAnkleBoneName = builder.RightAnkleBoneName;     
+            RightAnkleBoneName = builder.RightAnkleBoneName;
+            UsesAtmosphereDetector = builder.UsesAtmosphereDetector;
+            UsesReverbDetector = builder.UsesReverbDetector;
             NeedsOxygen = builder.NeedsOxygen;
+            OxygenConsumptionMultiplier = builder.OxygenConsumptionMultiplier;
             OxygenConsumption = builder.OxygenConsumption;
             PressureLevelForLowDamage = builder.PressureLevelForLowDamage;
             DamageAmountAtZeroPressure = builder.DamageAmountAtZeroPressure;
             RagdollDataFile = builder.RagdollDataFile;
-            HelmetVariation = builder.HelmetVariation;
+            //HelmetVariation = builder.HelmetVariation;
+            JumpSoundName = builder.JumpSoundName;
+            JetpackIdleSoundName = builder.JetpackIdleSoundName;
+            JetpackRunSoundName = builder.JetpackRunSoundName;
+            CrouchDownSoundName = builder.CrouchDownSoundName;
+            CrouchUpSoundName = builder.CrouchUpSoundName;
+            PainSoundName = builder.PainSoundName;
+            SuffocateSoundName = builder.SuffocateSoundName;
             DeathSoundName = builder.DeathSoundName;
+            DeathBySuffocationSoundName = builder.DeathBySuffocationSoundName;
+            IronsightActSoundName = builder.IronsightActSoundName;
+            IronsightDeactSoundName = builder.IronsightDeactSoundName;
+            FastFlySoundName = builder.FastFlySoundName;
+            HelmetOxygenNormalSoundName = builder.HelmetOxygenNormalSoundName;
+            HelmetOxygenLowSoundName = builder.HelmetOxygenLowSoundName;
+            HelmetOxygenCriticalSoundName = builder.HelmetOxygenCriticalSoundName;
+            HelmetOxygenNoneSoundName = builder.HelmetOxygenNoneSoundName;
+            MovementSoundName = builder.MovementSoundName;
+            LoopingFootsteps = builder.LoopingFootsteps;
             VisibleOnHud = builder.VisibleOnHud;
+            UsableByPlayer = builder.UsableByPlayer;
             RagdollRootBody = builder.RagdollRootBody;
+            InitialAnimation = builder.InitialAnimation;
+            PhysicalMaterial = builder.PhysicalMaterial;
+            JumpForce = builder.JumpForce;
+            RotationToSupport = builder.RotationToSupport;
 
             FeetIKSettings = new Dictionary<MyCharacterMovementEnum,MyFeetIKSettings>();
             if (builder.IKSettings != null)
@@ -175,13 +277,17 @@ namespace Sandbox.Definitions
                 }
             }
 
-            JetpackAvailable = builder.JetpackAvailable;
-            JetpackSlowdown = builder.JetpackSlowdown;
-            if (builder.Thrusts != null)
-                Thrusts = builder.Thrusts;
+	        SuitResourceStorage = builder.SuitResourceStorage;
+            Jetpack = builder.Jetpack;
+
             if (builder.BoneSets != null)
             {
                 BoneSets = builder.BoneSets.ToDictionary(x => x.Name, x => x.Bones.Split(' '));
+            }
+
+            if (builder.BoneLODs != null)
+            {
+                BoneLODs = builder.BoneLODs.ToDictionary(x => Convert.ToSingle(x.Name), x => x.Bones.Split(' '));
             }
 
             if (builder.AnimationMappings != null)
@@ -191,12 +297,16 @@ namespace Sandbox.Definitions
 
             if (builder.RagdollBonesMappings != null)
             {
-                RagdollBonesMappings = builder.RagdollBonesMappings.ToDictionary(x => x.Name, x => x.Bones.Split(' '));
+                RagdollBonesMappings = builder.RagdollBonesMappings.ToDictionary(x => x.Name, x => new RagdollBoneSet(x.Bones, x.CollisionRadius));
+            }
+
+            if (builder.RagdollPartialSimulations != null)
+            {
+                RagdollPartialSimulations = builder.RagdollPartialSimulations.ToDictionary(x => x.Name, x => x.Bones.Split(' '));
             }
 
             Mass = builder.Mass;
-            MaxHealth = builder.MaxHealth;
-            OxygenCapacity = builder.OxygenCapacity;
+            ImpulseLimit = builder.ImpulseLimit;
 
             VerticalPositionFlyingOnly = builder.VerticalPositionFlyingOnly;
             UseOnlyWalking = builder.UseOnlyWalking;
@@ -219,6 +329,37 @@ namespace Sandbox.Definitions
             CharacterHeadSize = builder.CharacterHeadSize;
             CharacterHeadHeight = builder.CharacterHeadHeight;
             CharacterCollisionScale = builder.CharacterCollisionScale;
+            CharacterCollisionWidth = builder.CharacterCollisionWidth;
+            CharacterCollisionHeight = builder.CharacterCollisionHeight;
+            CharacterCollisionCrouchHeight = builder.CharacterCollisionCrouchHeight;
+
+            if (builder.Inventory == null)
+            {
+                InventoryDefinition = new MyObjectBuilder_InventoryDefinition();
+            }           
+            else
+            {
+                InventoryDefinition = builder.Inventory;
+            }
+
+            if (builder.EnabledComponents != null)
+                EnabledComponents = builder.EnabledComponents.Split(' ').ToList();
+
+            EnableSpawnInventoryAsContainer = builder.EnableSpawnInventoryAsContainer;        
+            if (EnableSpawnInventoryAsContainer)
+            {
+                Debug.Assert(builder.InventorySpawnContainerId.HasValue, "Enabled spawning inventory as container, but type id is null");
+                if (builder.InventorySpawnContainerId.HasValue)
+                {
+                    InventorySpawnContainerId = builder.InventorySpawnContainerId.Value;
+                }
+                SpawnInventoryOnBodyRemoval = builder.SpawnInventoryOnBodyRemoval;
+            }
+
+            LootingTime = builder.LootingTime;
+            DeadBodyShape = builder.DeadBodyShape;
+            AnimationController = builder.AnimationController;
+            MaxForce = builder.MaxForce;
         }
 
         public override MyObjectBuilder_DefinitionBase GetObjectBuilder()
@@ -237,18 +378,32 @@ namespace Sandbox.Definitions
             ob.RightUpperarmBone = RightUpperarmBone;
             ob.SpineBone = SpineBone;
             ob.MaterialsDisabledIn1st = MaterialsDisabledIn1st;
+            ob.UsesAtmosphereDetector = UsesAtmosphereDetector;
+            ob.UsesReverbDetector = UsesReverbDetector;
             ob.NeedsOxygen = NeedsOxygen;
+            ob.OxygenConsumptionMultiplier = OxygenConsumptionMultiplier;
             ob.OxygenConsumption = OxygenConsumption;
             ob.PressureLevelForLowDamage = PressureLevelForLowDamage;
             ob.DamageAmountAtZeroPressure = DamageAmountAtZeroPressure;
-            ob.OxygenCapacity = OxygenCapacity;
-            ob.HelmetVariation = HelmetVariation;
+            //ob.HelmetVariation = HelmetVariation;
+            ob.JumpSoundName = JumpSoundName;
+            ob.JetpackIdleSoundName = JetpackIdleSoundName;
+            ob.JetpackRunSoundName = JetpackRunSoundName;
+            ob.CrouchDownSoundName = CrouchDownSoundName;
+            ob.CrouchUpSoundName = CrouchUpSoundName;
+            ob.SuffocateSoundName = SuffocateSoundName;
+            ob.PainSoundName = PainSoundName;
             ob.DeathSoundName = DeathSoundName;
+            ob.DeathBySuffocationSoundName = DeathBySuffocationSoundName;
+            ob.IronsightActSoundName = IronsightActSoundName;
+            ob.IronsightDeactSoundName = IronsightDeactSoundName;
+            ob.LoopingFootsteps = LoopingFootsteps;
             ob.VisibleOnHud = VisibleOnHud;
+            ob.UsableByPlayer = UsableByPlayer;
 
-            ob.JetpackAvailable = JetpackAvailable;
-            ob.JetpackSlowdown = JetpackSlowdown;
-            ob.Thrusts = Thrusts;
+            ob.SuitResourceStorage = SuitResourceStorage;
+			ob.Jetpack = Jetpack;
+
             //TODO BoneSets serialization
 
             ob.VerticalPositionFlyingOnly = VerticalPositionFlyingOnly;
@@ -272,6 +427,33 @@ namespace Sandbox.Definitions
             ob.CharacterHeadSize = CharacterHeadSize;
             ob.CharacterHeadHeight = CharacterHeadHeight;
             ob.CharacterCollisionScale = CharacterCollisionScale;
+            ob.CharacterCollisionWidth = CharacterCollisionWidth;
+            ob.CharacterCollisionHeight = CharacterCollisionHeight;
+            ob.CharacterCollisionCrouchHeight = CharacterCollisionCrouchHeight;
+
+            ob.Inventory = InventoryDefinition;
+
+            ob.PhysicalMaterial = PhysicalMaterial;
+
+            ob.EnabledComponents = String.Join(" ",EnabledComponents);
+
+            ob.EnableSpawnInventoryAsContainer = EnableSpawnInventoryAsContainer;
+            if (EnableSpawnInventoryAsContainer)
+            {
+                Debug.Assert(InventorySpawnContainerId.HasValue, "Enabled spawning inventory as container, but type id is null");
+                if (InventorySpawnContainerId.HasValue)
+                {
+                    ob.InventorySpawnContainerId = InventorySpawnContainerId.Value;
+                }
+                ob.SpawnInventoryOnBodyRemoval = SpawnInventoryOnBodyRemoval;
+            }
+
+            ob.LootingTime = LootingTime;
+            ob.DeadBodyShape = DeadBodyShape;
+            ob.AnimationController = AnimationController;
+            ob.MaxForce = MaxForce;
+            ob.RotationToSupport = RotationToSupport;
+
             return ob;
         }
     }

@@ -1,5 +1,7 @@
 ﻿using Sandbox.Common.ObjectBuilders;
 using Sandbox.Common.ObjectBuilders.Definitions;
+using VRage.Game;
+using VRage.Game.Definitions;
 
 
 namespace Sandbox.Definitions
@@ -8,6 +10,7 @@ namespace Sandbox.Definitions
     public class MyWarheadDefinition : MyCubeBlockDefinition
     {
         public float ExplosionRadius;
+        public float WarheadExplosionDamage;
 
         protected override void Init(MyObjectBuilder_DefinitionBase builder)
         {
@@ -15,6 +18,7 @@ namespace Sandbox.Definitions
 
             var warheadBuilder = (MyObjectBuilder_WarheadDefinition)builder;
             ExplosionRadius = warheadBuilder.ExplosionRadius;
+            WarheadExplosionDamage = warheadBuilder.WarheadExplosionDamage;
         }
     }
 }

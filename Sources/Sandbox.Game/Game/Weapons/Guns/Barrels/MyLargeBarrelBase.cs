@@ -1,26 +1,23 @@
 ﻿#region Using
 
-using System;
-using System.Collections.Generic;
-using System.Text;
-using Sandbox.Graphics.TransparentGeometry.Particles;
-using Sandbox.Engine.Utils;
-using Sandbox.Game.Entities;
 using Sandbox.Game.World;
+using VRage.Game;
+using VRage.Game.Entity;
 using VRage.Import;
 using VRage.Utils;
 using VRageMath;
-using Sandbox.Common.ObjectBuilders.Definitions;
+using VRageRender.Import;
 
 #endregion
 
-namespace Sandbox.Game.Weapons
+namespace Sandbox.Game.Weapons.Guns.Barrels
 {
-    abstract class MyLargeBarrelBase 
+    public abstract class MyLargeBarrelBase 
     {
         #region Fields
         // used ammo type for this barrel:
         protected MyGunBase m_gunBase;
+        public MyGunBase GunBase { get { return m_gunBase; } }
 
         public MyModelDummy CameraDummy { get; private set; }
 
@@ -86,16 +83,7 @@ namespace Sandbox.Game.Weapons
 
         public virtual bool StartShooting()
         {
-            if (IsControlledByPlayer())
-            {
-                return true;
-            }
-
             return true;
-         
-
-            StopShooting();
-            return false;
         }
 
         public virtual void StopShooting()
@@ -111,8 +99,8 @@ namespace Sandbox.Game.Weapons
         //protected float GetDeviatedAngleByDamageRatio() 
         //{
         //    MyPrefabLargeWeapon prefabLargeWeapon = GetWeaponBase().PrefabParent;
-        //    if (MySession.PlayerShip != null &&
-        //       MyFactions.GetFactionsRelation(prefabLargeWeapon, MySession.PlayerShip) == MyFactionRelationEnum.Enemy)
+        //    if (MySession.Static.PlayerShip != null &&
+        //       MyFactions.GetFactionsRelation(prefabLargeWeapon, MySession.Static.PlayerShip) == MyFactionRelationEnum.Enemy)
         //    {
         //        float degrees = (float)Math.Pow(120, prefabLargeWeapon.GetDamageRatio() * 1.5 - 1.2) * 4f;
         //        return MathHelper.ToRadians(degrees);
@@ -128,7 +116,7 @@ namespace Sandbox.Game.Weapons
             m_gunBase.Shoot(velocity);
         }
 
-        //protected override void DoDamageInternal(float playerDamage, float damage, float empDamage, MyDamageType damageType, MyAmmoType ammoType, MyEntity damageSource, bool justDeactivate)
+        //protected override void DoDamageInternal(float playerDamage, float damage, float empDamage, MyStringHash damageType, MyAmmoType ammoType, MyEntity damageSource, bool justDeactivate)
         //{
         //    //Parent.DoDamage(playerDamage, damage, empDamage, damageType, ammoType, damageSource, justDeactivate);
         //}
@@ -155,7 +143,7 @@ namespace Sandbox.Game.Weapons
 
         public bool IsControlledByPlayer()
         {
-            return MySession.ControlledEntity == this;
+            return MySession.Static.ControlledEntity == this;
         }
 
         //public override MyEntity GetBaseEntity()

@@ -2,12 +2,14 @@
 using Sandbox.Common.ObjectBuilders.Definitions;
 
 using Sandbox.Engine.Utils;
+using VRage.Game;
+using VRage.Game.Definitions;
 using VRage.Utils;
 
 namespace Sandbox.Definitions
 {
     [MyDefinitionType(typeof(MyObjectBuilder_GravityGeneratorSphereDefinition))]
-    public class MyGravityGeneratorSphereDefinition : MyCubeBlockDefinition
+    public class MyGravityGeneratorSphereDefinition : MyGravityGeneratorBaseDefinition
     {
         public float MinRadius;
         public float MaxRadius;

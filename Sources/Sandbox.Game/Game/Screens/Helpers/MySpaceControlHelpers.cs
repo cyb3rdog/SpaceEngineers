@@ -1,17 +1,18 @@
-﻿using Sandbox.Game.Entities;
+﻿using Sandbox.Engine.Utils;
+using Sandbox.Game.Entities;
 using Sandbox.Game.Entities.Character;
 using Sandbox.Game.Gui;
+using Sandbox.Game.GUI;
 using Sandbox.Game.Localization;
 using Sandbox.Game.Multiplayer;
 using Sandbox.Game.World;
-using Sandbox.Graphics;
 using Sandbox.Graphics.GUI;
 using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using VRage;
-using VRage.Library.Utils;
+using VRage.Utils;
 
 namespace Sandbox.Game.Screens.Helpers
 {
@@ -31,7 +32,7 @@ namespace Sandbox.Game.Screens.Helpers
             Func<IMyControllableEntity, bool> valueGetter,
             MyStringId label,
             MySupportKeysEnum supportKeys = MySupportKeysEnum.NONE)
-            : this(controlId, action, valueGetter, label, MySpaceTexts.ControlMenuItemValue_On, MySpaceTexts.ControlMenuItemValue_Off, supportKeys)
+            : this(controlId, action, valueGetter, label, MyCommonTexts.ControlMenuItemValue_On, MyCommonTexts.ControlMenuItemValue_Off, supportKeys)
         {
         }
 
@@ -131,7 +132,7 @@ namespace Sandbox.Game.Screens.Helpers
 
         public override string Label
         {
-            get { return "Show build screen"; }
+            get { return MyTexts.GetString(MySpaceTexts.ControlMenuItemLabel_ShowBuildScreen); }
         }
 
         public void SetEntity(IMyControllableEntity entity)
@@ -173,7 +174,7 @@ namespace Sandbox.Game.Screens.Helpers
 
         public override string Label
         {
-            get { return MyTexts.GetString(MySpaceTexts.ControlMenuItemLabel_CameraMode); }
+            get { return MyTexts.GetString(MyCommonTexts.ControlMenuItemLabel_CameraMode); }
         }
 
         public override void Activate()
@@ -184,9 +185,9 @@ namespace Sandbox.Game.Screens.Helpers
         public override void UpdateValue()
         {
             if (MySession.Static.CameraController.IsInFirstPersonView)
-                m_value = MyTexts.GetString(MySpaceTexts.ControlMenuItemValue_FPP);
+                m_value = MyTexts.GetString(MyCommonTexts.ControlMenuItemValue_FPP);
             else
-                m_value = MyTexts.GetString(MySpaceTexts.ControlMenuItemValue_TPP);
+                m_value = MyTexts.GetString(MyCommonTexts.ControlMenuItemValue_TPP);
         }
 
         public override void Next()
@@ -210,12 +211,12 @@ namespace Sandbox.Game.Screens.Helpers
 
         public override string Label
         {
-            get { return MyTexts.GetString(MySpaceTexts.ControlMenuItemLabel_PauseGame); }
+            get { return MyTexts.GetString(MyCommonTexts.ControlMenuItemLabel_PauseGame); }
         }
 
         public override void Activate()
         {
-            MySandboxGame.UserPauseToggle();
+            MySandboxGame.PauseToggle();
         }
     }
 
@@ -230,7 +231,7 @@ namespace Sandbox.Game.Screens.Helpers
 
         public override string Label
         {
-            get { return MyTexts.GetString(MySpaceTexts.ControlMenuItemLabel_CommitSuicide); ; }
+            get { return MyTexts.GetString(MyCommonTexts.ControlMenuItemLabel_CommitSuicide); ; }
         }
 
         public override void Activate()
@@ -254,7 +255,7 @@ namespace Sandbox.Game.Screens.Helpers
 
         public override string Label
         {
-            get { return MyTexts.GetString(MySpaceTexts.ControlMenuItemLabel_QuickLoad); }
+            get { return MyTexts.GetString(MyCommonTexts.ControlMenuItemLabel_QuickLoad); }
         }
 
         public override void Activate()
@@ -290,7 +291,7 @@ namespace Sandbox.Game.Screens.Helpers
 
         public override string Label
         {
-            get { return MyTexts.GetString(MySpaceTexts.ControlMenuItemLabel_ToggleHud); }
+            get { return MyTexts.GetString(MyCommonTexts.ControlMenuItemLabel_ToggleHud); }
         }
 
         public override void Activate()
@@ -301,9 +302,9 @@ namespace Sandbox.Game.Screens.Helpers
         public override void UpdateValue()
         {
             if (!MyHud.MinimalHud)
-                m_value = MyTexts.GetString(MySpaceTexts.ControlMenuItemValue_On);
+                m_value = MyTexts.GetString(MyCommonTexts.ControlMenuItemValue_On);
             else
-                m_value = MyTexts.GetString(MySpaceTexts.ControlMenuItemValue_Off);
+                m_value = MyTexts.GetString(MyCommonTexts.ControlMenuItemValue_Off);
         }
 
         public override void Next()
@@ -326,7 +327,7 @@ namespace Sandbox.Game.Screens.Helpers
 
         public override string Label
         {
-            get { return MyTexts.GetString(MySpaceTexts.ControlMenuItemLabel_ShowColorPicker); }
+            get { return MyTexts.GetString(MyCommonTexts.ControlMenuItemLabel_ShowColorPicker); }
         }
 
         public override void Activate()
@@ -356,6 +357,34 @@ namespace Sandbox.Game.Screens.Helpers
         public new void SetEntity(IMyControllableEntity entity)
         {
             m_entity = entity as MyShipController;
+        }
+    }
+
+    public class MyConnectorControlHelper : MyControllableEntityControlHelper
+    {
+        private MyShipController ShipController { get { return m_entity as MyShipController; } }
+
+        public override bool Enabled
+        {
+            get
+            {
+                return ShipController.CubeGrid.GridSystems.ConveyorSystem.IsInteractionPossible;
+            }
+        }
+
+        public MyConnectorControlHelper()
+            : base(MyControlsSpace.LANDING_GEAR, x => x.SwitchLeadingGears(), x => { return GetConnectorStatus(x); }, MySpaceTexts.ControlMenuItemLabel_Connectors)
+        {
+        }
+
+        public new void SetEntity(IMyControllableEntity entity)
+        {
+            m_entity = entity as MyShipController;
+        }
+
+        private static bool GetConnectorStatus(IMyControllableEntity shipController)
+        {
+            return (shipController as MyShipController).CubeGrid.GridSystems.ConveyorSystem.Connected;
         }
     }
 
@@ -391,4 +420,55 @@ namespace Sandbox.Game.Screens.Helpers
             m_label = MyTexts.GetString(id);
         }
     }
+
+    public class MyEnableStationRotationControlHelper : MyAbstractControlMenuItem
+    {
+        private IMyControllableEntity m_entity;
+
+        public MyEnableStationRotationControlHelper()
+            : base(MyControlsSpace.FREE_ROTATION)
+        {
+        }
+
+        public override void Activate()
+        {
+            MyScreenManager.CloseScreen(typeof(MyGuiScreenControlMenu));
+            //MyCubeBuilder.Static.EnableStationRotation();
+        }
+
+        public override string Label
+        {
+            get { return MyTexts.GetString(MySpaceTexts.StationRotation_Static); }
+        }
+    }
+
+    public class MyBriefingMenuControlHelper : MyAbstractControlMenuItem
+    {
+        private IMyControllableEntity m_entity;
+
+        public override bool Enabled
+        {
+            get
+            {
+                return base.Enabled && MyFakes.ENABLE_MISSION_TRIGGERS;
+            }
+        }
+
+        public MyBriefingMenuControlHelper()
+            : base(MyControlsSpace.MISSION_SETTINGS)
+        {
+        }
+
+        public override void Activate()
+        {
+            MyScreenManager.CloseScreen(typeof(MyGuiScreenControlMenu));
+            MyGuiSandbox.AddScreen(new Sandbox.Game.Screens.MyGuiScreenBriefing());
+        }
+
+        public override string Label
+        {
+            get { return MyTexts.GetString(MySpaceTexts.ControlMenuItemLabel_ScenarioBriefing); }
+        }
+    }
 }
+

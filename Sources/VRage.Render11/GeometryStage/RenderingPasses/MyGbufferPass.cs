@@ -1,225 +1,180 @@
-﻿using SharpDX;
-using SharpDX.Direct3D;
-using SharpDX.Direct3D11;
-using SharpDX.DXGI;
-using System;
-using System.Collections;
-using System.Collections.Generic;
-using System.Diagnostics;
-using System.Linq;
-using System.Text;
-using VRage.Generics;
-
-using VRageMath;
-using VRageRender.Resources;
-using VRageRender.Vertex;
-using Buffer = SharpDX.Direct3D11.Buffer;
-using Matrix = VRageMath.Matrix;
-using Vector3 = VRageMath.Vector3;
-using Vector4 = VRageMath.Vector4;
-using BoundingBox = VRageMath.BoundingBox;
-using BoundingFrustum = VRageMath.BoundingFrustum;
-using VRage.Collections;
-using System.Collections.Specialized;
-using System.Threading;
+﻿using System.Diagnostics;
+using VRage.Render11.RenderContext;
+using VRage.Render11.Resources;
+using VRageRender.Import;
 
 namespace VRageRender
 {
-    internal unsafe struct MyObjectData
-    {
-        internal Vector4 m_row0;
-        internal Vector4 m_row1;
-        internal Vector4 m_row2;
-        internal Vector3 KeyColor;
-        internal float CustomAlpha;
-        internal Vector3 ColorMul;
-        internal float Emissive;
-        internal uint MaterialIndex;
-        internal MyMaterialFlags MaterialFlags;
-        internal float _padding0;
-        internal float _padding1;
-        internal Matrix LocalMatrix
-        {
-            get
-            {
-                var row0 = m_row0;
-                var row1 = m_row1;
-                var row2 = m_row2;
-
-                return new Matrix(
-                    row0.X, row1.X, row2.X, 0,
-                    row0.Y, row1.Y, row2.Y, 0,
-                    row0.Z, row1.Z, row2.Z, 0,
-                    row0.W, row1.W, row2.W, 1);
-
-            }
-            set
-            {
-                m_row0 = new Vector4(value.M11, value.M21, value.M31, value.M41);
-                m_row1 = new Vector4(value.M12, value.M22, value.M32, value.M42);
-                m_row2 = new Vector4(value.M13, value.M23, value.M33, value.M43);
-            }
-        }
-        internal void Translate(Vector3 v)
-        {
-            m_row0.W += v.X;
-            m_row1.W += v.Y;
-            m_row2.W += v.Z;
-        }
-    }
-
+    [PooledObject]
+#if XB1
+    class MyGBufferPass : MyRenderingPass, IMyPooledObjectCleaner
+#else // !XB1
     class MyGBufferPass : MyRenderingPass
+#endif // !XB1
     {
         internal MyGBuffer GBuffer;
 
         internal sealed override void Begin()
         {
-            RC.BeginProfilingBlock("gbuffer pass");
+            RC.BeginProfilingBlock("GBuffer pass");
 
             base.Begin();
 
-            RC.BindGBufferForWrite(GBuffer);
-
-            RC.SetDS(MyDepthStencilState.DepthTestWrite);
+            RC.SetRtvs(GBuffer, MyDepthStencilAccess.ReadWrite);
         }
 
-        internal unsafe override sealed void RecordCommands(MyRenderableProxy proxy)
+        protected sealed override unsafe void RecordCommandsInternal(MyRenderableProxy proxy)
         {
-            if (proxy.Mesh.Buffers.IB == IndexBufferId.NULL || proxy.Draw.IndexCount == 0 || (proxy.flags & MyRenderableProxyFlags.SkipInMainView) > 0)
-            {
+            if (proxy.Mesh.Buffers.IB == null
+                || proxy.DrawSubmesh.IndexCount == 0
+                || proxy.Flags.HasFlags(MyRenderableProxyFlags.SkipInMainView))
                 return;
-            }
 
-            Stats.Meshes++;
+            ++Stats.Draws;
 
             SetProxyConstants(proxy);
-            BindProxyGeometry(proxy);
+            BindProxyGeometry(proxy, RC);
 
             Debug.Assert(proxy.Shaders.VS != null);
+            MyRenderUtils.BindShaderBundle(RC, proxy.Shaders);
 
-            RC.BindShaders(proxy.Shaders);
-
-            if ((proxy.flags & MyRenderableProxyFlags.DisableFaceCulling) > 0)
-                RC.SetRS(MyRender11.m_nocullRasterizerState);
-            else
-                RC.SetRS(null);
-
-//#if DEBUG
             if (MyRender11.Settings.Wireframe)
             {
-                if ((proxy.flags & MyRenderableProxyFlags.DisableFaceCulling) > 0)
-                    RC.SetRS(MyRender11.m_nocullWireframeRasterizerState);
+                SetDepthStencilView(false);
+                RC.SetBlendState(null);
+                if (proxy.Flags.HasFlags(MyRenderableProxyFlags.DisableFaceCulling))
+                    RC.SetRasterizerState(MyRasterizerStateManager.NocullWireframeRasterizerState);
                 else
-                    RC.SetRS(MyRender11.m_wireframeRasterizerState);
+                    RC.SetRasterizerState(MyRasterizerStateManager.WireframeRasterizerState);
             }
-//#endif
+            else
+            {
+                MyMeshDrawTechnique technique = MyMeshDrawTechnique.MESH;
+                if (proxy.Material != MyMeshMaterialId.NULL)
+                    technique = proxy.Material.Info.Technique;
 
-            //for (int i = 0; i < proxy.submeshes.Length; i++)
-            //{
-                Stats.Submeshes++;
-                var submesh = proxy.Draw;
-
-                //if (submesh.Material != null && submesh.Material.TexturesHash != Locals.matTexturesID)
-                //{
-                //    Locals.matTexturesID = submesh.Material.TexturesHash;
-                //    RC.BindRawSRV(submesh.Material.SRVs);
-                //}
-
-                if (submesh.MaterialId != Locals.matTexturesID)
+                if (proxy.Flags.HasFlags(MyRenderableProxyFlags.DisableFaceCulling))
                 {
-                    Locals.matTexturesID = submesh.MaterialId;
-                    var material = MyMaterials1.ProxyPool.Data[submesh.MaterialId.Index];
-                    RC.MoveConstants(ref material.MaterialConstants);
-                    RC.SetConstants(ref material.MaterialConstants, MyCommon.MATERIAL_SLOT);
-                    RC.SetSRVs(ref material.MaterialSRVs);
-                }
-
-                //if (submesh.Material != null && submesh.Material.ConstantsHash != Locals.matConstantsID && submesh.Material.ConstantsBuffer != null)
-                //{
-                //    Stats.MaterialConstantsChanges++;
-                //    Locals.matConstantsID = submesh.Material.ConstantsHash;
-
-                //    RC.SetCB(MyCommon.MATERIAL_SLOT, submesh.Material.ConstantsBuffer);
-
-                //    var mapping = MyMapping.MapDiscard(RC.Context, submesh.Material.ConstantsBuffer);
-                //    mapping.stream.WriteRange(submesh.Material.Constants);
-                //    mapping.Unmap();
-                //}
-
-                if (proxy.skinningMatrices != null)
-                {
-                    Stats.ObjectConstantsChanges++;
-
-                    MyObjectData objectData = proxy.ObjectData;
-                    objectData.Translate(-MyEnvironment.CameraPosition);
-
-                    MyMapping mapping;
-                    mapping = MyMapping.MapDiscard(RC.Context, proxy.objectBuffer);
-                    void* ptr = &objectData;
-                    mapping.stream.Write(new IntPtr(ptr), 0, sizeof(MyObjectData));
-
-                    if (proxy.skinningMatrices != null)
+                    switch (technique)
                     {
-                        if (submesh.BonesMapping == null)
-                        {
-                            for (int j = 0; j < Math.Min(MyRender11Constants.SHADER_MAX_BONES, proxy.skinningMatrices.Length); j++)
-                            { 
-                                mapping.stream.Write(Matrix.Transpose(proxy.skinningMatrices[j]));
-                            }
-                        }
-                        else
-                        {
-                            for (int j = 0; j < submesh.BonesMapping.Length; j++)
-                            {
-                                mapping.stream.Write(Matrix.Transpose(proxy.skinningMatrices[submesh.BonesMapping[j]]));
-                            }
-                        }
+                        case MyMeshDrawTechnique.DECAL:
+                            SetDepthStencilView(true);
+                            MyMeshMaterials1.BindMaterialTextureBlendStates(RC, proxy.Material.Info.TextureTypes, true);
+                            RC.SetRasterizerState(MyRasterizerStateManager.NocullDecalRasterizerState);
+                            break;
+                        case MyMeshDrawTechnique.DECAL_NOPREMULT:
+                            SetDepthStencilView(true);
+                            MyMeshMaterials1.BindMaterialTextureBlendStates(RC, proxy.Material.Info.TextureTypes, false);
+                            RC.SetRasterizerState(MyRasterizerStateManager.NocullDecalRasterizerState);
+                            break;
+                        case MyMeshDrawTechnique.DECAL_CUTOUT:
+                            SetDepthStencilView(true);
+                            RC.SetBlendState(null);
+                            RC.SetRasterizerState(MyRasterizerStateManager.NocullDecalRasterizerState);
+                            break;
+                        default:
+                            SetDepthStencilView(false);
+                            RC.SetBlendState(null);
+                            RC.SetRasterizerState(MyRasterizerStateManager.NocullRasterizerState);
+                            break;
                     }
+                }
+                else
+                {
+                    switch (technique)
+                    {
+                        case MyMeshDrawTechnique.DECAL:
+                            SetDepthStencilView(true);
+                            MyMeshMaterials1.BindMaterialTextureBlendStates(RC, proxy.Material.Info.TextureTypes, true);
+                            RC.SetRasterizerState(MyRasterizerStateManager.DecalRasterizerState);
+                            break;
+                        case MyMeshDrawTechnique.DECAL_NOPREMULT:
+                            SetDepthStencilView(true);
+                            MyMeshMaterials1.BindMaterialTextureBlendStates(RC, proxy.Material.Info.TextureTypes, false);
+                            RC.SetRasterizerState(MyRasterizerStateManager.DecalRasterizerState);
+                            break;
+                        case MyMeshDrawTechnique.DECAL_CUTOUT:
+                            SetDepthStencilView(true);
+                            RC.SetBlendState(null);
+                            RC.SetRasterizerState(MyRasterizerStateManager.DecalRasterizerState);
+                            break;
+                        default:
+                            SetDepthStencilView(false);
+                            RC.SetBlendState(null);
+                            RC.SetRasterizerState(null);
+                            break;
+                    }
+                }
+            }
 
-                    mapping.Unmap();
-                }
+            var submesh = proxy.DrawSubmesh;
+            if (submesh.MaterialId != Locals.matTexturesID)
+            {
+                ++Stats.MaterialConstantsChanges;
 
-                if (proxy.instanceCount == 0 && submesh.IndexCount > 0) {
-                    RC.Context.DrawIndexed(submesh.IndexCount, submesh.StartIndex, submesh.BaseVertex);
-                    RC.Stats.DrawIndexed++;
-                    Stats.Instances++;
-                    Stats.Triangles += submesh.IndexCount / 3;
-                }
-                else if (submesh.IndexCount > 0) { 
-                    RC.Context.DrawIndexedInstanced(submesh.IndexCount, proxy.instanceCount, submesh.StartIndex, submesh.BaseVertex, proxy.startInstance);
-                    RC.Stats.DrawIndexedInstanced++;
-                    Stats.Instances += proxy.instanceCount;
-                    Stats.Triangles += proxy.instanceCount * submesh.IndexCount / 3;
-                }
-            //}
+                Locals.matTexturesID = submesh.MaterialId;
+                var material = MyMaterials1.ProxyPool.Data[submesh.MaterialId.Index];
+                MyRenderUtils.MoveConstants(RC, ref material.MaterialConstants);
+                MyRenderUtils.SetConstants(RC, ref material.MaterialConstants, MyCommon.MATERIAL_SLOT);
+                MyRenderUtils.SetSrvs(RC, ref material.MaterialSrvs);
+            }
+
+            if (proxy.InstanceCount == 0) 
+            {
+                if (!MyStereoRender.Enable)
+                    RC.DrawIndexed(submesh.IndexCount, submesh.StartIndex, submesh.BaseVertex);
+                else
+                    MyStereoRender.DrawIndexedGBufferPass(RC, submesh.IndexCount, submesh.StartIndex, submesh.BaseVertex);
+                ++Stats.Instances;
+                Stats.Triangles += submesh.IndexCount / 3;
+            }
+            else
+            {
+                //MyRender11.AddDebugQueueMessage("GbufferPass DrawIndexedInstanced " + proxy.Material.ToString());
+                if (!MyStereoRender.Enable)
+                    RC.DrawIndexedInstanced(submesh.IndexCount, proxy.InstanceCount, submesh.StartIndex, submesh.BaseVertex, proxy.StartInstance);
+                else
+                    MyStereoRender.DrawIndexedInstancedGBufferPass(RC, submesh.IndexCount, proxy.InstanceCount, submesh.StartIndex, submesh.BaseVertex, proxy.StartInstance);
+                Stats.Instances += proxy.InstanceCount;
+                Stats.Triangles += proxy.InstanceCount * submesh.IndexCount / 3;
+            }
         }
 
-        internal override void RecordCommands(ref MyRenderableProxy_2 proxy)
+        protected override void RecordCommandsInternal(ref MyRenderableProxy_2 proxy, int instanceIndex, int sectionIndex)
         {
-            RC.SetSRVs(ref proxy.ObjectSRVs);
-            RC.BindVertexData(ref proxy.VertexData);
+            MyRenderUtils.SetSrvs(RC, ref proxy.ObjectSrvs);
 
-            Debug.Assert(proxy.Shaders.VS != null);
+            Debug.Assert(proxy.Shaders.MultiInstance.VS != null);
 
-            RC.BindShaders(proxy.Shaders);
+            MyRenderUtils.BindShaderBundle(RC, proxy.Shaders.MultiInstance);
+
+            SetDepthStencilView(false);
+
+            SetProxyConstants(ref proxy);
 
             for (int i = 0; i < proxy.Submeshes.Length; i++)
             {
                 var submesh = proxy.Submeshes[i];
                 var material = MyMaterials1.ProxyPool.Data[submesh.MaterialId.Index];
-                RC.MoveConstants(ref material.MaterialConstants);
-                RC.SetConstants(ref material.MaterialConstants, MyCommon.MATERIAL_SLOT);
-                RC.SetSRVs(ref material.MaterialSRVs);
+                MyRenderUtils.MoveConstants(RC, ref material.MaterialConstants);
+                MyRenderUtils.SetConstants(RC, ref material.MaterialConstants, MyCommon.MATERIAL_SLOT);
+                MyRenderUtils.SetSrvs(RC, ref material.MaterialSrvs);
 
                 if (proxy.InstanceCount == 0)
                 {
                     switch (submesh.DrawCommand)
                     {
                         case MyDrawCommandEnum.DrawIndexed:
-                            RC.Context.DrawIndexed(submesh.Count, submesh.Start, submesh.BaseVertex);
+                            if (!MyStereoRender.Enable)
+                                RC.DrawIndexed(submesh.Count, submesh.Start, submesh.BaseVertex);
+                            else
+                                MyStereoRender.DrawIndexedGBufferPass(RC, submesh.Count, submesh.Start, submesh.BaseVertex);
                             break;
                         case MyDrawCommandEnum.Draw:
-                            RC.Context.Draw(submesh.Count, submesh.Start);
+                            if (!MyStereoRender.Enable)
+                                RC.Draw(submesh.Count, submesh.Start);
+                            else
+                                MyStereoRender.DrawGBufferPass(RC, submesh.Count, submesh.Start);
                             break;
                         default:
                             break;
@@ -230,18 +185,40 @@ namespace VRageRender
                     switch (submesh.DrawCommand)
                     {
                         case MyDrawCommandEnum.DrawIndexed:
-                            RC.Context.DrawIndexedInstanced(submesh.Count, proxy.InstanceCount, submesh.Start, submesh.BaseVertex, proxy.StartInstance);
+                            if (!MyStereoRender.Enable)
+                                RC.DrawIndexedInstanced(submesh.Count, proxy.InstanceCount, submesh.Start, submesh.BaseVertex, proxy.StartInstance);
+                            else
+                                MyStereoRender.DrawIndexedInstancedGBufferPass(RC, submesh.Count, proxy.InstanceCount, submesh.Start, submesh.BaseVertex, proxy.StartInstance);
                             break;
                         case MyDrawCommandEnum.Draw:
-                            RC.Context.DrawInstanced(submesh.Count, proxy.InstanceCount, submesh.Start, proxy.StartInstance);
+                            if (!MyStereoRender.Enable)
+                                RC.DrawInstanced(submesh.Count, proxy.InstanceCount, submesh.Start, proxy.StartInstance);
+                            else
+                                MyStereoRender.DrawInstancedGBufferPass(RC, submesh.Count, proxy.InstanceCount, submesh.Start, proxy.StartInstance);
                             break;
                         default:
                             break;
                     }
                 }
             }
+        }
 
-            base.RecordCommands(ref proxy);
+        private void SetDepthStencilView(bool readOnly)
+        {
+            if (readOnly)
+            {
+                if (MyStereoRender.Enable && MyStereoRender.EnableUsingStencilMask)
+                    RC.SetDepthStencilState(MyDepthStencilStateManager.StereoDepthTestReadOnly);
+                else
+                    RC.SetDepthStencilState(MyDepthStencilStateManager.DepthTestReadOnly);
+            }
+            else
+            {
+                if (MyStereoRender.Enable && MyStereoRender.EnableUsingStencilMask)
+                    RC.SetDepthStencilState(MyDepthStencilStateManager.StereoDepthTestWrite);
+                else
+                    RC.SetDepthStencilState(MyDepthStencilStateManager.DepthTestWrite);
+            }
         }
 
         internal override void End()
@@ -249,6 +226,39 @@ namespace VRageRender
             base.End();
 
             RC.EndProfilingBlock();
+        }
+
+        protected override MyFrustumEnum FrustumType
+        {
+            get { return MyFrustumEnum.MainFrustum; }
+        }
+
+#if XB1
+        public void ObjectCleaner()
+        {
+            Cleanup();
+        }
+#else // !XB1
+        [PooledObjectCleaner]
+        public static void Cleanup(MyGBufferPass renderPass)
+        {
+            renderPass.Cleanup();
+        }
+#endif // !XB1
+
+        internal override void Cleanup()
+        {
+            base.Cleanup();
+            GBuffer = null;
+        }
+
+        internal override MyRenderingPass Fork()
+        {
+            var renderPass = base.Fork() as MyGBufferPass;
+
+            renderPass.GBuffer = GBuffer;
+
+            return renderPass;
         }
     }
 }

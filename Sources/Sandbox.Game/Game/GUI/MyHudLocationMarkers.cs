@@ -2,6 +2,8 @@
 
 using Sandbox.Game.Entities;
 using System.Collections.Generic;
+using VRage.Game.Entity;
+using VRage.Game.Gui;
 
 
 #endregion
@@ -19,19 +21,19 @@ namespace Sandbox.Game.Gui
             Visible = true;
         }
 
-        internal Dictionary<MyEntity, MyHudEntityParams> MarkerEntities
+        public Dictionary<MyEntity, MyHudEntityParams> MarkerEntities
         {
             get { return m_markerEntities; }
         }
 
-        internal void RegisterMarker(MyEntity entity, MyHudEntityParams hudParams)
+        public void RegisterMarker(MyEntity entity, MyHudEntityParams hudParams)
         {
             if (hudParams.Entity == null)
                 hudParams.Entity = entity;
             m_markerEntities[entity] = hudParams;
         }
 
-        internal void UnregisterMarker(MyEntity entity)
+        public void UnregisterMarker(MyEntity entity)
         {
             m_markerEntities.Remove(entity);
         }

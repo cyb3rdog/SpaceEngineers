@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
+//using VRage.Utils;
 
 namespace VRageMath
 {
@@ -18,12 +19,12 @@ namespace VRageMath
         /// <summary>
         /// The minimum point the BoundingBox contains.
         /// </summary>
-        [ProtoBuf.ProtoMember(1)]
+        [ProtoBuf.ProtoMember]
         public Vector3D Min;
         /// <summary>
         /// The maximum point the BoundingBox contains.
         /// </summary>
-        [ProtoBuf.ProtoMember(2)]
+        [ProtoBuf.ProtoMember]
         public Vector3D Max;
 
         /// <summary>
@@ -57,8 +58,17 @@ namespace VRageMath
                 return true;
         }
 
+        public static BoundingBoxD operator +(BoundingBoxD a, Vector3D b)
+        {
+            BoundingBoxD c;
+            c.Max = a.Max + b;
+            c.Min = a.Min + b;
+
+            return c;
+        }
+
         /// <summary>
-        /// Gets an array of points that make up the corners of the BoundingBox.
+        /// Gets an array of points that make up the corners of the BoundingBox. ALLOCATION!
         /// </summary>
         public Vector3D[] GetCorners()
         {
@@ -111,7 +121,8 @@ namespace VRageMath
         /// Gets the array of points that make up the corners of the BoundingBox.
         /// </summary>
         /// <param name="corners">An existing array of at least 8 Vector3 points where the corners of the BoundingBox are written.</param>
-        public unsafe void GetCornersUnsafe(Vector3D* corners)
+		[Unsharper.UnsharperDisableReflection()]
+		public unsafe void GetCornersUnsafe(Vector3D* corners)
         {
             corners[0].X = this.Min.X;
             corners[0].Y = this.Max.Y;
@@ -424,12 +435,17 @@ namespace VRageMath
         /// </summary>
         public Vector3D Center
         {
-            get { return (Min + Max) / 2; }
+            get { return (Min + Max) * 0.5; }
         }
 
         public Vector3D HalfExtents
         {
-            get { return (Max - Min) / 2; }
+            get { return (Max - Min) * 0.5; }
+        }
+
+        public Vector3D Extents
+        {
+            get { return (Max - Min); }
         }
 
         /// <summary>
@@ -486,7 +502,22 @@ namespace VRageMath
         }
 
 
-        public bool Intersects(LineD line, out double distance)
+        public bool Intersects(ref LineD line)
+        {
+            double? f = Intersects(new RayD(line.From, line.Direction));
+            if (!f.HasValue)
+                return false;
+
+            if (f.Value < 0)
+                return false;
+
+            if (f.Value > line.Length)
+                return false;
+
+            return true;
+        }
+
+        public bool Intersects(ref LineD line, out double distance)
         {
             distance = 0f;
             double? f = Intersects(new RayD(line.From, line.Direction));
@@ -658,6 +689,67 @@ namespace VRageMath
             result = new double?(num1);
         }
 
+        public bool Intersect(ref LineD line, out LineD intersectedLine)
+        {
+            var ray = new RayD(line.From, line.Direction);
+
+            double t1, t2;
+            if (!Intersect(ref ray, out t1, out t2))
+            {
+                intersectedLine = line;
+                return false;
+            }
+
+            t1 = Math.Max(t1, 0);
+            t2 = Math.Min(t2, line.Length);
+
+            intersectedLine.From = line.From + line.Direction*t1;
+            intersectedLine.To = line.From + line.Direction*t2;
+            intersectedLine.Direction = line.Direction;
+            intersectedLine.Length = t2 - t1;
+
+            return true;
+        }
+
+        public bool Intersect(ref LineD line, out double t1, out double t2)
+        {
+            var ray = new RayD(line.From, line.Direction);
+            return Intersect(ref ray, out t1, out t2);
+        }
+
+        public bool Intersect(ref RayD ray, out double tmin, out double tmax)
+        {
+            // r.dir is unit direction vector of ray
+            var recipx = 1.0f / ray.Direction.X;
+            var recipy = 1.0f / ray.Direction.Y;
+            var recipz = 1.0f / ray.Direction.Z;
+            // lb is the corner of AABB with minimal coordinates - left bottom, rt is maximal corner
+            // r.org is origin of ray
+            double t1 = (Min.X - ray.Position.X) * recipx;
+            double t2 = (Max.X - ray.Position.X) * recipx;
+            double t3 = (Min.Y - ray.Position.Y) * recipy;
+            double t4 = (Max.Y - ray.Position.Y) * recipy;
+            double t5 = (Min.Z - ray.Position.Z) * recipz;
+            double t6 = (Max.Z - ray.Position.Z) * recipz;
+
+            tmin = Math.Max(Math.Max(Math.Min(t1, t2), Math.Min(t3, t4)), Math.Min(t5, t6));
+            tmax = Math.Min(Math.Min(Math.Max(t1, t2), Math.Max(t3, t4)), Math.Max(t5, t6));
+
+            // if tmax < 0, ray (line) is intersecting AABB, but whole AABB is behing us
+            if (tmax < 0)
+            {
+                return false;
+            }
+
+            // if tmin > tmax, ray doesn't intersect AABB
+            if (tmin > tmax)
+            {
+                return false;
+            }
+
+            return true;
+        }
+
         /// <summary>
         /// Checks whether the current BoundingBox intersects a BoundingSphere.
         /// </summary>
@@ -691,8 +783,20 @@ namespace VRageMath
 
         public double Distance(Vector3D point)
         {
+            if (Contains(point) == ContainmentType.Contains)
+                return 0;
+
             var clamp = Vector3D.Clamp(point, Min, Max);
             return Vector3D.Distance(clamp, point);
+        }
+
+        public double DistanceSquared(Vector3D point)
+        {
+            if (Contains(point) == ContainmentType.Contains)
+                return 0;
+
+            var clamp = Vector3D.Clamp(point, Min, Max);
+            return Vector3D.DistanceSquared(clamp, point);
         }
 
         /// <summary>
@@ -792,9 +896,9 @@ namespace VRageMath
             result.Z = (double)v.Z >= 0.0 ? this.Max.Z : this.Min.Z;
         }
 
+        /// <summary>
         /// Translate
         /// </summary>
-        /// <param name="bbox"></param>
         /// <param name="worldMatrix"></param>
         /// <returns></returns>
         public BoundingBoxD Translate(MatrixD worldMatrix)
@@ -808,7 +912,6 @@ namespace VRageMath
         /// <summary>
         /// Translate
         /// </summary>
-        /// <param name="bbox"></param>
         /// <param name="vctTranlsation"></param>
         /// <returns></returns>
         public BoundingBoxD Translate(Vector3D vctTranlsation)
@@ -847,12 +950,22 @@ namespace VRageMath
             }
         }
 
-        public unsafe BoundingBoxD Transform(MatrixD worldMatrix)
+        /// <summary>
+        /// Transform this AABB by matrix.
+        /// </summary>
+        /// <param name="m">transformation matrix</param>
+        /// <returns>transformed aabb</returns>
+        public unsafe BoundingBoxD TransformSlow(MatrixD m)
         {
-            return Transform(ref worldMatrix);
+            return TransformSlow(ref m);
         }
 
-        public unsafe BoundingBoxD Transform(ref MatrixD worldMatrix)
+        /// <summary>
+        /// Transform this AABB by matrix.
+        /// </summary>
+        /// <param name="m">transformation matrix</param>
+        /// <returns>transformed aabb</returns>
+        public unsafe BoundingBoxD TransformSlow(ref MatrixD worldMatrix)
         {
             BoundingBoxD oobb = BoundingBoxD.CreateInvalid();
 
@@ -870,32 +983,76 @@ namespace VRageMath
         }
 
         /// <summary>
-        /// return expanded aabb (abb include point)
+        /// Transform this AABB by matrix. Matrix has to be only rotation and translation.
         /// </summary>
-        /// <param name="bbox"></param>
+        /// <param name="m">transformation matrix</param>
+        /// <returns>transformed aabb</returns>
+        public BoundingBoxD TransformFast(MatrixD m)
+        {
+            var bb = BoundingBoxD.CreateInvalid();
+            TransformFast(ref m, ref bb);
+            return bb;
+        }
+
+        /// <summary>
+        /// Transform this AABB by matrix. Matrix has to be only rotation and translation.
+        /// </summary>
+        /// <param name="m">transformation matrix</param>
+        /// <returns>transformed aabb</returns>
+        public BoundingBoxD TransformFast(ref MatrixD m)
+        {
+            var bb = BoundingBoxD.CreateInvalid();
+            TransformFast(ref m, ref bb);
+            return bb;
+        }
+
+        /// <summary>
+        /// Transform this AABB by matrix. Matrix has to be only rotation and translation.
+        /// </summary>
+        /// <param name="m">transformation matrix</param>
+        /// <param name="bb">output transformed aabb</param>
+        public void TransformFast(ref MatrixD m, ref BoundingBoxD bb)
+        {
+            Debug.Assert(Math.Abs(m.Up.LengthSquared() - 1) < 1e-4f, "Warning 1/5: Rotation part of matrix is not orthogonal. Transform will be wrong. Use TransformSlow instead.");
+            Debug.Assert(Math.Abs(m.Right.LengthSquared() - 1) < 1e-4f, "Warning 2/5: Rotation part of matrix is not orthogonal. Transform will be wrong. Use TransformSlow instead.");
+            Debug.Assert(Math.Abs(m.Forward.LengthSquared() - 1) < 1e-4f, "Warning 3/5: Rotation part of matrix is not orthogonal. Transform will be wrong. Use TransformSlow instead.");
+            Debug.Assert(Math.Abs(m.Right.Dot(m.Up)) < 1e-4f, "Warning 4/5: Rotation part of matrix is not orthogonal. Transform will be wrong. Use TransformSlow instead.");
+            Debug.Assert(Math.Abs(m.Right.Dot(m.Forward)) < 1e-4f, "Warning 5/5: Rotation part of matrix is not orthogonal. Transform will be wrong. Use TransformSlow instead. If you saw all warning you should really consider using TransformSlow.");
+
+            bb.Min = bb.Max = m.Translation;
+            Vector3D min = m.Right * Min.X;
+            Vector3D max = m.Right * Max.X;
+            Vector3D.MinMax(ref min, ref max);
+            bb.Min += min;
+            bb.Max += max;
+
+            min = m.Up * Min.Y;
+            max = m.Up * Max.Y;
+            Vector3D.MinMax(ref min, ref max);
+            bb.Min += min;
+            bb.Max += max;
+
+            min = m.Backward * Min.Z;
+            max = m.Backward * Max.Z;
+            Vector3D.MinMax(ref min, ref max);
+            bb.Min += min;
+            bb.Max += max;
+        }
+
+        /// <summary>
+        /// return expanded aabb (aabb include point)
+        /// </summary>
         /// <param name="point"></param>
         /// <returns></returns>
         public BoundingBoxD Include(ref Vector3D point)
         {
-            if (point.X < Min.X)
-                Min.X = point.X;
+            Min.X = Math.Min(point.X, Min.X);
+            Min.Y = Math.Min(point.Y, Min.Y);
+            Min.Z = Math.Min(point.Z, Min.Z);
 
-            if (point.Y < Min.Y)
-                Min.Y = point.Y;
-
-            if (point.Z < Min.Z)
-                Min.Z = point.Z;
-
-
-            if (point.X > Max.X)
-                Max.X = point.X;
-
-            if (point.Y > Max.Y)
-                Max.Y = point.Y;
-
-            if (point.Z > Max.Z)
-                Max.Z = point.Z;
-
+            Max.X = Math.Max(point.X, Max.X);
+            Max.Y = Math.Max(point.Y, Max.Y);
+            Max.Z = Math.Max(point.Z, Max.Z);
             return this;
         }
 
@@ -919,10 +1076,9 @@ namespace VRageMath
         }
 
         /// <summary>
-        /// return expanded aabb (abb include point)
+        /// return expanded aabb (aabb include aabb)
         /// </summary>
-        /// <param name="bbox"></param>
-        /// <param name="point"></param>
+        /// <param name="box"></param>
         /// <returns></returns>
         public BoundingBoxD Include(ref BoundingBoxD box)
         {
@@ -962,37 +1118,27 @@ namespace VRageMath
             return this;
         }
 
-        static Vector3D[] m_frustumPoints = null;
-
-        public BoundingBoxD Include(ref BoundingFrustumD frustum)
+        public unsafe BoundingBoxD Include(ref BoundingFrustumD frustum)
         {
-            if (m_frustumPoints == null)
-                m_frustumPoints = new Vector3D[8];
+            Vector3D* temporaryCorners = stackalloc Vector3D[8];
 
-            frustum.GetCorners(m_frustumPoints);
+            frustum.GetCornersUnsafe(temporaryCorners);
 
-            Include(ref m_frustumPoints[0]);
-            Include(ref m_frustumPoints[1]);
-            Include(ref m_frustumPoints[2]);
-            Include(ref m_frustumPoints[3]);
-            Include(ref m_frustumPoints[4]);
-            Include(ref m_frustumPoints[5]);
-            Include(ref m_frustumPoints[6]);
-            Include(ref m_frustumPoints[7]);
+            Include(ref temporaryCorners[0]);
+            Include(ref temporaryCorners[1]);
+            Include(ref temporaryCorners[2]);
+            Include(ref temporaryCorners[3]);
+            Include(ref temporaryCorners[4]);
+            Include(ref temporaryCorners[5]);
+            Include(ref temporaryCorners[6]);
+            Include(ref temporaryCorners[7]);
 
             return this;
         }
 
         public static BoundingBoxD CreateInvalid()
         {
-            BoundingBoxD bbox = new BoundingBoxD();
-            Vector3D vctMin = new Vector3D(double.MaxValue, double.MaxValue, double.MaxValue);
-            Vector3D vctMax = new Vector3D(double.MinValue, double.MinValue, double.MinValue);
-
-            bbox.Min = vctMin;
-            bbox.Max = vctMax;
-
-            return bbox;
+            return new BoundingBoxD(new Vector3D(double.MaxValue), new Vector3D(double.MinValue));
         }
 
         public double SurfaceArea
@@ -1033,6 +1179,14 @@ namespace VRageMath
                 double wz = Max.Z - Min.Z;
 
                 return 4.0 * (wx + wy + wz);
+            }
+        }
+
+        public bool Valid
+        {
+            get
+            {
+                return Min != new Vector3D(double.MaxValue) && Max != new Vector3D(double.MinValue);
             }
         }
 
@@ -1098,18 +1252,38 @@ namespace VRageMath
             Vector3D minCenter = Center;
             if (Size.X < minimumSize.X)
             {
-                Min.X = minCenter.X - minimumSize.X / 2;
-                Max.X = minCenter.X + minimumSize.X / 2;
+                Min.X = minCenter.X - minimumSize.X * 0.5;
+                Max.X = minCenter.X + minimumSize.X * 0.5;
             }
             if (Size.Y < minimumSize.Y)
             {
-                Min.Y = minCenter.Y - minimumSize.Y / 2;
-                Max.Y = minCenter.Y + minimumSize.Y / 2;
+                Min.Y = minCenter.Y - minimumSize.Y * 0.5;
+                Max.Y = minCenter.Y + minimumSize.Y * 0.5;
             }
             if (Size.Z < minimumSize.Z)
             {
-                Min.Z = minCenter.Z - minimumSize.Z / 2;
-                Max.Z = minCenter.Z + minimumSize.Z / 2;
+                Min.Z = minCenter.Z - minimumSize.Z * 0.5;
+                Max.Z = minCenter.Z + minimumSize.Z * 0.5;
+            }
+        }
+
+        public void InflateToMinimum(double minimumSize)
+        {
+            Vector3D minCenter = Center;
+            if (Size.X < minimumSize)
+            {
+                Min.X = minCenter.X - minimumSize * 0.5;
+                Max.X = minCenter.X + minimumSize * 0.5;
+            }
+            if (Size.Y < minimumSize)
+            {
+                Min.Y = minCenter.Y - minimumSize * 0.5;
+                Max.Y = minCenter.Y + minimumSize * 0.5;
+            }
+            if (Size.Z < minimumSize)
+            {
+                Min.Z = minCenter.Z - minimumSize * 0.5;
+                Max.Z = minCenter.Z + minimumSize * 0.5;
             }
         }
 

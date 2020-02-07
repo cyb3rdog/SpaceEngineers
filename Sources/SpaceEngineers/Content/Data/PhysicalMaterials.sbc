@@ -1,12 +1,34 @@
 <?xml version="1.0"?>
 <Definitions xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
 	<PhysicalMaterials>
-		<PhysicalMaterial>
+    <PhysicalMaterial>
+      <Id>
+        <TypeId>PhysicalMaterialDefinition</TypeId>
+        <SubtypeId>Stone</SubtypeId>
+      </Id>
+      <Density>1920</Density>
+      <HorisontalTransmissionMultiplier>1</HorisontalTransmissionMultiplier>
+      <HorisontalFragility>2</HorisontalFragility>
+      <SupportMultiplier>1.4</SupportMultiplier>
+      <CollisionMultiplier>2.5</CollisionMultiplier>
+    </PhysicalMaterial>
+    <PhysicalMaterial>
 			<Id>
 				<TypeId>PhysicalMaterialDefinition</TypeId>
-				<SubtypeId>Ship</SubtypeId>
+				<SubtypeId>Wood</SubtypeId>
 			</Id>
-		</PhysicalMaterial>
+			<Density>550</Density>
+			<HorisontalTransmissionMultiplier>0.01</HorisontalTransmissionMultiplier>
+			<HorisontalFragility>1</HorisontalFragility>
+			<SupportMultiplier>1</SupportMultiplier>
+			<CollisionMultiplier>0.5</CollisionMultiplier>
+	</PhysicalMaterial>	
+    <PhysicalMaterial>
+      <Id>
+        <TypeId>PhysicalMaterialDefinition</TypeId>
+        <SubtypeId>Wheel</SubtypeId>
+      </Id>
+    </PhysicalMaterial>
 		<PhysicalMaterial>
 			<Id>
 				<TypeId>PhysicalMaterialDefinition</TypeId>
@@ -37,12 +59,42 @@
 				<SubtypeId>Character</SubtypeId>
 			</Id>
 		</PhysicalMaterial>
+    <PhysicalMaterial>
+      <Id>
+        <TypeId>PhysicalMaterialDefinition</TypeId>
+        <SubtypeId>Spider</SubtypeId>
+      </Id>
+    </PhysicalMaterial>
+	<PhysicalMaterial>
+      <Id>
+        <TypeId>PhysicalMaterialDefinition</TypeId>
+        <SubtypeId>Wolf</SubtypeId>
+      </Id>
+    </PhysicalMaterial>
 		<PhysicalMaterial>
 			<Id>
 				<TypeId>PhysicalMaterialDefinition</TypeId>
 				<SubtypeId>RifleBullet</SubtypeId>
 			</Id>
 		</PhysicalMaterial>
+    <PhysicalMaterial>
+      <Id>
+        <TypeId>PhysicalMaterialDefinition</TypeId>
+        <SubtypeId>Grinder</SubtypeId>
+      </Id>
+    </PhysicalMaterial>
+    <PhysicalMaterial>
+      <Id>
+        <TypeId>PhysicalMaterialDefinition</TypeId>
+        <SubtypeId>HandDrill</SubtypeId>
+      </Id>
+    </PhysicalMaterial>
+    <PhysicalMaterial>
+      <Id>
+        <TypeId>PhysicalMaterialDefinition</TypeId>
+        <SubtypeId>ShipDrill</SubtypeId>
+      </Id>
+    </PhysicalMaterial>
 		<PhysicalMaterial>
 			<Id>
 				<TypeId>PhysicalMaterialDefinition</TypeId>
@@ -55,5 +107,11 @@
 				<SubtypeId>ExpBullet</SubtypeId>
 			</Id>
 		</PhysicalMaterial>
+    <PhysicalMaterial>
+      <Id>
+        <TypeId>PhysicalMaterialDefinition</TypeId>
+        <SubtypeId>Tree</SubtypeId>
+      </Id>
+    </PhysicalMaterial>
 	</PhysicalMaterials>
 </Definitions>

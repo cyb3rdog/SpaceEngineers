@@ -9,7 +9,6 @@ using ParallelTasks;
 using Sandbox.Common;
 
 using Sandbox.Common.ObjectBuilders;
-using Sandbox.Common.ObjectBuilders.Gui;
 using Sandbox.Graphics.GUI;
 using Sandbox.Engine.Networking;
 using Sandbox.Engine.Utils;
@@ -23,7 +22,7 @@ using VRage.Utils;
 
 namespace Sandbox.Game.Gui
 {
-    public class MyLoadListResult : IMyAsyncResult
+    public abstract class MyLoadListResult : IMyAsyncResult
     {
         public bool IsCompleted { get { return this.Task.IsComplete; } }
         public Task Task
@@ -34,18 +33,18 @@ namespace Sandbox.Game.Gui
 
         public List<Tuple<string, MyWorldInfo>> AvailableSaves = new List<Tuple<string, MyWorldInfo>>();
         public bool ContainsCorruptedWorlds;
+        public readonly string CustomPath;
 
-        public MyLoadListResult(bool missions=false)
+        public MyLoadListResult(string customPath = null)
         {
-            Task = Parallel.Start(() => LoadListAsync(missions));
+            CustomPath = customPath;
+            Task = Parallel.Start(() => LoadListAsync());
         }
 
-        private void LoadListAsync(bool missions)
+        private void LoadListAsync()
         {
-            if (missions)
-                AvailableSaves = MyLocalCache.GetAvailableMissionInfos();
-            else
-                AvailableSaves = MyLocalCache.GetAvailableWorldInfos();
+            AvailableSaves = GetAvailableSaves();
+
             ContainsCorruptedWorlds = false;
 
             StringBuilder corruptedWorlds = new StringBuilder();
@@ -53,18 +52,22 @@ namespace Sandbox.Game.Gui
             foreach (var pair in AvailableSaves)
             {
                 Debug.Assert(pair != null);
-                if (pair.Item2 == null)
+                if (pair.Item2 != null && pair.Item2.IsCorrupted)
                 {
                     corruptedWorlds.Append(Path.GetFileNameWithoutExtension(pair.Item1)).Append("\n");
                     ContainsCorruptedWorlds = true;
                 }
             }
 
+            AvailableSaves.RemoveAll(x => x == null || x.Item2 == null);
+
             if (ContainsCorruptedWorlds)
-            {
-                AvailableSaves.RemoveAll(x => x == null || x.Item2 == null);
-                MyLog.Default.WriteLine("Corrupted worlds: ");
-                MyLog.Default.WriteLine(corruptedWorlds.ToString());
+            {                
+                if (MyLog.Default != null)
+                {
+                    MyLog.Default.WriteLine("Corrupted worlds: ");
+                    MyLog.Default.WriteLine(corruptedWorlds.ToString());
+                }
             }
 
             if (AvailableSaves.Count != 0)
@@ -72,6 +75,8 @@ namespace Sandbox.Game.Gui
 
             VerifyUniqueWorldID(AvailableSaves);
         }
+
+        protected abstract List<Tuple<string, MyWorldInfo>> GetAvailableSaves();
 
         [Conditional("DEBUG")]
         private void VerifyUniqueWorldID(List<Tuple<string, MyWorldInfo>> availableWorlds)
@@ -90,6 +95,40 @@ namespace Sandbox.Game.Gui
                 }
                 worldIDs.Add(item.Item1);
             }
+        }
+    }
+
+    public class MyLoadMissionListResult : MyLoadListResult
+    {
+        protected override List<Tuple<string, MyWorldInfo>> GetAvailableSaves()
+        {
+            return MyLocalCache.GetAvailableMissionInfos();
+        }
+    }
+
+    public class MyLoadWorldInfoListResult : MyLoadListResult
+    {
+        public MyLoadWorldInfoListResult(string customPath = null) : base(customPath) {}
+
+        protected override List<Tuple<string, MyWorldInfo>> GetAvailableSaves()
+        {
+            return MyLocalCache.GetAvailableWorldInfos(CustomPath);
+        }
+    }
+
+    public class MyLoadTutorialListResult : MyLoadListResult
+    {
+        protected override List<Tuple<string, MyWorldInfo>> GetAvailableSaves()
+        {
+            return MyLocalCache.GetAvailableTutorialInfos(); 
+        }
+    }
+
+    public class MyLoadAISchoolListResult : MyLoadListResult
+    {
+        protected override List<Tuple<string, MyWorldInfo>> GetAvailableSaves()
+        {
+            return MyLocalCache.GetAvailableAISchoolInfos(); 
         }
     }
 }

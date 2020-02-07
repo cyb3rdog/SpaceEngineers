@@ -1,154 +1,103 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
+﻿using System.Collections.Generic;
+using System.Diagnostics;
+using VRage;
+using VRage.Profiler;
 using VRage.Voxels;
 using VRageMath;
+using VRageRender.Messages;
+using VRageRender.Voxels;
 
 namespace VRageRender
 {
-    class MyClipmapCellProxy : IMyClipmapCell
-    {
-        MyActor m_actor;
-        //MyVoxelMesh m_mesh;
-        MeshId Mesh = MeshId.NULL;
-        MatrixD m_worldMatrix;
-        Vector3 m_scale;
-        Vector3 m_translation;
-        int m_lod;
-        bool m_discardingOn;
-
-        void IMyClipmapCell.UpdateMesh(MyRenderMessageUpdateClipmapCell msg)
-        {
-            MyMeshes.UpdateVoxelCell(Mesh, msg.Batches);
-
-            m_scale = msg.PositionScale;
-            m_translation = msg.PositionOffset;
-
-            var matrix = (Matrix)(Matrix.CreateScale(m_scale) * Matrix.CreateTranslation(m_translation) * m_worldMatrix);
-
-            m_actor.SetMatrix(ref matrix);
-            m_actor.GetRenderable().SetVoxelLod(m_lod);
-
-            m_actor.SetAabb(msg.MeshAabb.Transform((Matrix)m_worldMatrix));
-
-            (m_actor.GetComponent(MyActorComponentEnum.Foliage) as MyFoliageComponent).InvalidateStreams();
-            m_actor.MarkRenderDirty();
-        }
-
-        bool /*IMyClipmapCell.*/PixelDiscardEnabled
-        {
-            get
-            {
-                return m_discardingOn;
-            }
-            set
-            {
-                m_discardingOn = value;
-                //m_actor.MarkRenderDirty();
-                m_actor.GetRenderable().SetVoxelLod(m_lod);
-            }
-        }
-
-        void IMyClipmapCell.UpdateWorldMatrix(ref VRageMath.MatrixD worldMatrix, bool sortIntoCullObjects)
-        {
-            m_worldMatrix = worldMatrix;
-
-            Matrix m = m_worldMatrix * Matrix.CreateScale(m_scale) * Matrix.CreateTranslation(m_translation);
-            m_actor.SetMatrix(ref m);
-        }
-
-        internal MyClipmapCellProxy(MyCellCoord cellCoord, ref VRageMath.Matrix worldMatrix)
-        {
-            m_worldMatrix = worldMatrix;
-
-            m_actor = MyActorFactory.CreateSceneObject();
-            //m_mesh = new MyVoxelMesh(cellCoord.CoordInLod, cellCoord.Lod, "");
-            //m_actor.GetRenderable().SetModel(m_mesh);
-            m_actor.SetMatrix(ref worldMatrix);
-            m_actor.AddComponent(MyComponentFactory<MyFoliageComponent>.Create());
-
-            m_lod = cellCoord.Lod;
-
-            Mesh = MyMeshes.CreateVoxelCell(cellCoord.CoordInLod, cellCoord.Lod);
-            m_actor.GetRenderable().SetModel(Mesh);
-
-            m_discardingOn = false;
-        }
-
-        internal void SetVisibility(bool value)
-        {
-            m_actor.SetVisibility(value);
-        }
-
-        internal void Unload()
-        {
-            //m_mesh.Dispose();
-            m_actor.Destruct();
-            MyMeshes.RemoveVoxelCell(Mesh);
-        }
-    }
-
     class MyClipmapHandler : IMyClipmapCellHandler
     {
+        const int MergeLodSubdivideCount = 3;
+
         private readonly MyClipmap m_clipmapBase;
         internal MyClipmap Base { get { return m_clipmapBase; } }
 
-        internal MyClipmapHandler(uint id, MyClipmapScaleEnum scaleGroup, MatrixD worldMatrix, Vector3I sizeLod0)
+        readonly Vector3D m_massiveCenter;
+        readonly float m_massiveRadius;
+
+        readonly RenderFlags m_renderFlags;
+        public RenderFlags RenderFlags { get { return m_renderFlags; } }
+
+        internal MyClipmapHandler(uint id, MyClipmapScaleEnum scaleGroup, MatrixD worldMatrix, Vector3I sizeLod0, Vector3D massiveCenter, float massiveRadius, bool spherize, RenderFlags additionalFlags, MyClipmap.PruningFunc prunningFunc)
         {
-            m_clipmapBase = new MyClipmap(id, scaleGroup, worldMatrix, sizeLod0, this);
-            MyClipmap.AddToUpdate(MyEnvironment.CameraPosition, m_clipmapBase);
+            m_clipmapBase = new MyClipmap(id, scaleGroup, worldMatrix, sizeLod0, this, massiveCenter, massiveRadius, prunningFunc);
+            m_massiveCenter = massiveCenter;
+            m_renderFlags = additionalFlags;
+
+            if (spherize)
+                m_massiveRadius = massiveRadius;
+
+            MyClipmap.AddToUpdate(MyRender11.Environment.Matrices.CameraPosition, Base);
         }
 
-        public IMyClipmapCell CreateCell(MyClipmapScaleEnum scaleGroup, MyCellCoord cellCoord, ref VRageMath.MatrixD worldMatrix)
+        public IMyClipmapCell CreateCell(MyClipmapScaleEnum scaleGroup, MyCellCoord cellCoord, ref MatrixD worldMatrix)
         {
-            Matrix m = (Matrix)worldMatrix;
-            var cell = new MyClipmapCellProxy(cellCoord, ref m);
+            var cell = new MyClipmapCellProxy(cellCoord, ref worldMatrix, m_massiveCenter, m_massiveRadius, m_renderFlags);
             cell.SetVisibility(false);
+            cell.ScaleGroup = scaleGroup;
             return cell;
         }
 
-        public void DeleteCell(IMyClipmapCell cell)
+        public void UpdateMesh(IMyClipmapCell cell, MyRenderMessageUpdateClipmapCell msg)
         {
-            (cell as MyClipmapCellProxy).Unload();
+            cell.UpdateMesh(msg);
+        }
+
+        internal void UpdateWorldMatrix(ref MatrixD worldMatrix)
+        {
+            Base.UpdateWorldMatrix(ref worldMatrix, true);
         }
 
         public void AddToScene(IMyClipmapCell cell)
         {
-            (cell as MyClipmapCellProxy).SetVisibility(true);
+            var cellProxy = cell as MyClipmapCellProxy;
+            Debug.Assert(cellProxy != null, "Adding wrong type of clipmap cell to scene!");
+            if (cellProxy != null)
+            {
+                cellProxy.SetVisibility(true);
+            }
         }
 
         public void RemoveFromScene(IMyClipmapCell cell)
         {
-            (cell as MyClipmapCellProxy).SetVisibility(false);
+            var cellProxy = cell as MyClipmapCellProxy;
+            Debug.Assert(cellProxy != null, "Removing wrong type of clipmap cell from scene!");
+            cellProxy.SetVisibility(false);
+        }
+
+        public void DeleteCell(IMyClipmapCell cell)
+        {
+            var cellProxy = cell as MyClipmapCellProxy;
+            Debug.Assert(cellProxy != null, "Deleting wrong type of clipmap cell!");
+
+            if (cellProxy.Actor != null)
+			    cellProxy.Unload();
         }
 
         internal static void UpdateQueued()
         {
-            if(!MyRender11.Settings.FreezeTerrainQueries)
+            if (!MyRender11.Settings.FreezeTerrainQueries)
             {
-                MyClipmap.UpdateQueued(MyEnvironment.CameraPosition, MyEnvironment.FarClipping, MyEnvironment.LargeDistanceFarClipping);
+                var cameraPosition = MyRenderProxy.PointsForVoxelPrecache.Count > 0 ? MyRenderProxy.PointsForVoxelPrecache[0] : MyRender11.Environment.Matrices.CameraPosition;
+
+                MyClipmap.UpdateQueued(cameraPosition, MyRender11.Environment.Matrices.InvView.Forward, 
+                    MyRender11.Environment.Matrices.FarClipping, MyRender11.Environment.Matrices.LargeDistanceFarClipping);
             }
         }
 
         internal void RemoveFromUpdate()
         {
+            Base.UnloadContent();
             MyClipmap.RemoveFromUpdate(Base);
         }
-    }
 
-    static class MyClipmapFactory
-    {
-        internal static Dictionary<uint, MyClipmapHandler> ClipmapByID = new Dictionary<uint, MyClipmapHandler>();
-
-        internal static void RemoveAll()
+        float IMyClipmapCellHandler.GetTime()
         {
-            foreach(var clipmap in ClipmapByID)
-            {
-                clipmap.Value.Base.UnloadContent();
-            }
-
-            ClipmapByID.Clear();
+            return (float)MyRender11.CurrentDrawTime.Seconds;
         }
     }
 }

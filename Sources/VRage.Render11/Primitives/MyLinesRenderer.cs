@@ -1,15 +1,8 @@
 ﻿using System;
-using SharpDX;
 using SharpDX.Direct3D;
 using SharpDX.Direct3D11;
-using VRageRender.Resources;
 using VRageRender.Vertex;
-using Buffer = SharpDX.Direct3D11.Buffer;
 using Matrix = VRageMath.Matrix;
-using Rectangle = VRageMath.Rectangle;
-using RectangleF = VRageMath.RectangleF;
-using Vector2 = VRageMath.Vector2;
-using Vector3 = VRageMath.Vector3;
 using BoundingBox = VRageMath.BoundingBox;
 using BoundingSphere = VRageMath.BoundingSphere;
 using BoundingFrustum = VRageMath.BoundingFrustum;
@@ -17,6 +10,10 @@ using Color = VRageMath.Color;
 using System.Collections.Generic;
 using VRageMath.PackedVector;
 using VRage.Generics;
+using VRage.Render11.Common;
+using VRage.Render11.RenderContext;
+using VRage.Render11.Resources;
+using VRageMath;
 
 
 namespace VRageRender
@@ -33,7 +30,7 @@ namespace VRageRender
         {
             CustomViewProjection = null;
             IgnoreDepth = false;
-            if(List == null)
+            if (List == null)
             {
                 List = new List<MyVertexFormatPositionColor>();
             }
@@ -106,14 +103,51 @@ namespace VRageRender
             Add6FacedConvex(bf.GetCorners(), color);
         }
 
-        internal void Add6FacedConvex(Vector3 [] vertices, Color color)
+        internal void Add6FacedConvexWorld(Vector3D[] v, Color col)
         {
-            AddQuad(vertices[0], vertices[1], vertices[2], vertices[3], color);
-            AddQuad(vertices[4], vertices[5], vertices[6], vertices[7], color);
-            AddQuad(vertices[0], vertices[1], vertices[5], vertices[4], color);
-            AddQuad(vertices[0], vertices[3], vertices[7], vertices[4], color);
-            AddQuad(vertices[3], vertices[2], vertices[6], vertices[7], color);
-            AddQuad(vertices[2], vertices[1], vertices[5], vertices[6], color);
+            Vector3D c = MyRender11.Environment.Matrices.CameraPosition;
+            Vector3D v0 = v[0] - c, v1 = v[1] - c, v2 = v[2] - c, v3 = v[3] - c, v4 = v[4] - c, v5 = v[5] - c, v6 = v[6] - c, v7 = v[7] - c;
+
+            Add(v0, v1, col);
+            Add(v1, v3, col);
+            Add(v2, v3, col);
+            Add(v2, v0, col);
+
+            Add(v4, v5, col);
+            Add(v5, v7, col);
+            Add(v6, v7, col);
+            Add(v6, v4, col);
+
+            Add(v0, v4, col);
+            Add(v1, v5, col);
+            Add(v2, v6, col);
+            Add(v3, v7, col);
+        }
+
+        internal unsafe void Add6FacedConvex(Vector3[] vertices, Color color)
+        {
+            fixed (Vector3* verticesPtr = vertices)
+            {
+                Add6FacedConvex(verticesPtr, color);
+            }
+        }
+
+        internal unsafe void Add6FacedConvex(Vector3* vertices, Color color)
+        {
+            Add(vertices[0], vertices[1], color);
+            Add(vertices[1], vertices[2], color);
+            Add(vertices[2], vertices[3], color);
+            Add(vertices[3], vertices[0], color);
+
+            Add(vertices[4], vertices[5], color);
+            Add(vertices[5], vertices[6], color);
+            Add(vertices[6], vertices[7], color);
+            Add(vertices[7], vertices[4], color);
+
+            Add(vertices[0], vertices[4], color);
+            Add(vertices[1], vertices[5], color);
+            Add(vertices[2], vertices[6], color);
+            Add(vertices[3], vertices[7], color);
         }
 
         internal void AddBoundingBox(BoundingBox bb, Color color)
@@ -161,14 +195,14 @@ namespace VRageRender
         internal void AddSphereRing(BoundingSphere sphere, Color color, Matrix onb)
         {
             float increment = 1.0f / 32;
-            for (float i=0; i < 1; i += increment)
+            for (float i = 0; i < 1; i += increment)
             {
-                float a0 = 2* (float)Math.PI * i;
-                float a1 = 2* (float)Math.PI * (i + increment);
+                float a0 = 2 * (float)Math.PI * i;
+                float a1 = 2 * (float)Math.PI * (i + increment);
 
                 Add(
                     Vector3.Transform(new Vector3(Math.Cos(a0), 0, Math.Sin(a0)) * sphere.Radius, onb) + sphere.Center,
-                    Vector3.Transform(new Vector3(Math.Cos(a1), 0, Math.Sin(a1)) * sphere.Radius, onb) + sphere.Center, 
+                    Vector3.Transform(new Vector3(Math.Cos(a1), 0, Math.Sin(a1)) * sphere.Radius, onb) + sphere.Center,
                     color);
             }
         }
@@ -182,7 +216,7 @@ namespace VRageRender
     class MyLinesRenderer : MyImmediateRC
     {
         static int m_currentBufferSize;
-        static VertexBufferId m_VB;
+        static IVertexBuffer m_VB;
         internal static List<MyVertexFormatPositionColor> m_vertices = new List<MyVertexFormatPositionColor>();
         static List<MyLinesBatch> m_batches = new List<MyLinesBatch>();
 
@@ -194,12 +228,14 @@ namespace VRageRender
 
         internal unsafe static void Init()
         {
-            m_vs = MyShaders.CreateVs("line.hlsl", "vs");
-            m_ps = MyShaders.CreatePs("line.hlsl", "ps");
+            m_vs = MyShaders.CreateVs("Primitives/Lines.hlsl");
+            m_ps = MyShaders.CreatePs("Primitives/Lines.hlsl");
             m_inputLayout = MyShaders.CreateIL(m_vs.BytecodeId, MyVertexLayouts.GetLayout(MyVertexInputComponentType.POSITION3, MyVertexInputComponentType.COLOR4));
 
             m_currentBufferSize = 100000;
-            m_VB = MyHwBuffers.CreateVertexBuffer(m_currentBufferSize, sizeof(MyVertexFormatPositionColor), BindFlags.VertexBuffer, ResourceUsage.Dynamic);
+            m_VB = MyManagers.Buffers.CreateVertexBuffer(
+                "MyLinesRenderer", m_currentBufferSize, sizeof(MyVertexFormatPositionColor),
+                usage: ResourceUsage.Dynamic);
         }
 
         static unsafe void CheckBufferSize(int requiredSize)
@@ -207,13 +243,14 @@ namespace VRageRender
             if (m_currentBufferSize < requiredSize)
             {
                 m_currentBufferSize = (int)(requiredSize * 1.33f);
-                MyHwBuffers.ResizeVertexBuffer(m_VB, m_currentBufferSize);
+                MyManagers.Buffers.Resize(m_VB, m_currentBufferSize);
             }
         }
 
         internal static MyLinesBatch CreateBatch()
         {
-            var batch = m_batchesPool.Allocate1();
+            MyLinesBatch batch = null;
+            m_batchesPool.AllocateOrCreate(out batch);
             batch.Construct();
             return batch;
         }
@@ -223,7 +260,7 @@ namespace VRageRender
             batch.VertexCount = batch.List.Count;
             batch.StartVertex = m_vertices.Count;
 
-            if(batch.VertexCount > 0)
+            if (batch.VertexCount > 0)
             {
                 m_batches.Add(batch);
                 m_vertices.AddList(batch.List);
@@ -235,31 +272,31 @@ namespace VRageRender
             }
         }
 
-        internal static unsafe void Draw(MyBindableResource depth)
+        internal static unsafe void Draw(IRtvBindable renderTarget, bool nullDepth = false)
         {
-            RC.SetupScreenViewport();
-            RC.Context.InputAssembler.PrimitiveTopology = PrimitiveTopology.LineList;
-            RC.SetIL(m_inputLayout);
+            RC.SetScreenViewport();
+            RC.SetPrimitiveTopology(PrimitiveTopology.LineList);
+            RC.SetInputLayout(m_inputLayout);
 
-            RC.SetRS(MyRender11.m_linesRasterizerState);
+            RC.SetRasterizerState(MyRasterizerStateManager.LinesRasterizerState);
 
-            RC.SetVS(m_vs);
-            RC.SetPS(m_ps);
+            RC.VertexShader.Set(m_vs);
+            RC.PixelShader.Set(m_ps);
+            RC.SetBlendState(MyBlendStateManager.BlendAlphaPremult);
 
-            RC.SetDS(MyDepthStencilState.DefaultDepthState);
+            RC.SetDepthStencilState(MyDepthStencilStateManager.DefaultDepthState);
 
             CheckBufferSize(m_vertices.Count);
-            RC.SetVB(0, m_VB.Buffer, m_VB.Stride);
+            RC.SetVertexBuffer(0, m_VB);
 
-            RC.BindDepthRT(depth, DepthStencilAccess.ReadOnly, MyRender11.Backbuffer);
-            
-            RC.SetCB(MyCommon.PROJECTION_SLOT, MyCommon.ProjectionConstants);
+            RC.SetRtv(nullDepth ? null : MyGBuffer.Main.ResolvedDepthStencil, MyDepthStencilAccess.ReadOnly, renderTarget);
 
-            if(m_batches.Count > 0)
+            RC.AllShaderStages.SetConstantBuffer(MyCommon.PROJECTION_SLOT, MyCommon.ProjectionConstants);
+
+            if (m_batches.Count > 0)
             {
-                var mapping = MyMapping.MapDiscard(m_VB.Buffer);
-                for (int i = 0; i < m_vertices.Count; i++)
-                    mapping.stream.Write(m_vertices[i]);
+                var mapping = MyMapping.MapDiscard(m_VB);
+                mapping.WriteAndPosition(m_vertices.GetInternalArray(), m_vertices.Count);
                 mapping.Unmap();
 
                 Matrix prevMatrix = Matrix.Zero;
@@ -272,37 +309,38 @@ namespace VRageRender
                     }
                     else
                     {
-                        matrix = MyEnvironment.ViewProjection;
+                        matrix = MyRender11.Environment.Matrices.ViewProjectionAt0;
                     }
 
                     if (prevMatrix != matrix)
                     {
                         prevMatrix = matrix;
+                        var transpose = Matrix.Transpose(matrix);
 
                         mapping = MyMapping.MapDiscard(MyCommon.ProjectionConstants);
-                        mapping.stream.Write(Matrix.Transpose(matrix));
+                        mapping.WriteAndPosition(ref transpose);
                         mapping.Unmap();
                     }
 
-                    if(batch.IgnoreDepth)
+                    if (batch.IgnoreDepth)
                     {
-                        RC.SetDS(MyDepthStencilState.IgnoreDepthStencil);   
+                        RC.SetDepthStencilState(MyDepthStencilStateManager.IgnoreDepthStencil);
                     }
                     else
                     {
-                        RC.SetDS(MyDepthStencilState.DefaultDepthState);
+                        RC.SetDepthStencilState(MyDepthStencilStateManager.DefaultDepthState);
                     }
 
-                    RC.Context.Draw(batch.VertexCount, batch.StartVertex);
+                    RC.Draw(batch.VertexCount, batch.StartVertex);
                 }
             }
 
-            RC.SetDS(null);
-            RC.SetRS(null);
+            RC.SetDepthStencilState(null);
+            RC.SetRasterizerState(null);
 
             m_vertices.Clear();
 
-            foreach(var batch in m_batches)
+            foreach (var batch in m_batches)
             {
                 m_batchesPool.Deallocate(batch);
             }

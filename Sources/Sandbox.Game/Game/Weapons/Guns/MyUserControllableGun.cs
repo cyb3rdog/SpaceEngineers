@@ -13,44 +13,59 @@ using System.Text;
 using VRageMath;
 using Sandbox.ModAPI.Ingame;
 using Sandbox.Game.Localization;
+using VRage.ModAPI;
+using VRage;
+using VRage.Network;
+using Sandbox.Engine.Multiplayer;
+using VRage.Game;
+using VRage.Sync;
 
 namespace Sandbox.Game.Weapons
 {
     [MyCubeBlockType(typeof(MyObjectBuilder_UserControllableGun))]
-    abstract class MyUserControllableGun : MyFunctionalBlock, IMyUserControllableGun
+    public abstract class MyUserControllableGun : MyFunctionalBlock, IMyUserControllableGun
     {
-        new MySyncUserControllableGun SyncObject = null;
+        protected Sync<bool> m_isShooting;
 
-        protected bool m_isShooting = false;
+        bool m_shootingSaved = false;
 
-        static MyUserControllableGun()
+        public MyUserControllableGun()
         {
+#if XB1 // XB1_SYNC_NOREFLECTION
+            m_isShooting = SyncType.CreateAndAddProp<bool>();
+#endif // XB1
+            CreateTerminalControls();
+
+            m_isShooting.ValueChanged += (x) => ShootingChanged();
+        }
+
+        protected override void CreateTerminalControls()
+        {
+            if (MyTerminalControlFactory.AreControlsCreated<MyUserControllableGun>())
+                return;
+            base.CreateTerminalControls();
             if (MyFakes.ENABLE_WEAPON_TERMINAL_CONTROL)
             {
-                var shootOnce = new MyTerminalControlButton<MyUserControllableGun>("ShootOnce", MySpaceTexts.Terminal_ShootOnce, MySpaceTexts.Blank, (b) => b.SyncObject.SendShootOnceMessage());
+                var shootOnce = new MyTerminalControlButton<MyUserControllableGun>("ShootOnce", MySpaceTexts.Terminal_ShootOnce, MySpaceTexts.Blank, (b) => b.OnShootOncePressed());
                 shootOnce.EnableAction();
                 MyTerminalControlFactory.AddControl(shootOnce);
 
                 var shoot = new MyTerminalControlOnOffSwitch<MyUserControllableGun>("Shoot", MySpaceTexts.Terminal_Shoot);
                 shoot.Getter = (x) => x.m_isShooting;
-                shoot.Setter = (x, v) => x.RequestShoot(v);
+                shoot.Setter = (x, v) => x.OnShootPressed(v);
                 shoot.EnableToggleAction();
                 shoot.EnableOnOffActions();
                 MyTerminalControlFactory.AddControl(shoot);
                 MyTerminalControlFactory.AddControl(new MyTerminalControlSeparator<MyUserControllableGun>());
             }
         }
-
+       
         public override void Init(MyObjectBuilder_CubeBlock objectBuilder, MyCubeGrid cubeGrid)
         {
             base.Init(objectBuilder, cubeGrid);
             MyObjectBuilder_UserControllableGun builder = (objectBuilder as MyObjectBuilder_UserControllableGun);
-            this.m_isShooting = builder.IsLargeTurret ? builder.IsShootingFromTerminal : builder.IsShooting;
-            if (m_isShooting)
-            {
-                NeedsUpdate |= MyEntityUpdateEnum.EACH_FRAME;
-            }
-            SyncObject = new MySyncUserControllableGun(this);
+            m_shootingSaved = builder.IsLargeTurret ? builder.IsShootingFromTerminal : builder.IsShooting;
+            NeedsUpdate |= MyEntityUpdateEnum.BEFORE_NEXT_FRAME;      
         }
 
         public override MyObjectBuilder_CubeBlock GetObjectBuilderCubeBlock(bool copy = false)
@@ -61,19 +76,38 @@ namespace Sandbox.Game.Weapons
             return builder;
         }
 
-        public void RequestShoot(bool enable)
+        public virtual bool IsStationary()
         {
-            if (enable)
-            {
-                SyncObject.SendBeginShootMessage();
-            }
-            else
-            {
-                SyncObject.SendEndShootMessage();
-            }
+            return false;
         }
 
-        public void Shoot()
+        void OnShootOncePressed()
+        {
+           SyncRotationAndOrientation();
+           MyMultiplayer.RaiseEvent(this, x => x.ShootOncePressedEvent);
+        }
+
+        [Event, Reliable, Server, Broadcast]
+        public void ShootOncePressedEvent()
+        {
+            Shoot();
+        }
+
+        public void SetShooting(bool shooting)
+        {
+            OnShootPressed(shooting);
+        }
+
+        void OnShootPressed(bool isShooting)
+        {
+            if (isShooting)
+            {
+                SyncRotationAndOrientation();
+            }
+            m_isShooting.Value = isShooting;
+        }
+
+        void Shoot()
         {
             MyGunStatusEnum status;
             if (CanShoot(MyShootActionEnum.PrimaryAction, OwnerId, out status) && CanShoot(out status) && CanOperate())
@@ -82,18 +116,27 @@ namespace Sandbox.Game.Weapons
             }
         }
 
-        public void BeginShoot()
+        void BeginShoot()
         {
             Shoot();
-            m_isShooting = true;
             RememberIdle();
             TakeControlFromTerminal();
         }
 
-        public void EndShoot()
+        void EndShoot()
         {
-            m_isShooting = false;
             RestoreIdle();
+        }
+
+        public override void UpdateOnceBeforeFrame()
+        {
+            base.UpdateOnceBeforeFrame();
+
+            this.m_isShooting.Value = m_shootingSaved;
+            if (m_isShooting)
+            {
+                NeedsUpdate |= MyEntityUpdateEnum.EACH_FRAME;
+            }
         }
 
         public override void UpdateAfterSimulation()
@@ -131,6 +174,34 @@ namespace Sandbox.Game.Weapons
         protected virtual void RememberIdle() { }
 
         protected virtual void RestoreIdle() { }
+
+        protected void ShootingChanged()
+        {
+            if (m_isShooting)
+            {
+                BeginShoot();
+            }
+            else
+            {
+                EndShoot();
+            }
+        }
+
+        public override void OnRemovedByCubeBuilder()
+        {
+            MyInventory inventory = this.GetInventory();
+            if(inventory != null)
+                ReleaseInventory(inventory);
+            base.OnRemovedByCubeBuilder();
+        }
+
+        public override void OnDestroy()
+        {
+            MyInventory inventory = this.GetInventory();
+            if (inventory != null)
+                ReleaseInventory(inventory);
+            base.OnDestroy();
+        }
     }
 
 }

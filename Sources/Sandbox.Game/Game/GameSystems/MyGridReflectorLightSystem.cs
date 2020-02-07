@@ -9,11 +9,11 @@ using Sandbox.Game.Entities.Interfaces;
 using VRage;
 using Sandbox.Game.Entities.Cube;
 using Sandbox.Graphics;
-using VRage;
+using VRage.Profiler;
 
 namespace Sandbox.Game.GameSystems
 {
-    class MyGridReflectorLightSystem
+    public class MyGridReflectorLightSystem
     {
         HashSet<MyReflectorLight> m_reflectors;
 
@@ -36,7 +36,7 @@ namespace Sandbox.Game.GameSystems
                 Debug.Assert(value != MyMultipleEnabledEnum.NoObjects, "You must NOT use this property to set state without any objects.");
                 if (m_reflectorsEnabled != value && m_reflectorsEnabled != MyMultipleEnabledEnum.NoObjects && !IsClosing)
                 {
-                    m_grid.SyncObject.SendReflectorState(value);
+                    m_grid.SendReflectorState(value);
                 }
             }
         }
@@ -49,10 +49,9 @@ namespace Sandbox.Game.GameSystems
             m_reflectors = new HashSet<MyReflectorLight>();
             m_reflectorsEnabled = MyMultipleEnabledEnum.NoObjects;
             m_grid = grid;
-            m_grid.SyncObject.ReflectorStateChanged += SyncObject_ReflectorStateChanged;
         }
 
-        private void SyncObject_ReflectorStateChanged(MyMultipleEnabledEnum enabledState)
+        public void ReflectorStateChanged(MyMultipleEnabledEnum enabledState)
         {
             m_reflectorsEnabled = enabledState;
             bool enabled = (enabledState == MyMultipleEnabledEnum.AllEnabled);

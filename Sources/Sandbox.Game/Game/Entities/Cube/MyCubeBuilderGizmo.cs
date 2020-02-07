@@ -19,7 +19,6 @@ using Sandbox.Game.Screens.Helpers;
 using Sandbox.Game.World;
 using Sandbox.Graphics;
 using Sandbox.Graphics.GUI;
-using Sandbox.Graphics.TransparentGeometry;
 using VRage;
 using VRage.Import;
 using VRage.Utils;
@@ -29,6 +28,8 @@ using ModelId = System.Int32;
 using Sandbox.Game.GUI;
 using Sandbox.Engine.Physics;
 using Havok;
+using VRage.Game;
+using VRage.Game.Models;
 
 #endregion
 
@@ -37,7 +38,7 @@ namespace Sandbox.Game.Entities.Cube
     #region Enums
 
     [Flags]
-    internal enum MySymmetrySettingModeEnum
+    public enum MySymmetrySettingModeEnum
     {
         Disabled = 0,
         NoPlane = 1,
@@ -49,7 +50,7 @@ namespace Sandbox.Game.Entities.Cube
         ZPlaneOdd = 64
     }
 
-    internal enum MyGizmoSpaceEnum
+    public enum MyGizmoSpaceEnum
     {
         Default = 0,
         SymmetryX = 1,
@@ -63,9 +64,9 @@ namespace Sandbox.Game.Entities.Cube
 
     #endregion
 
-    class MyCubeBuilderGizmo
+    public class MyCubeBuilderGizmo
     {
-        internal class MyGizmoSpaceProperties
+        public class MyGizmoSpaceProperties
         {
             public bool Enabled = false;
 
@@ -110,6 +111,12 @@ namespace Sandbox.Game.Entities.Cube
 
             public bool m_dynamicBuildAllowed;
 
+            public HashSet<Tuple<MySlimBlock, ushort?>> m_removeBlocksInMultiBlock = new HashSet<Tuple<MySlimBlock, ushort?>>();
+
+            public MatrixD m_animationLastMatrix = MatrixD.Identity;
+            public Vector3D m_animationLastPosition = Vector3D.Zero;
+            public float m_animationProgress = 1;
+
             public Quaternion LocalOrientation
             {
                 get { return Quaternion.CreateFromRotationMatrix(m_localMatrixAdd); }
@@ -132,6 +139,7 @@ namespace Sandbox.Game.Entities.Cube
                 m_addPosSmallOnLarge = null;
                 m_positionsSmallOnLarge.Clear();
                 m_dynamicBuildAllowed = false;
+                m_removeBlocksInMultiBlock.Clear();
             }
         }
 
@@ -241,6 +249,7 @@ namespace Sandbox.Game.Entities.Cube
                 gridSize = MyDefinitionManager.Static.GetCubeSize(definition.CubeSize);
             }
 
+
             for (int faceIndex = 0; faceIndex < gizmoSpace.m_cubeModelsTemp.Count; faceIndex++)
             {
                 string cubePartModel = gizmoSpace.m_cubeModelsTemp[faceIndex];
@@ -248,21 +257,21 @@ namespace Sandbox.Game.Entities.Cube
                 gizmoSpace.m_cubeModels.Add(cubePartModel);
                 gizmoSpace.m_cubeMatrices.Add(gizmoSpace.m_cubeMatricesTemp[faceIndex]);
 
-                int tileIndex = faceIndex % tiles.Count();
-
-                var invertedTile = Matrix.Transpose(tiles[tileIndex].LocalMatrix);
-                var onlyOrientation = invertedTile * gizmoSpace.m_cubeMatricesTemp[faceIndex].GetOrientation();
-                var boneMatrix = onlyOrientation * invGridWorldMatrixOrientation;
-
                 if (tiles != null)
                 {
+                    int tileIndex = faceIndex % tiles.Length;
+
+                    var invertedTile = Matrix.Transpose(tiles[tileIndex].LocalMatrix);
+                    var onlyOrientation = invertedTile * gizmoSpace.m_cubeMatricesTemp[faceIndex].GetOrientation();
+                    var boneMatrix = onlyOrientation * invGridWorldMatrixOrientation;
+
                     bones = new Vector3UByte[9];
                     for (int i = 0; i < 9; i++)
                     {
                         bones[i] = new Vector3UByte(128, 128, 128);
                     }
 
-                    var model = MyModels.GetModel(cubePartModel);
+                    var model = VRage.Game.Models.MyModels.GetModel(cubePartModel);
 
                     for (int index = 0; index < Math.Min(model.BoneMapping.Length, 9); index++)
                     {
@@ -274,7 +283,7 @@ namespace Sandbox.Game.Entities.Cube
                         for (int skeletonIndex = 0; skeletonIndex < definition.Skeleton.Count; skeletonIndex++)
                         {
                             BoneInfo skeletonBone = definition.Skeleton[skeletonIndex];
-                            if (skeletonBone.BonePosition == transformedOffset)
+                            if (skeletonBone.BonePosition == (SerializableVector3I)transformedOffset)
                             {
                                 Vector3 bone = Vector3UByte.Denormalize(skeletonBone.BoneOffset, gridSize);
                                 Vector3 transformedBone = Vector3.Transform(bone, boneMatrix);
@@ -345,7 +354,7 @@ namespace Sandbox.Game.Entities.Cube
 
             var m = invGridWorldMatrix;
 
-            MyCharacter character = MySession.LocalCharacter;
+            MyCharacter character = MySession.Static.LocalCharacter;
             if (character == null)
                 return false;
 
@@ -355,41 +364,65 @@ namespace Sandbox.Game.Entities.Cube
             Vector3D originCamera = MySector.MainCamera.Position;
             Vector3 direction = MySector.MainCamera.ForwardVector;
 
+            double cameraHeadDist = (originHead - MySector.MainCamera.Position).Length();
+
             Vector3 localHead = Vector3D.Transform(originHead, m);
             Vector3 localStart = Vector3D.Transform(originCamera, m);
-            Vector3 localEnd = Vector3D.Transform(originCamera + direction * intersectionDistance, m);
+            Vector3 localEnd = Vector3D.Transform(originCamera + direction * (intersectionDistance + (float)cameraHeadDist), m);
             LineD line = new LineD(localStart, localEnd);
 
             // AABB of added block
             float inflate = 0.025f * gridSize;
             gizmoBox.Inflate(inflate);
 
-            /*{
-                Vector4 blue = Color.Blue.ToVector4();
-                Matrix mtx = Matrix.Invert(invGridWorldMatrix);
-                MySimpleObjectDraw.DrawTransparentBox(ref mtx, ref gizmoBox, ref blue, MySimpleObjectRasterizer.Wireframe, 1, 0.04f);
-            }*/
+            //{
+            //    Color blue = Color.Blue;
+            //    MatrixD mtx = MatrixD.Invert(invGridWorldMatrix);
+            //    MySimpleObjectDraw.DrawTransparentBox(ref mtx, ref gizmoBox, ref blue, MySimpleObjectRasterizer.Wireframe, 1, 0.04f);
+
+
+
+            //    MyRenderProxy.DebugDrawLine3D(originCamera, originCamera + direction * (intersectionDistance + (float)cameraHeadDist), Color.Red, Color.Red, false);
+            //}
 
             double distance = double.MaxValue;
-            if (gizmoBox.Intersects(line, out distance))
+            if (gizmoBox.Intersects(ref line, out distance))
             {
                 // Distance from the player's head to the gizmo box.
                 double distanceToPlayer = gizmoBox.Distance(localHead);
-                return distanceToPlayer <= 5.0;
+                if (MySession.Static.ControlledEntity is MyShipController)
+                {
+                    if (MyCubeBuilder.Static.CubeBuilderState.CurrentBlockDefinition.CubeSize == MyCubeSize.Large)
+                        return distanceToPlayer <= MyCubeBuilder.CubeBuilderDefinition.BuildingDistLargeSurvivalShip;
+                    else
+                        return distanceToPlayer <= MyCubeBuilder.CubeBuilderDefinition.BuildingDistSmallSurvivalShip;
+                }
+                else
+                {
+                    if (MyCubeBuilder.Static.CubeBuilderState.CurrentBlockDefinition.CubeSize == MyCubeSize.Large)
+                        return distanceToPlayer <= MyCubeBuilder.CubeBuilderDefinition.BuildingDistLargeSurvivalCharacter;
+                    else
+                        return distanceToPlayer <= MyCubeBuilder.CubeBuilderDefinition.BuildingDistSmallSurvivalCharacter;
+                }
             }
             return false;
         }
 
-        private void GetGizmoPointTestVariables(ref MatrixD invGridWorldMatrix, float gridSize, out BoundingBoxD bb, out MatrixD m, MyGizmoSpaceEnum gizmo, float inflate = 0.0f, bool onVoxel = false)
+        private void GetGizmoPointTestVariables(ref MatrixD invGridWorldMatrix, float gridSize, out BoundingBoxD bb, out MatrixD m, MyGizmoSpaceEnum gizmo, float inflate = 0.0f, bool onVoxel = false, bool dynamicMode = false)
         {
             m = invGridWorldMatrix * MatrixD.CreateScale(1.0f / gridSize);
             var gizmoSpace = m_spaces[(int)gizmo];
 
-            if (onVoxel)
+            if (dynamicMode)
             {
                 m = invGridWorldMatrix;
-                Vector3D worldMin = MyCubeGrid.StaticGlobalGrid_UGToWorld(gizmoSpace.m_min, gridSize, MyPerGameSettings.BuildingSettings.StaticGridAlignToCenter) - Vector3D.Half * gridSize;
-                Vector3D worldMax = MyCubeGrid.StaticGlobalGrid_UGToWorld(gizmoSpace.m_max, gridSize, MyPerGameSettings.BuildingSettings.StaticGridAlignToCenter) + Vector3D.Half * gridSize;
+                bb = new BoundingBoxD(-gizmoSpace.m_blockDefinition.Size * gridSize * 0.5f, gizmoSpace.m_blockDefinition.Size * gridSize * 0.5f);
+            }
+            else if (onVoxel)
+            {
+                m = invGridWorldMatrix;
+                Vector3D worldMin = MyCubeGrid.StaticGlobalGrid_UGToWorld(gizmoSpace.m_min, gridSize, MyCubeBuilder.CubeBuilderDefinition.BuildingSettings.StaticGridAlignToCenter) - Vector3D.Half * gridSize;
+                Vector3D worldMax = MyCubeGrid.StaticGlobalGrid_UGToWorld(gizmoSpace.m_max, gridSize, MyCubeBuilder.CubeBuilderDefinition.BuildingSettings.StaticGridAlignToCenter) + Vector3D.Half * gridSize;
                 bb = new BoundingBoxD(worldMin - new Vector3D(inflate * gridSize), worldMax + new Vector3D(inflate * gridSize));
             }
             else if (MyFakes.ENABLE_STATIC_SMALL_GRID_ON_LARGE && gizmoSpace.m_addPosSmallOnLarge != null) 
@@ -408,27 +441,31 @@ namespace Sandbox.Game.Entities.Cube
             }
         }
 
-        public bool PointsInsideGizmo(List<Vector3> points, MyGizmoSpaceEnum gizmo, ref MatrixD invGridWorldMatrix, float gridSize, float inflate = 0.0f, bool onVoxel = false)
+        public bool PointsAABBIntersectsGizmo(List<Vector3D> points, MyGizmoSpaceEnum gizmo, ref MatrixD invGridWorldMatrix, float gridSize, float inflate = 0.0f, bool onVoxel = false, bool dynamicMode = false)
         {
             MatrixD m = new MatrixD();
             BoundingBoxD gizmoBox = new BoundingBoxD();
-            GetGizmoPointTestVariables(ref invGridWorldMatrix, gridSize, out gizmoBox, out m, gizmo, inflate: inflate, onVoxel: onVoxel);
+            GetGizmoPointTestVariables(ref invGridWorldMatrix, gridSize, out gizmoBox, out m, gizmo, inflate: inflate, onVoxel: onVoxel, dynamicMode: dynamicMode);
 
+            BoundingBoxD pointsBox = BoundingBoxD.CreateInvalid();
             foreach (var point in points)
             {
-                Vector3 localPoint = Vector3.Transform(point, m);
+                Vector3D localPoint = Vector3D.Transform(point, m);
 
                 if (gizmoBox.Contains(localPoint) == ContainmentType.Contains)
                     return true;
+
+                pointsBox.Include(localPoint);
             }
-            return false;
+
+            return pointsBox.Intersects(ref gizmoBox);
         }
 
-        public bool PointInsideGizmo(Vector3D point, MyGizmoSpaceEnum gizmo, ref MatrixD invGridWorldMatrix, float gridSize, float inflate = 0.0f, bool onVoxel = false)
+        public bool PointInsideGizmo(Vector3D point, MyGizmoSpaceEnum gizmo, ref MatrixD invGridWorldMatrix, float gridSize, float inflate = 0.0f, bool onVoxel = false, bool dynamicMode = false)
         {
             MatrixD m = new MatrixD();
             BoundingBoxD gizmoBox = new BoundingBoxD();
-            GetGizmoPointTestVariables(ref invGridWorldMatrix, gridSize, out gizmoBox, out m, gizmo, inflate: inflate, onVoxel: onVoxel);
+            GetGizmoPointTestVariables(ref invGridWorldMatrix, gridSize, out gizmoBox, out m, gizmo, inflate: inflate, onVoxel: onVoxel, dynamicMode: dynamicMode);
 
             Vector3D localPoint = Vector3D.Transform(point, m);
 
@@ -473,7 +510,8 @@ namespace Sandbox.Game.Entities.Cube
                     gizmoSpace.m_positions.Clear();
                     gizmoSpace.m_positionsSmallOnLarge.Clear();
 
-                    if (MyFakes.ENABLE_STATIC_SMALL_GRID_ON_LARGE && gizmoSpace.m_addPosSmallOnLarge != null) {
+                    if (MyFakes.ENABLE_STATIC_SMALL_GRID_ON_LARGE && gizmoSpace.m_addPosSmallOnLarge != null) 
+                    {
                         float smallToLarge = MyDefinitionManager.Static.GetCubeSize(cubeBlockDefinition.CubeSize) / cubeGrid.GridSize;
 
                         gizmoSpace.m_minSmallOnLarge = Vector3.MaxValue;
@@ -502,30 +540,38 @@ namespace Sandbox.Game.Entities.Cube
                                 }
 
                     }
-                    else {
-                        gizmoSpace.m_min = Vector3I.MaxValue;
-                        gizmoSpace.m_max = Vector3I.MinValue;
-                        gizmoSpace.m_centerPos = gizmoSpace.m_addPos + worldDir;
-                        gizmoSpace.m_buildAllowed = true;
+                    else 
+                    {                       
+                            gizmoSpace.m_min = Vector3I.MaxValue;
+                            gizmoSpace.m_max = Vector3I.MinValue;
+                            gizmoSpace.m_centerPos = gizmoSpace.m_addPos + worldDir;
+                            gizmoSpace.m_buildAllowed = true;
 
-                        Vector3I temp = new Vector3I();
+                            Vector3I temp = new Vector3I();
 
-                        for (temp.X = 0; temp.X < cubeBlockDefinition.Size.X; temp.X++)
-                            for (temp.Y = 0; temp.Y < cubeBlockDefinition.Size.Y; temp.Y++)
-                                for (temp.Z = 0; temp.Z < cubeBlockDefinition.Size.Z; temp.Z++) {
-                                    Vector3I rotatedTemp;
-                                    Vector3I centeredTemp = temp - center;
-                                    Vector3I.TransformNormal(ref centeredTemp, ref gizmoSpace.m_localMatrixAdd, out rotatedTemp);
+                            for (temp.X = 0; temp.X < cubeBlockDefinition.Size.X; temp.X++)
+                                for (temp.Y = 0; temp.Y < cubeBlockDefinition.Size.Y; temp.Y++)
+                                    for (temp.Z = 0; temp.Z < cubeBlockDefinition.Size.Z; temp.Z++)
+                                    {
+                                        Vector3I rotatedTemp;
+                                        Vector3I centeredTemp = temp - center;
+                                        Vector3I.TransformNormal(ref centeredTemp, ref gizmoSpace.m_localMatrixAdd, out rotatedTemp);
 
-                                    Vector3I tempIntPos = gizmoSpace.m_addPos + rotatedTemp + worldDir;
-                                    gizmoSpace.m_min = Vector3I.Min(tempIntPos, gizmoSpace.m_min);
-                                    gizmoSpace.m_max = Vector3I.Max(tempIntPos, gizmoSpace.m_max);
+                                        Vector3I tempIntPos = gizmoSpace.m_addPos + rotatedTemp + worldDir;
+                                        gizmoSpace.m_min = Vector3I.Min(tempIntPos, gizmoSpace.m_min);
+                                        gizmoSpace.m_max = Vector3I.Max(tempIntPos, gizmoSpace.m_max);
 
-                                    if (cubeGrid != null && !cubeGrid.CanAddCube(tempIntPos, blockOrientation, cubeBlockDefinition))
-                                        gizmoSpace.m_buildAllowed = false;
+                                        if (cubeGrid != null)
+                                        {
+                                            if (cubeBlockDefinition.CubeSize == cubeGrid.GridSizeEnum)
+                                            {
+                                                if (!cubeGrid.CanAddCube(tempIntPos, blockOrientation, cubeBlockDefinition))
+                                                    gizmoSpace.m_buildAllowed = false;
+                                            }
+                                        }
 
-                                    gizmoSpace.m_positions.Add(tempIntPos);
-                                }
+                                        gizmoSpace.m_positions.Add(tempIntPos);
+                                    }
                     }
                 }
 
@@ -656,32 +702,32 @@ namespace Sandbox.Game.Entities.Cube
                     break;
             }
 
-            var blockMirrorAxis = Common.ObjectBuilders.Definitions.MySymmetryAxisEnum.None;
+            var blockMirrorAxis = MySymmetryAxisEnum.None;
             if (MyUtils.IsZero(Math.Abs(Vector3.Dot(sourceSpace.m_localMatrixAdd.Right, mirrorNormal)) - 1.0f))
             {
-                blockMirrorAxis = Common.ObjectBuilders.Definitions.MySymmetryAxisEnum.X;
+                blockMirrorAxis = MySymmetryAxisEnum.X;
             }
             else
                 if (MyUtils.IsZero(Math.Abs(Vector3.Dot(sourceSpace.m_localMatrixAdd.Up, mirrorNormal)) - 1.0f))
                 {
-                    blockMirrorAxis = Common.ObjectBuilders.Definitions.MySymmetryAxisEnum.Y;
+                    blockMirrorAxis = MySymmetryAxisEnum.Y;
                 }
                 else
                     if (MyUtils.IsZero(Math.Abs(Vector3.Dot(sourceSpace.m_localMatrixAdd.Forward, mirrorNormal)) - 1.0f))
                     {
-                        blockMirrorAxis = Common.ObjectBuilders.Definitions.MySymmetryAxisEnum.Z;
+                        blockMirrorAxis = MySymmetryAxisEnum.Z;
                     }
 
-            var blockMirrorOption = Common.ObjectBuilders.Definitions.MySymmetryAxisEnum.None;
+            var blockMirrorOption = MySymmetryAxisEnum.None;
             switch (blockMirrorAxis)
             {
-                case Common.ObjectBuilders.Definitions.MySymmetryAxisEnum.X:
+                case MySymmetryAxisEnum.X:
                     blockMirrorOption = cubeBlockDefinition.SymmetryX;
                     break;
-                case Common.ObjectBuilders.Definitions.MySymmetryAxisEnum.Y:
+                case MySymmetryAxisEnum.Y:
                     blockMirrorOption = cubeBlockDefinition.SymmetryY;
                     break;
-                case Common.ObjectBuilders.Definitions.MySymmetryAxisEnum.Z:
+                case MySymmetryAxisEnum.Z:
                     blockMirrorOption = cubeBlockDefinition.SymmetryZ;
                     break;
 
@@ -692,93 +738,93 @@ namespace Sandbox.Game.Entities.Cube
 
             switch (blockMirrorOption)
             {
-                case Common.ObjectBuilders.Definitions.MySymmetryAxisEnum.X:
+                case MySymmetryAxisEnum.X:
                     targetSpace.m_localMatrixAdd = Matrix.CreateRotationX(MathHelper.Pi) * sourceSpace.m_localMatrixAdd;
                     break;
-                case Common.ObjectBuilders.Definitions.MySymmetryAxisEnum.Y:
-                    //targetSpace.m_gizmoLocalMatrixAdd = sourceSpace.m_gizmoLocalMatrixAdd;
+                case MySymmetryAxisEnum.Y:
+                case MySymmetryAxisEnum.YThenOffsetX:
                     targetSpace.m_localMatrixAdd = Matrix.CreateRotationY(MathHelper.Pi) * sourceSpace.m_localMatrixAdd;
                     break;
-                case Common.ObjectBuilders.Definitions.MySymmetryAxisEnum.Z:
-                case Common.ObjectBuilders.Definitions.MySymmetryAxisEnum.ZThenOffsetX:
+                case MySymmetryAxisEnum.Z:
+                case MySymmetryAxisEnum.ZThenOffsetX:
                     targetSpace.m_localMatrixAdd = Matrix.CreateRotationZ(MathHelper.Pi) * sourceSpace.m_localMatrixAdd;
                     break;
-                case Common.ObjectBuilders.Definitions.MySymmetryAxisEnum.HalfX:
+                case MySymmetryAxisEnum.HalfX:
                     targetSpace.m_localMatrixAdd = Matrix.CreateRotationX(-MathHelper.PiOver2) * sourceSpace.m_localMatrixAdd;
                     break;
-                case Common.ObjectBuilders.Definitions.MySymmetryAxisEnum.HalfY:
+                case MySymmetryAxisEnum.HalfY:
                     targetSpace.m_localMatrixAdd = Matrix.CreateRotationY(-MathHelper.PiOver2) * sourceSpace.m_localMatrixAdd;
                     break;
-                case Common.ObjectBuilders.Definitions.MySymmetryAxisEnum.HalfZ:
+                case MySymmetryAxisEnum.HalfZ:
                     targetSpace.m_localMatrixAdd = Matrix.CreateRotationZ(-MathHelper.PiOver2) * sourceSpace.m_localMatrixAdd;
                     break;
-                case Common.ObjectBuilders.Definitions.MySymmetryAxisEnum.XHalfY:
+                case MySymmetryAxisEnum.XHalfY:
                     targetSpace.m_localMatrixAdd = Matrix.CreateRotationX(MathHelper.Pi) * sourceSpace.m_localMatrixAdd;
                     targetSpace.m_localMatrixAdd = Matrix.CreateRotationY(MathHelper.PiOver2) * targetSpace.m_localMatrixAdd;
                     break;
-                case Common.ObjectBuilders.Definitions.MySymmetryAxisEnum.YHalfY:
+                case MySymmetryAxisEnum.YHalfY:
                     targetSpace.m_localMatrixAdd = Matrix.CreateRotationY(MathHelper.Pi) * sourceSpace.m_localMatrixAdd;
                     targetSpace.m_localMatrixAdd = Matrix.CreateRotationY(MathHelper.PiOver2) * targetSpace.m_localMatrixAdd;
                     break;
-                case Common.ObjectBuilders.Definitions.MySymmetryAxisEnum.ZHalfY:
+                case MySymmetryAxisEnum.ZHalfY:
                     targetSpace.m_localMatrixAdd = Matrix.CreateRotationZ(MathHelper.Pi) * sourceSpace.m_localMatrixAdd;
                     targetSpace.m_localMatrixAdd = Matrix.CreateRotationY(MathHelper.PiOver2) * targetSpace.m_localMatrixAdd;
                     break;
-                case Common.ObjectBuilders.Definitions.MySymmetryAxisEnum.XHalfX:
+                case MySymmetryAxisEnum.XHalfX:
                     targetSpace.m_localMatrixAdd = Matrix.CreateRotationX(MathHelper.Pi) * sourceSpace.m_localMatrixAdd;
                     targetSpace.m_localMatrixAdd = Matrix.CreateRotationX(-MathHelper.PiOver2) * targetSpace.m_localMatrixAdd;
                     break;
-                case Common.ObjectBuilders.Definitions.MySymmetryAxisEnum.YHalfX:
+                case MySymmetryAxisEnum.YHalfX:
                     targetSpace.m_localMatrixAdd = Matrix.CreateRotationY(MathHelper.Pi) * sourceSpace.m_localMatrixAdd;
                     targetSpace.m_localMatrixAdd = Matrix.CreateRotationX(-MathHelper.PiOver2) * targetSpace.m_localMatrixAdd;
                     break;
-                case Common.ObjectBuilders.Definitions.MySymmetryAxisEnum.ZHalfX:
+                case MySymmetryAxisEnum.ZHalfX:
                     targetSpace.m_localMatrixAdd = Matrix.CreateRotationZ(MathHelper.Pi) * sourceSpace.m_localMatrixAdd;
                     targetSpace.m_localMatrixAdd = Matrix.CreateRotationX(-MathHelper.PiOver2) * targetSpace.m_localMatrixAdd;
                     break;
-                case Common.ObjectBuilders.Definitions.MySymmetryAxisEnum.XHalfZ:
+                case MySymmetryAxisEnum.XHalfZ:
                     targetSpace.m_localMatrixAdd = Matrix.CreateRotationX(MathHelper.Pi) * sourceSpace.m_localMatrixAdd;
                     targetSpace.m_localMatrixAdd = Matrix.CreateRotationZ(-MathHelper.PiOver2) * targetSpace.m_localMatrixAdd;
                     break;
-                case Common.ObjectBuilders.Definitions.MySymmetryAxisEnum.YHalfZ:
+                case MySymmetryAxisEnum.YHalfZ:
                     targetSpace.m_localMatrixAdd = Matrix.CreateRotationY(MathHelper.Pi) * sourceSpace.m_localMatrixAdd;
                     targetSpace.m_localMatrixAdd = Matrix.CreateRotationZ(-MathHelper.PiOver2) * targetSpace.m_localMatrixAdd;
                     break;
-                case Common.ObjectBuilders.Definitions.MySymmetryAxisEnum.ZHalfZ:
+                case MySymmetryAxisEnum.ZHalfZ:
                     targetSpace.m_localMatrixAdd = Matrix.CreateRotationZ(MathHelper.Pi) * sourceSpace.m_localMatrixAdd;
                     targetSpace.m_localMatrixAdd = Matrix.CreateRotationZ(-MathHelper.PiOver2) * targetSpace.m_localMatrixAdd;
                     break;
-                case Common.ObjectBuilders.Definitions.MySymmetryAxisEnum.XMinusHalfZ:
+                case MySymmetryAxisEnum.XMinusHalfZ:
                     targetSpace.m_localMatrixAdd = Matrix.CreateRotationX(MathHelper.Pi) * sourceSpace.m_localMatrixAdd;
                     targetSpace.m_localMatrixAdd = Matrix.CreateRotationZ(MathHelper.PiOver2) * targetSpace.m_localMatrixAdd;
                     break;
-                case Common.ObjectBuilders.Definitions.MySymmetryAxisEnum.YMinusHalfZ:
+                case MySymmetryAxisEnum.YMinusHalfZ:
                     targetSpace.m_localMatrixAdd = Matrix.CreateRotationY(MathHelper.Pi) * sourceSpace.m_localMatrixAdd;
                     targetSpace.m_localMatrixAdd = Matrix.CreateRotationZ(MathHelper.PiOver2) * targetSpace.m_localMatrixAdd;
                     break;
-                case Common.ObjectBuilders.Definitions.MySymmetryAxisEnum.ZMinusHalfZ:
+                case MySymmetryAxisEnum.ZMinusHalfZ:
                     targetSpace.m_localMatrixAdd = Matrix.CreateRotationZ(MathHelper.Pi) * sourceSpace.m_localMatrixAdd;
                     targetSpace.m_localMatrixAdd = Matrix.CreateRotationZ(MathHelper.PiOver2) * targetSpace.m_localMatrixAdd;
                     break;
-                case Common.ObjectBuilders.Definitions.MySymmetryAxisEnum.XMinusHalfX:
+                case MySymmetryAxisEnum.XMinusHalfX:
                     targetSpace.m_localMatrixAdd = Matrix.CreateRotationX(MathHelper.Pi) * sourceSpace.m_localMatrixAdd;
                     targetSpace.m_localMatrixAdd = Matrix.CreateRotationX(MathHelper.PiOver2) * targetSpace.m_localMatrixAdd;
                     break;
-                case Common.ObjectBuilders.Definitions.MySymmetryAxisEnum.YMinusHalfX:
+                case MySymmetryAxisEnum.YMinusHalfX:
                     targetSpace.m_localMatrixAdd = Matrix.CreateRotationY(MathHelper.Pi) * sourceSpace.m_localMatrixAdd;
                     targetSpace.m_localMatrixAdd = Matrix.CreateRotationX(MathHelper.PiOver2) * targetSpace.m_localMatrixAdd;
                     break;
-                case Common.ObjectBuilders.Definitions.MySymmetryAxisEnum.ZMinusHalfX:
+                case MySymmetryAxisEnum.ZMinusHalfX:
                     targetSpace.m_localMatrixAdd = Matrix.CreateRotationZ(MathHelper.Pi) * sourceSpace.m_localMatrixAdd;
                     targetSpace.m_localMatrixAdd = Matrix.CreateRotationX(MathHelper.PiOver2) * targetSpace.m_localMatrixAdd;
                     break;
-                case Common.ObjectBuilders.Definitions.MySymmetryAxisEnum.MinusHalfX:
+                case MySymmetryAxisEnum.MinusHalfX:
                     targetSpace.m_localMatrixAdd = Matrix.CreateRotationX(MathHelper.PiOver2) * sourceSpace.m_localMatrixAdd;
                     break;
-                case Common.ObjectBuilders.Definitions.MySymmetryAxisEnum.MinusHalfY:
+                case MySymmetryAxisEnum.MinusHalfY:
                     targetSpace.m_localMatrixAdd = Matrix.CreateRotationY(MathHelper.PiOver2) * sourceSpace.m_localMatrixAdd;
                     break;
-                case Common.ObjectBuilders.Definitions.MySymmetryAxisEnum.MinusHalfZ:
+                case MySymmetryAxisEnum.MinusHalfZ:
                     targetSpace.m_localMatrixAdd = Matrix.CreateRotationZ(MathHelper.PiOver2) * sourceSpace.m_localMatrixAdd;
                     break;
 
@@ -789,7 +835,7 @@ namespace Sandbox.Game.Entities.Cube
 
             if (!string.IsNullOrEmpty(sourceSpace.m_blockDefinition.MirroringBlock))
             {
-                targetSpace.m_blockDefinition = MyDefinitionManager.Static.GetCubeBlockDefinition(new MyDefinitionId(typeof(MyObjectBuilder_CubeBlock), sourceSpace.m_blockDefinition.MirroringBlock));
+                targetSpace.m_blockDefinition = MyDefinitionManager.Static.GetCubeBlockDefinition(new MyDefinitionId(sourceSpace.m_blockDefinition.Id.TypeId, sourceSpace.m_blockDefinition.MirroringBlock));
             }
             else
                 targetSpace.m_blockDefinition = sourceSpace.m_blockDefinition;
@@ -810,15 +856,11 @@ namespace Sandbox.Game.Entities.Cube
 
                 if (box.Size.X > 1 * cubeGrid.GridSize || box.Size.Y > 1 * cubeGrid.GridSize || box.Size.Z > 1 * cubeGrid.GridSize)
                 {
-                    //align to mirror
-                    BoundingBox worldAABB = box.Transform((Matrix)cubeGrid.WorldMatrix);
-                    //VRageRender.MyRenderProxy.DebugDrawAABB(worldAABB, Vector3.One, 1, 1, false);
-
-                    Vector3 sourceCenterFloatLocal = sourceSpace.m_localMatrixAdd.Translation * cubeGrid.GridSize;
+                    Vector3 sourceCenterFloatLocal = sourceSpace.m_addPos * cubeGrid.GridSize;
                     Vector3 sourceCenterWorld = Vector3.Transform(sourceCenterFloatLocal, cubeGrid.WorldMatrix);
-                    //VRageRender.MyRenderProxy.DebugDrawSphere(sourceCenterWorld, 0.5f, Vector3.One, 1, false, false);
+                    //VRageRender.MyRenderProxy.DebugDrawSphere(sourceCenterWorld, 0.18f, Vector3.One, 1, false, false);
 
-                    Vector3I localToMirror = mirrorPosition - new Vector3I(sourceSpace.m_localMatrixAdd.Translation);
+                    Vector3I localToMirror = mirrorPosition - sourceSpace.m_addPos;
                     Vector3 floatLocalToMirror = localToMirror * cubeGrid.GridSize;
                     if (isOdd)
                     {
@@ -827,12 +869,10 @@ namespace Sandbox.Game.Entities.Cube
                         floatLocalToMirror.Z += cubeGrid.GridSize / 2;
                     }
 
-
                     Vector3 fullFloatLocalToMirror = floatLocalToMirror;
                     Vector3 alignedFloatLocalToMirror = Vector3.Clamp(sourceCenterFloatLocal + floatLocalToMirror, box.Min, box.Max) - sourceCenterFloatLocal;
                     Vector3 alignedFloatLocalToBoxEnd = Vector3.Clamp(sourceCenterFloatLocal + floatLocalToMirror * 100, box.Min, box.Max) - sourceCenterFloatLocal;
                     Vector3 oppositeFromMirror = Vector3.Clamp(sourceCenterFloatLocal - floatLocalToMirror * 100, box.Min, box.Max) - sourceCenterFloatLocal;
-
 
                     if (mirrorPlane == MySymmetrySettingModeEnum.XPlane || mirrorPlane == MySymmetrySettingModeEnum.XPlaneOdd)
                     {
@@ -872,7 +912,6 @@ namespace Sandbox.Game.Entities.Cube
 
                     Vector3 sideLocalToMirror = fullFloatLocalToMirror - alignedFloatLocalToMirror;
 
-
                     Vector3 alignedWorldToMirror = Vector3.TransformNormal(alignedFloatLocalToMirror, cubeGrid.WorldMatrix);
                     Vector3 fullWorldToMirror = Vector3.TransformNormal(fullFloatLocalToMirror, cubeGrid.WorldMatrix);
                     Vector3 oppositeWorldToMirror = Vector3.TransformNormal(oppositeFromMirror, cubeGrid.WorldMatrix);
@@ -885,7 +924,6 @@ namespace Sandbox.Game.Entities.Cube
                     {
                         isInsideMirror = true;
                     }
-
 
                     Vector3 newOffsetFromMirror = sideLocalToMirror;
                     Vector3 newOffsetFromBox = -oppositeFromMirror;
@@ -900,7 +938,7 @@ namespace Sandbox.Game.Entities.Cube
                     //VRageRender.MyRenderProxy.DebugDrawLine3D(mirrorPositionWorld, mirrorPositionWorld + newWorldFromMirror, Color.Green, Color.Green, false);
 
 
-                    Vector3 fromMirrorFloat = sourceSpace.m_localMatrixAdd.Translation + (fullFloatLocalToMirror + newLocalFromMirror) / cubeGrid.GridSize;
+                    Vector3 fromMirrorFloat = sourceSpace.m_addPos + (fullFloatLocalToMirror + newLocalFromMirror) / cubeGrid.GridSize;
 
 
                     if (!isInsideMirror)
@@ -909,8 +947,8 @@ namespace Sandbox.Game.Entities.Cube
 
                         //VRageRender.MyRenderProxy.DebugDrawLine3D(sourceCenterWorld, sourceCenterWorld + worldFromMirror, Color.White, Color.Black, false);
 
-                        Vector3 newPos = fromMirrorFloat;// / CurrentGrid.GridSize;
-                        //VRageRender.MyRenderProxy.DebugDrawSphere(Vector3.Transform(targetSpace.m_gizmoAddPos * CurrentGrid.GridSize, CurrentGrid.WorldMatrix), 0.2f, Vector3.One, 1, false);
+                        Vector3 newPos = fromMirrorFloat;
+                        //VRageRender.MyRenderProxy.DebugDrawSphere(Vector3.Transform(targetSpace.m_addPos * cubeGrid.GridSize, cubeGrid.WorldMatrix), 0.1f, Color.Aqua, 1, false);
                         targetSpace.m_mirroringOffset = new Vector3I(newPos) - targetSpace.m_addPos;
                         targetSpace.m_addPos += targetSpace.m_mirroringOffset;
                         targetSpace.m_removePos += targetSpace.m_mirroringOffset;
@@ -932,16 +970,25 @@ namespace Sandbox.Game.Entities.Cube
                 }
             }
 
+            Vector3I offset = Vector3I.Zero;
+
             if (blockMirrorOption == MySymmetryAxisEnum.ZThenOffsetX)
+                offset = new Vector3I(targetSpace.m_localMatrixAdd.Left);
+            if (blockMirrorOption == MySymmetryAxisEnum.YThenOffsetX)
+                offset = new Vector3I(targetSpace.m_localMatrixAdd.Left);
+
+
+            if ((blockMirrorOption == MySymmetryAxisEnum.ZThenOffsetX)
+                ||
+                (blockMirrorOption == MySymmetryAxisEnum.YThenOffsetX))
             {
-                Vector3I offset = new Vector3I(targetSpace.m_localMatrixAdd.Down);
                 targetSpace.m_mirroringOffset = offset;
                 targetSpace.m_addPos += targetSpace.m_mirroringOffset;
                 targetSpace.m_removePos += targetSpace.m_mirroringOffset;
                 targetSpace.m_removeBlock = cubeGrid.GetCubeBlock(targetSpace.m_removePos);
-                //targetSpace.m_gizmoAddDir = sourceSpace.m_gizmoAddDir;
                 targetSpace.m_localMatrixAdd.Translation += offset;
             }
+
 
 
             targetSpace.m_worldMatrixAdd = targetSpace.m_localMatrixAdd * cubeGrid.WorldMatrix;

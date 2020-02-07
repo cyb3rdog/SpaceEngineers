@@ -1,8 +1,7 @@
-﻿using Sandbox.Common;
-using Sandbox.Common.ObjectBuilders.Gui;
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Text;
+using VRage.Game;
 using VRage.Input;
 using VRage.Utils;
 using VRageMath;
@@ -17,6 +16,7 @@ namespace Sandbox.Graphics.GUI
         List<string> m_undoCache = new List<string>();
         List<string> m_redoCache = new List<string>();
 
+        const int TAB_SIZE = 4;
         const int MAX_UNDO_HISTORY = 50;
         const char NEW_LINE = '\n';
         const char BACKSPACE = '\b';
@@ -34,13 +34,17 @@ namespace Sandbox.Graphics.GUI
             Vector2? position = null,
             Vector2? size = null,
             Vector4? backgroundColor = null,
-            MyFontEnum font = MyFontEnum.Blue,
+            string font = MyFontEnum.Blue,
             float textScale = MyGuiConstants.DEFAULT_TEXT_SCALE,
             MyGuiDrawAlignEnum textAlign = MyGuiDrawAlignEnum.HORISONTAL_LEFT_AND_VERTICAL_TOP,
             StringBuilder contents = null,
             bool drawScrollbar = true,
-            MyGuiDrawAlignEnum textBoxAlign = MyGuiDrawAlignEnum.HORISONTAL_CENTER_AND_VERTICAL_CENTER)
-            : base(position, size, backgroundColor, font, textScale, textAlign, contents, drawScrollbar, textBoxAlign, true)
+            MyGuiDrawAlignEnum textBoxAlign = MyGuiDrawAlignEnum.HORISONTAL_CENTER_AND_VERTICAL_CENTER,
+            int? visibleLinesCount = null,
+            MyGuiCompositeTexture backgroundTexture = null,
+            MyGuiBorderThickness? textPadding = null
+        )
+            : base(position, size, backgroundColor, font, textScale, textAlign, contents, drawScrollbar, textBoxAlign, visibleLinesCount, true, backgroundTexture: backgroundTexture, textPadding: textPadding)
         {
             m_fontHeight = MyGuiManager.GetFontHeight(Font, TextScaleWithLanguage);
             this.AllowFocusingElements = false;
@@ -72,10 +76,9 @@ namespace Sandbox.Graphics.GUI
             if (HasFocus && Selectable)
             {
                 //Cut
-                if (MyInput.Static.IsNewKeyPressed(MyKeys.X) && IsEnoughDelay(MyMultilineTextKeys.X, MyGuiConstants.TEXTBOX_MOVEMENT_DELAY) && MyInput.Static.IsAnyCtrlKeyPressed())
+                if (m_keyThrottler.IsNewPressAndThrottled(MyKeys.X) && MyInput.Static.IsAnyCtrlKeyPressed())
                 {             
                     AddToUndo(m_text.ToString());
-                    UpdateLastKeyPressTimes(MyMultilineTextKeys.X);
                     m_selection.CutText(this);
                     m_currentCarriageLine = CalculateNewCarriageLine(CarriagePositionIndex);
                     m_currentCarriageColumn = GetCarriageColumn(CarriagePositionIndex);
@@ -83,10 +86,9 @@ namespace Sandbox.Graphics.GUI
                 }
 
                 //Paste
-                if (MyInput.Static.IsNewKeyPressed(MyKeys.V) && IsEnoughDelay(MyMultilineTextKeys.V, MyGuiConstants.TEXTBOX_MOVEMENT_DELAY) && MyInput.Static.IsAnyCtrlKeyPressed())
+                if (m_keyThrottler.IsNewPressAndThrottled(MyKeys.V) && MyInput.Static.IsAnyCtrlKeyPressed())
                 {
                     AddToUndo(m_text.ToString());
-                    UpdateLastKeyPressTimes(MyMultilineTextKeys.V);
                     m_selection.PasteText(this);
                     m_currentCarriageLine = CalculateNewCarriageLine(CarriagePositionIndex);
                     m_currentCarriageColumn = GetCarriageColumn(CarriagePositionIndex);
@@ -94,58 +96,62 @@ namespace Sandbox.Graphics.GUI
                 }
             
                 //  Move home
-                if ((MyInput.Static.IsNewKeyPressed(MyKeys.Home)) && (IsEnoughDelay(MyMultilineTextKeys.HOME, MyGuiConstants.TEXTBOX_MOVEMENT_DELAY)))         
+                if (m_keyThrottler.IsNewPressAndThrottled(MyKeys.Home))
                 {
-                    
-                    int lineIndex = GetLineStartIndex(CarriagePositionIndex);
+                    int startOfLineIndex = GetLineStartIndex(CarriagePositionIndex);
+                    int lineIndex = startOfLineIndex;
+
                     //offset carriage to first letter of the line
-                    while(lineIndex < CarriagePositionIndex && Text[lineIndex] == ' ')
+                    while (lineIndex < Text.Length && Text[lineIndex]  == ' ')
                     {
                         lineIndex++;
                     }
 
-                    CarriagePositionIndex = lineIndex;
+                    // Alternate between the first letter of the line and the actual start position of the line
+                    if (CarriagePositionIndex == lineIndex || lineIndex == Text.Length)
+                        CarriagePositionIndex = startOfLineIndex;
+                    else
+                        CarriagePositionIndex = lineIndex;
+                    
+                    if (MyInput.Static.IsAnyCtrlKeyPressed())
+                    {
+                        CarriagePositionIndex = 0;
+                    }
+                    
                     if (MyInput.Static.IsAnyShiftKeyPressed())
                     {
                         m_selection.SetEnd(this);
-                    }
-                    else if (MyInput.Static.IsAnyCtrlKeyPressed())
-                    {
-                        CarriagePositionIndex = 0;
                     }
                     else
                     {
                         m_selection.Reset(this);
                     }
                     m_currentCarriageColumn = GetCarriageColumn(CarriagePositionIndex);
-                    UpdateLastKeyPressTimes(MyMultilineTextKeys.HOME);
-                    baseResult = this;
                     return this;
                 }
 
                 //  Move end
-                if ((MyInput.Static.IsNewKeyPressed(MyKeys.End)) && (IsEnoughDelay(MyMultilineTextKeys.END, MyGuiConstants.TEXTBOX_MOVEMENT_DELAY)))
+                if (m_keyThrottler.IsNewPressAndThrottled(MyKeys.End))
                 {
-                    
                     int lineIndex = GetLineEndIndex(CarriagePositionIndex);
                     CarriagePositionIndex = lineIndex;
+                    if (MyInput.Static.IsAnyCtrlKeyPressed())
+                    {
+                        CarriagePositionIndex = Text.Length;
+                    }
+                    
                     if (MyInput.Static.IsAnyShiftKeyPressed())
                     {
                         m_selection.SetEnd(this);
-                    }
-                    else if (MyInput.Static.IsAnyCtrlKeyPressed())
-                    {
-                        CarriagePositionIndex = Text.Length;
                     }
                     else
                     {
                         m_selection.Reset(this);
                     }
                     m_currentCarriageColumn = GetCarriageColumn(CarriagePositionIndex);
-                    UpdateLastKeyPressTimes(MyMultilineTextKeys.END);
-                    baseResult = this;
                     return this;
                 }
+
                 if (MyInput.Static.IsKeyPress(MyKeys.Left) || MyInput.Static.IsKeyPress(MyKeys.Right))
                 {
                     m_currentCarriageColumn = GetCarriageColumn(CarriagePositionIndex);
@@ -200,12 +206,15 @@ namespace Sandbox.Graphics.GUI
                     }
                     else if (character == TAB)
                     {
+                        m_currentCarriageLine = CalculateNewCarriageLine(CarriagePositionIndex);
+                        m_currentCarriageColumn = GetCarriageColumn(CarriagePositionIndex);
                         AddToUndo(m_text.ToString());
-                        for (int i = 0; i < 4; ++i)
+                        var missingChars = TAB_SIZE - (m_currentCarriageColumn % TAB_SIZE);
+                        for (int i = 0; i < missingChars; ++i)
                         {
                             InsertChar(' ');
                         }
-                        textChanged = true;
+                        textChanged = missingChars > 0;
                     }
                 }
                 else
@@ -223,7 +232,7 @@ namespace Sandbox.Graphics.GUI
             }
 
             // Unbuffered Delete because it's not delivered as a message through Win32 message loop.
-            if (MyInput.Static.IsKeyPress(MyKeys.Delete) && IsEnoughDelay(MyMultilineTextKeys.DELETE, MyGuiConstants.TEXTBOX_MOVEMENT_DELAY))
+            if (m_keyThrottler.GetKeyStatus(MyKeys.Delete) == ThrottledKeyStatus.PRESSED_AND_READY)
             {
                 m_currentCarriageColumn = GetCarriageColumn(CarriagePositionIndex);
                 AddToUndo(m_text.ToString());
@@ -231,8 +240,6 @@ namespace Sandbox.Graphics.GUI
                     ApplyDelete();
                 else
                     m_selection.EraseText(this);
-
-                UpdateLastKeyPressTimes(MyMultilineTextKeys.DELETE);
                 textChanged = true;
             }
 
@@ -322,11 +329,11 @@ namespace Sandbox.Graphics.GUI
         private int CalculateNewCarriageLine(int idx)
         {
             BuildLineInformation();
-            for (int currentLine = 0; currentLine < m_lineInformation.Count; ++currentLine)
+            for (int currentLine = 1; currentLine < m_lineInformation.Count; ++currentLine)
             {
                 if (idx <= m_lineInformation[currentLine])
                 {
-                    return Math.Max(0, currentLine+1);
+                    return Math.Max(0, currentLine);
                 }
             }
             return m_lineInformation.Count;
@@ -406,7 +413,7 @@ namespace Sandbox.Graphics.GUI
             m_undoCache.Add(text);
             if (m_undoCache.Count > MAX_UNDO_HISTORY)
             {
-                m_undoCache.RemoveAt(MAX_UNDO_HISTORY);
+                m_undoCache.RemoveAt(0);
             }
         }
 
@@ -445,6 +452,10 @@ namespace Sandbox.Graphics.GUI
         {
             int currentIndex = array.Count - 1;
             int comparison = GetFirstDiffIndex(array[currentIndex], m_text.ToString());
+            if (array[currentIndex].Length < m_text.Length)
+                comparison--;//undo deletes character
+            if (array[currentIndex].Length > m_text.Length)
+                comparison++;
             CarriagePositionIndex = comparison == -1 ? array[currentIndex].Length : comparison;
             return currentIndex;
         }
@@ -477,8 +488,8 @@ namespace Sandbox.Graphics.GUI
         override protected int GetIndexUnderCarriage(int idx)
         {
             int end = GetLineEndIndex(idx);
-            int newRowEnd = GetLineEndIndex(Math.Min(Text.Length, end + 2));
-            int newRowStart = GetLineStartIndex(Math.Min(Text.Length, end + 2));
+            int newRowEnd = GetLineEndIndex(Math.Min(Text.Length, end + 1));
+            int newRowStart = GetLineStartIndex(Math.Min(Text.Length, end + 1));
             return CalculateNewCarriagePos(newRowEnd, newRowStart);
         }
 
@@ -493,8 +504,8 @@ namespace Sandbox.Graphics.GUI
         override protected int GetIndexOverCarriage(int idx)
         {
             int start = GetLineStartIndex(idx);
-            int newRowEnd = GetLineEndIndex(Math.Max(0,start-2));
-            int newRowStart = GetLineStartIndex(Math.Max(0, start - 2));
+            int newRowEnd = GetLineEndIndex(Math.Max(0, start - 1));
+            int newRowStart = GetLineStartIndex(Math.Max(0, start - 1));
             return CalculateNewCarriagePos(newRowEnd, newRowStart);
         }
 

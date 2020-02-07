@@ -6,19 +6,23 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Text;
+using Sandbox.Game.EntityComponents;
 
 namespace Sandbox.Game.Entities
 {
     public class MyGridLogicalGroupData : IGroupData<MyCubeGrid>
     {
         internal readonly MyGridTerminalSystem TerminalSystem = new MyGridTerminalSystem();
-        internal readonly MyPowerDistributor PowerDistributor = new MyPowerDistributor();
         internal readonly MyGridWeaponSystem WeaponSystem = new MyGridWeaponSystem();
+        internal readonly MyResourceDistributorComponent ResourceDistributor;
 
-        public void OnCreate()
+        public MyGridLogicalGroupData() : this(null)
         {
-            Debug.Assert(TerminalSystem.Blocks.Count == 0, "Terminal system is not empty!");
-            Debug.Assert(TerminalSystem.BlockGroups.Count == 0, "Terminal system is not empty, block groups are there");
+        }
+
+        public MyGridLogicalGroupData(string debugName)
+        {
+            ResourceDistributor = new MyResourceDistributorComponent(debugName);
         }
 
         public void OnRelease()
@@ -35,6 +39,12 @@ namespace Sandbox.Game.Entities
         public void OnNodeRemoved(MyCubeGrid entity)
         {
             entity.OnRemovedFromGroup(this);
+        }
+
+        public void OnCreate<TGroupData>(MyGroups<MyCubeGrid, TGroupData>.Group group) where TGroupData : IGroupData<MyCubeGrid>, new()
+        {
+            Debug.Assert(TerminalSystem.Blocks.Count == 0, "Terminal system is not empty!");
+            Debug.Assert(TerminalSystem.BlockGroups.Count == 0, "Terminal system is not empty, block groups are there");
         }
     }
 }

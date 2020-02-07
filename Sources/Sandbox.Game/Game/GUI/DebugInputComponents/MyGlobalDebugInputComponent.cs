@@ -1,6 +1,8 @@
 ﻿#region Using
 
+using Sandbox.Engine.Multiplayer;
 using Sandbox.Game.Entities;
+using Sandbox.Game.SessionComponents.Clipboard;
 using Sandbox.Game.World;
 using VRage;
 using VRage.Input;
@@ -22,9 +24,9 @@ namespace Sandbox.Game.Gui
                () => "Teleport controlled object to camera position",
                delegate
                {
-                   if (MySession.Static.CameraController == MySpectator.Static && MySession.ControlledEntity != null)
+                   if (MySession.Static.CameraController == MySpectator.Static)
                    {
-                       MySession.ControlledEntity.Entity.PositionComp.SetPosition(MySpectator.Static.Position);
+                       MyMultiplayer.TeleportControlledEntity(MySpectator.Static.Position);
                    }
                    return true;
                });
@@ -33,9 +35,9 @@ namespace Sandbox.Game.Gui
                () => "Apply backward linear impulse x100",
                delegate
                {
-                   var body = MySession.ControlledEntity.Entity.GetTopMostParent().Physics;
+                   var body = MySession.Static.ControlledEntity.Entity.GetTopMostParent().Physics;
                    if (body != null && body.RigidBody != null)
-                       body.RigidBody.ApplyLinearImpulse(MySession.ControlledEntity.Entity.WorldMatrix.Forward * body.Mass * -100);
+                       body.RigidBody.ApplyLinearImpulse(MySession.Static.ControlledEntity.Entity.WorldMatrix.Forward * body.Mass * -100);
                    return true;
                });
 
@@ -43,9 +45,9 @@ namespace Sandbox.Game.Gui
                () => "Apply linear impulse x100",
                delegate
                {
-                   var body = MySession.ControlledEntity.Entity.GetTopMostParent().Physics;
+                   var body = MySession.Static.ControlledEntity.Entity.GetTopMostParent().Physics;
                    if (body != null && body.RigidBody != null)
-                       body.RigidBody.ApplyLinearImpulse(MySession.ControlledEntity.Entity.WorldMatrix.Forward * body.Mass * 100);
+                       body.RigidBody.ApplyLinearImpulse(MySession.Static.ControlledEntity.Entity.WorldMatrix.Forward * body.Mass * 100);
                    return true;
                });
 
@@ -53,9 +55,9 @@ namespace Sandbox.Game.Gui
                () => "Apply linear impulse x20",
                delegate
                {
-                   var body = MySession.ControlledEntity.Entity.GetTopMostParent().Physics;
+                   var body = MySession.Static.ControlledEntity.Entity.GetTopMostParent().Physics;
                    if (body != null && body.RigidBody != null)
-                       body.RigidBody.ApplyLinearImpulse(MySession.ControlledEntity.Entity.WorldMatrix.Forward * body.Mass * 20);
+                       body.RigidBody.ApplyLinearImpulse(MySession.Static.ControlledEntity.Entity.WorldMatrix.Forward * body.Mass * 20);
                    return true;
                });
 
@@ -63,7 +65,7 @@ namespace Sandbox.Game.Gui
                () => "Save clipboard as prefab",
                delegate
                {
-                  MyCubeBuilder.Static.Clipboard.SaveClipboardAsPrefab();
+                   MyClipboardComponent.Static.Clipboard.SaveClipboardAsPrefab();
                    return true;
                });
         }

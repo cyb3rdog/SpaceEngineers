@@ -1,5 +1,4 @@
-﻿using Sandbox.Common.ObjectBuilders.Gui;
-using System;
+﻿using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Collections.Specialized;
@@ -7,6 +6,8 @@ using System.Diagnostics;
 using System.Linq;
 using System.Text;
 using VRage.Collections;
+using VRage.Game;
+using VRage.ObjectBuilders;
 
 namespace Sandbox.Graphics.GUI
 {
@@ -51,7 +52,7 @@ namespace Sandbox.Graphics.GUI
 
         public MyObjectBuilder_GuiControls GetObjectBuilder()
         {
-            var objectBuilder = Sandbox.Common.ObjectBuilders.Serializer.MyObjectBuilderSerializer.CreateNewObject<MyObjectBuilder_GuiControls>();
+            var objectBuilder = MyObjectBuilderSerializer.CreateNewObject<MyObjectBuilder_GuiControls>();
             objectBuilder.Controls = new List<MyObjectBuilder_GuiControlBase>();
 
             foreach (var control in m_controlsByName)
@@ -102,6 +103,7 @@ namespace Sandbox.Graphics.GUI
         public void Add(MyGuiControlBase control)
         {
             Debug.Assert(!m_controls.Contains(control), "You must not add the same control multiple times.");
+            Debug.Assert(control != this.m_owner, "Can not insert itself!");
 
             MyGuiControlBase.Friend.SetOwner(control, m_owner);
             control.Name = ChangeToNonCollidingName(control.Name);
@@ -116,6 +118,22 @@ namespace Sandbox.Graphics.GUI
             control.NameChanged    += control_NameChanged;
         }
 
+        public void AddWeak(MyGuiControlBase control)
+        {
+            Debug.Assert(!m_controls.Contains(control), "You must not add the same control multiple times.");
+            Debug.Assert(control != this.m_owner, "Can not insert itself!");
+
+//            m_controlsByName.Add(control.Name, control);
+
+            if (control.Visible)
+                m_visibleControls.Add(control);
+
+            m_controls.Add(control);
+
+            control.VisibleChanged += control_VisibleChanged;
+            control.NameChanged += control_NameChanged;
+        }
+
         private void control_NameChanged(MyGuiControlBase control, MyGuiControlBase.NameChangedArgs args)
         {
             Debug.Assert(m_controls.Contains(control));
@@ -124,6 +142,13 @@ namespace Sandbox.Graphics.GUI
             control.Name         = ChangeToNonCollidingName(control.Name);
             control.NameChanged += control_NameChanged;
             m_controlsByName.Add(control.Name, control);
+        }
+
+        public void ClearWeaks()
+        {
+            m_controls.Clear();
+            m_controlsByName.Clear();
+            m_visibleControls.Clear();
         }
 
         public void Clear()

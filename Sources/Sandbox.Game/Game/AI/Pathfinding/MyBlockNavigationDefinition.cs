@@ -1,5 +1,4 @@
-﻿using Sandbox.Common.ObjectBuilders.AI;
-using Sandbox.Common.ObjectBuilders.Definitions;
+﻿using Sandbox.Common.ObjectBuilders.Definitions;
 using Sandbox.Definitions;
 using Sandbox.Engine.Utils;
 using Sandbox.Game.Entities;
@@ -8,6 +7,9 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Text;
+using VRage;
+using VRage.Game;
+using VRage.Game.Definitions;
 using VRageMath;
 
 namespace Sandbox.Game.AI.Pathfinding
@@ -139,7 +141,7 @@ namespace Sandbox.Game.AI.Pathfinding
                     for (int r = 0; r < rMax; ++r)
                     {
                         var triangle = new MyObjectBuilder_BlockNavigationDefinition.Triangle();
-                        triangle.Points = new Common.ObjectBuilders.VRageData.SerializableVector3[3];
+                        triangle.Points = new SerializableVector3[3];
 
                         triangle.Points[0] = faceOrigin;
                         triangle.Points[1] = faceOrigin + rightVec;
@@ -147,7 +149,7 @@ namespace Sandbox.Game.AI.Pathfinding
                         ob.Triangles[i++] = triangle;
 
                         triangle = new MyObjectBuilder_BlockNavigationDefinition.Triangle();
-                        triangle.Points = new Common.ObjectBuilders.VRageData.SerializableVector3[3];
+                        triangle.Points = new SerializableVector3[3];
 
                         triangle.Points[0] = faceOrigin + rightVec;
                         triangle.Points[1] = faceOrigin + rightVec + upVec;
@@ -210,7 +212,7 @@ namespace Sandbox.Game.AI.Pathfinding
                     Vector3I.Max(ref max, ref gridPosC, out max);
 
                     Vector3I pos = min;
-                    for (var it = new Vector3I.RangeIterator(ref min, ref max); it.IsValid(); it.GetNext(out pos))
+                    for (var it = new Vector3I_RangeIterator(ref min, ref max); it.IsValid(); it.GetNext(out pos))
                     {
                         newMesh.RegisterTriangle(tri, ref pos);
                     }

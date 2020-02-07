@@ -2,21 +2,18 @@
 using System.Collections.Generic;
 using Havok;
 using Sandbox.Definitions;
-using Sandbox.Engine.Models;
-using Sandbox.Engine.Utils;
-using Sandbox.Game.World;
 
 using VRage;
-using VRage.Generics;
 using VRage.Utils;
-using VRage.Trace;
 using VRageMath;
-using VRageRender;
-using Sandbox.Common;
-using Sandbox.Graphics;
 using System.Linq;
 using Sandbox.Engine.Physics;
-using VRage;
+using VRage.Game;
+using VRage.Game.Components;
+using VRage.Game.Models;
+using VRage.Game.Entity;
+using VRage.Profiler;
+using VRage.Collections;
 
 namespace Sandbox.Game.Entities.Debris
 {
@@ -43,7 +40,6 @@ namespace Sandbox.Game.Entities.Debris
         private List<Vector3D> m_positionBuffer;
         private List<Vector3> m_voxelDebrisOffsets;
 
-        private List<Vector3> m_tmpVerts = new List<Vector3>();
         private static string[] m_debrisModels;
 
         //public static readonly string VoxelDebrisModel = "Models\\Debris\\RockDebris01.mwm";
@@ -55,7 +51,10 @@ namespace Sandbox.Game.Entities.Debris
         private float m_debrisScaleUpper = 0.0155f; // In size of explosion
         private float m_debrisScaleClamp = 0.5f; // Max size is half size of model
 
-        Dictionary<MyModelShapeInfo, HkShape> m_shapes = new Dictionary<MyModelShapeInfo, HkShape>();
+        MyConcurrentDictionary<MyModelShapeInfo, HkShape> m_shapes = new MyConcurrentDictionary<MyModelShapeInfo, HkShape>();
+
+        private const int MaxDebrisCount = 100;
+        private int m_debrisCount = 0;
 
         public MyDebris()
         {
@@ -78,8 +77,8 @@ namespace Sandbox.Game.Entities.Debris
             //    "Models\\Debris\\Debris31.mwm",
             //};
 
-            m_debrisModels = MyDefinitionManager.Static.GetDebrisDefinitions().Where(x => x.Type == Common.ObjectBuilders.Definitions.MyDebrisType.Model).Select(x => x.Model).ToArray();
-            m_debrisVoxels = MyDefinitionManager.Static.GetDebrisDefinitions().Where(x => x.Type == Common.ObjectBuilders.Definitions.MyDebrisType.Voxel).Select(x => x.Model).ToArray();
+            m_debrisModels = MyDefinitionManager.Static.GetDebrisDefinitions().Where(x => x.Type == MyDebrisType.Model).Select(x => x.Model).ToArray();
+            m_debrisVoxels = MyDefinitionManager.Static.GetDebrisDefinitions().Where(x => x.Type == MyDebrisType.Voxel).Select(x => x.Model).ToArray();
         }
 
         public override Type[] Dependencies
@@ -101,18 +100,33 @@ namespace Sandbox.Game.Entities.Debris
             if (!m_shapes.TryGetValue(info, out shape))
             {
                 shape = CreateShape(model, shapeType);
-                m_shapes.Add(info, shape);
+                m_shapes.TryAdd(info, shape);
             }
             return shape;
         }
 
         HkShape CreateShape(MyModel model, HkShapeType shapeType)
         {
+            if (model.HavokCollisionShapes != null && model.HavokCollisionShapes.Length > 0)
+            {
+                HkShape sh;
+                if (model.HavokCollisionShapes.Length == 1)
+                {
+                    sh = model.HavokCollisionShapes[0];
+                    sh.AddReference();
+                }
+                else
+                {
+                    sh = new HkListShape(model.HavokCollisionShapes,HkReferencePolicy.None);
+                }
+                return sh;          
+            }
+
             switch(shapeType)
             {
                 case HkShapeType.Box:
                     Vector3 halfExtents = (model.BoundingBox.Max - model.BoundingBox.Min) / 2;
-                    return new HkBoxShape(Vector3.Max(halfExtents - 0.1f, new Vector3(0.05f)), 0.02f);
+                    return new HkBoxShape(Vector3.Max(halfExtents-0.05f, new Vector3(0.025f)), 0.02f);
                     break;
 
                 case HkShapeType.Sphere:
@@ -120,13 +134,13 @@ namespace Sandbox.Game.Entities.Debris
                     break;
 
                 case HkShapeType.ConvexVertices:
-                    m_tmpVerts.Clear();
+                    List<Vector3> verts = new List<Vector3>();
                     for (int i = 0; i < model.GetVerticesCount(); i++)
                     {
-                        m_tmpVerts.Add(model.GetVertex(i));
+                        verts.Add(model.GetVertex(i));
                     }
 
-                    return new HkConvexVerticesShape(m_tmpVerts.GetInternalArray(), m_tmpVerts.Count, true, 0.1f);
+                    return new HkConvexVerticesShape(verts.GetInternalArray(), verts.Count, true, 0.1f);
                     break;
             }
             throw new InvalidOperationException("This shape is not supported");
@@ -141,11 +155,17 @@ namespace Sandbox.Game.Entities.Debris
             MyDebug.AssertDebug(Static == null);
             m_positionBuffer = new List<Vector3D>(MyDebrisConstants.APPROX_NUMBER_OF_DEBRIS_OBJECTS_PER_MODEL_EXPLOSION);
             m_voxelDebrisOffsets = new List<Vector3>(MyDebrisConstants.EXPLOSION_VOXEL_DEBRIS_OFFSET_COUNT_3);
-            m_desc.LifespanMinInMiliseconds = MyDebrisConstants.EXPLOSION_DEBRIS_LIFESPAN_MIN_IN_MILISECONDS;
-            m_desc.LifespanMaxInMiliseconds = MyDebrisConstants.EXPLOSION_DEBRIS_LIFESPAN_MAX_IN_MILISECONDS;
+            m_desc.LifespanMinInMiliseconds = MyDebrisConstants.EXPLOSION_VOXEL_DEBRIS_LIFESPAN_MIN_IN_MILISECONDS;
+            m_desc.LifespanMaxInMiliseconds = MyDebrisConstants.EXPLOSION_VOXEL_DEBRIS_LIFESPAN_MAX_IN_MILISECONDS;
+            m_desc.OnCloseAction = OnDebrisClosed;
 
             GenerateVoxelDebrisPositionOffsets(m_voxelDebrisOffsets);
             Static = this;
+        }
+
+        private void OnDebrisClosed(MyDebrisBase obj)
+        {
+            m_debrisCount--;
         }
 
         protected override void UnloadData()
@@ -177,7 +197,7 @@ namespace Sandbox.Game.Entities.Debris
             MyDebug.AssertDebug(debrisPieces > 0);
             for (int i = 0; i < debrisPieces; ++i)
             {
-                var newObj = CreateDebris();
+                var newObj = CreateRandomDebris();
                 if (newObj == null)
                 {
                     break; // no point in continuing
@@ -242,7 +262,7 @@ namespace Sandbox.Game.Entities.Debris
             float scale = Math.Max((float)explosionSphere.Radius, 0.35f) * scaleMultiplier;
             foreach (Vector3D positionInWorldSpace in m_positionBuffer)
             {
-                var newObj = CreateDebris();
+                var newObj = CreateRandomDebris();
                 if (newObj == null)
                 {
                     break; // no point in continuing
@@ -385,36 +405,43 @@ namespace Sandbox.Game.Entities.Debris
 
         private MyDebrisVoxel CreateVoxelDebris()
         {
+            if (m_debrisCount > MaxDebrisCount)
+                return null;
             m_desc.ScaleMin = MyDebrisConstants.EXPLOSION_VOXEL_DEBRIS_INITIAL_SCALE_MIN;
             m_desc.ScaleMax = MyDebrisConstants.EXPLOSION_VOXEL_DEBRIS_INITIAL_SCALE_MAX;
             var newObj = new MyDebrisVoxel();
             m_desc.Model = m_debrisVoxels[m_voxelDebrisModelIndex];
             m_voxelDebrisModelIndex++;
-            if (m_voxelDebrisModelIndex >= m_debrisVoxels.Count())
-            {
-                m_voxelDebrisModelIndex = 0;
-            }
+            m_voxelDebrisModelIndex %= m_debrisVoxels.Length;
 
             newObj.Debris.Init(m_desc);
+            m_debrisCount++;
             return newObj;
         }
 
-        private MyDebrisBase CreateDebris()
+        private MyDebrisBase CreateRandomDebris()
+        {
+            if (m_debrisCount > MaxDebrisCount)
+                return null;
+            var debris = (MyDebrisBase)CreateDebris(m_debrisModels[m_debrisModelIndex]);
+            m_debrisModelIndex++;
+            m_debrisModelIndex %= m_debrisModels.Length;
+            return debris;
+        }
+
+
+        public MyEntity CreateDebris(string model)
         {
             m_desc.ScaleMin = MyDebrisConstants.EXPLOSION_MODEL_DEBRIS_INITIAL_SCALE_MIN;
             m_desc.ScaleMax = MyDebrisConstants.EXPLOSION_MODEL_DEBRIS_INITIAL_SCALE_MAX;
 
             var newObj = new MyDebrisBase();
-            m_desc.Model = m_debrisModels[m_debrisModelIndex];
-            m_debrisModelIndex++;
-            if (m_debrisModelIndex >= m_debrisModels.Count())
-            {
-                m_debrisModelIndex = 0;
-            }
-
+            m_desc.Model = model;
             newObj.Debris.Init(m_desc);
+            m_debrisCount++;
+            m_desc.LifespanMinInMiliseconds = MyDebrisConstants.EXPLOSION_MODEL_DEBRIS_LIFESPAN_MIN_IN_MILISECONDS;
+            m_desc.LifespanMaxInMiliseconds = MyDebrisConstants.EXPLOSION_MODEL_DEBRIS_LIFESPAN_MAX_IN_MILISECONDS;
             return newObj;
         }
-
     }
 }

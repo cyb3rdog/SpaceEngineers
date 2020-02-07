@@ -22,7 +22,6 @@ using VRageMath;
 using Sandbox.Game.GUI;
 using System.Drawing;
 using Sandbox.Game.World;
-using Sandbox.Common.ObjectBuilders.Serializer;
 using SteamSDK;
 using Sandbox.Game.Multiplayer;
 using Sandbox.Engine.Networking;
@@ -30,77 +29,29 @@ using Sandbox.Engine.Multiplayer;
 using ProtoBuf;
 using System.Diagnostics;
 using VRage.Compression;
-using VRage.Utils;
 using VRage.Library.Utils;
 using VRage.FileSystem;
+using VRage.ObjectBuilders;
+using Sandbox.Game.Localization;
+using VRage.Game;
+
 #endregion
 
 namespace Sandbox.Game.Gui
 {
-    class MyGuiControlImageButton : MyGuiControlBase
-    {
-        private MyGuiCompositeTexture m_borderTexture;
-
-        public MyGuiCompositeTexture BorderTexture
-        {
-            get { return m_borderTexture; }
-            set { m_borderTexture = value; }
-        }
-
-        public MyGuiControlImageButton(bool visible = true)
-        {
-            BackgroundTexture = new MyGuiCompositeTexture();
-            Visible = visible;
-            HighlightType = MyGuiControlHighlightType.NEVER;
-        }
-
-        public void SetTexture(string texture)
-        {
-            if (m_borderTexture != null)
-            {
-                BackgroundTexture = new MyGuiCompositeTexture()
-                {
-                    CenterBottom = m_borderTexture.CenterBottom,
-                    CenterTop = m_borderTexture.CenterTop,
-                    LeftBottom = m_borderTexture.LeftBottom,
-                    LeftTop = m_borderTexture.LeftTop,
-                    LeftCenter = m_borderTexture.LeftCenter,
-
-                    RightBottom = m_borderTexture.RightBottom,
-                    RightCenter = m_borderTexture.RightCenter,
-                    RightTop = m_borderTexture.RightTop,
-                    Center = new MyGuiSizedTexture() { Texture = texture, },
-                };
-            }
-            else 
-            {
-                BackgroundTexture = new MyGuiCompositeTexture()
-                {
-                    Center = new MyGuiSizedTexture() { Texture = texture, },
-                };
-            }
-        }
-    }
-
     public abstract class MyGuiBlueprintScreenBase : MyGuiScreenDebugBase
     {
-        [ProtoContract]
-        [MessageIdAttribute(13789, P2PMessageEnum.Reliable)]
-        protected struct ShareBlueprintMsg
-        {
-            [ProtoMember(1)]
-            public ulong WorkshopId;
-            [ProtoMember(2)]
-            public string Name;
-        }
-
         public static string m_localBlueprintFolder = Path.Combine(MyFileSystem.UserDataPath, "Blueprints", "local");
         public static string m_workshopBlueprintFolder = Path.Combine(MyFileSystem.UserDataPath, "Blueprints", "workshop");
+        public static string m_defaultBlueprintFolder = Path.Combine(MyFileSystem.ContentPath, "Data", "Blueprints");
         public static readonly string m_workshopBlueprintSuffix = ".sbb";
 
         public MyGuiBlueprintScreenBase(Vector2 position, Vector2 size, Vector4 backgroundColor, bool isTopMostScreen) :
             base(position, size, backgroundColor, isTopMostScreen)
+
         {
+            m_localBlueprintFolder = Path.Combine(MyFileSystem.UserDataPath, "Blueprints", "local");
+            m_workshopBlueprintFolder = Path.Combine(MyFileSystem.UserDataPath, "Blueprints", "workshop");
             m_canShareInput = false;
             CanBeHidden = true;
             CanHideOthers = false;
@@ -112,7 +63,7 @@ namespace Sandbox.Game.Gui
         protected MyGuiControlButton CreateButton(float usableWidth, StringBuilder text, Action<MyGuiControlButton> onClick, bool enabled = true, MyStringId? tooltip = null, float textScale = 1f)
         {
             var button = AddButton(text, onClick);
-            button.VisualStyle = Common.ObjectBuilders.Gui.MyGuiControlButtonStyleEnum.Rectangular;
+            button.VisualStyle = MyGuiControlButtonStyleEnum.Rectangular;
             button.TextScale = textScale;
             button.Size = new Vector2(usableWidth, button.Size.Y);
             button.Position = button.Position + new Vector2(-0.04f / 2.0f, 0.0f);
@@ -143,12 +94,14 @@ namespace Sandbox.Game.Gui
             return new MyGuiControlLabel(text: text, originAlign: MyGuiDrawAlignEnum.HORISONTAL_LEFT_AND_VERTICAL_TOP, position: position, textScale: textScale);
         }
 
-        protected void SavePrefabToFile(MyObjectBuilder_Definitions prefab, string name = null, bool replace = false, MyBlueprintTypeEnum type = MyBlueprintTypeEnum.LOCAL)
+        protected static void SavePrefabToFile(MyObjectBuilder_Definitions prefab, string name, bool replace = false, MyBlueprintTypeEnum type = MyBlueprintTypeEnum.LOCAL)
         { 
-            if (name == null)
-            {
-                name = MyUtils.StripInvalidChars(MyCubeBuilder.Static.Clipboard.CopiedGridsName);
-            }
+            //if (name == null)
+            //{
+            //    name = MyUtils.StripInvalidChars(MyCubeBuilder.Static.Clipboard.CopiedGridsName);
+            //}
+
+            Debug.Assert(name != null, "Name cannot be null");
 
             string file = "";
             if (type == MyBlueprintTypeEnum.LOCAL)
@@ -198,6 +151,76 @@ namespace Sandbox.Game.Gui
                 MySandboxGame.Log.WriteLine(String.Format("Failed to write prefab at file {0}, message: {1}, stack:{2}", filePath, e.Message, e.StackTrace));
             }
         }
+
+#if !XB1 // XB1_NOWORKSHOP
+        public static void Publish(MyObjectBuilder_Definitions prefab, string blueprintName, Action<ulong> publishCallback = null)
+        {
+            string file = Path.Combine(m_localBlueprintFolder, blueprintName);
+            string title = prefab.ShipBlueprints[0].CubeGrids[0].DisplayName;
+            string description = prefab.ShipBlueprints[0].Description;
+            ulong publishId = prefab.ShipBlueprints[0].WorkshopId;
+            MyGuiSandbox.AddScreen(MyGuiSandbox.CreateMessageBox(
+                styleEnum: MyMessageBoxStyleEnum.Info,
+                buttonType: MyMessageBoxButtonsType.YES_NO,
+                messageCaption: new StringBuilder("Publish"),
+                messageText: new StringBuilder("Do you want to publish this blueprint?"),
+                callback: delegate(MyGuiScreenMessageBox.ResultEnum val)
+                {
+                    if (val == MyGuiScreenMessageBox.ResultEnum.YES)
+                    {
+                        Action<MyGuiScreenMessageBox.ResultEnum, string[]> onTagsChosen = delegate(MyGuiScreenMessageBox.ResultEnum tagsResult, string[] outTags)
+                        {
+                            if (tagsResult == MyGuiScreenMessageBox.ResultEnum.YES)
+                            {
+                                MySteamWorkshop.PublishBlueprintAsync(file, title, description, publishId, outTags, SteamSDK.PublishedFileVisibility.Public,
+                                    callbackOnFinished: delegate(bool success, Result result, ulong publishedFileId)
+                                    {
+                                        if (success)
+                                        {
+                                            if (publishCallback != null)
+                                                publishCallback(publishedFileId);
+
+                                            prefab.ShipBlueprints[0].WorkshopId = publishedFileId;
+                                            SavePrefabToFile(prefab, blueprintName, true);
+                                            MyGuiSandbox.AddScreen(MyGuiSandbox.CreateMessageBox(
+                                                styleEnum: MyMessageBoxStyleEnum.Info,
+                                                messageText: MyTexts.Get(MyCommonTexts.MessageBoxTextWorldPublished),
+                                                messageCaption: new StringBuilder("BLUEPRINT PUBLISHED"),
+                                                callback: (a) =>
+                                                {
+                                                    MySteam.API.OpenOverlayUrl(string.Format("http://steamcommunity.com/sharedfiles/filedetails/?id={0}", publishedFileId));
+                                                }));
+                                        }
+                                        else
+                                        {
+                                            MyStringId error;
+                                            switch (result)
+                                            {
+                                                case Result.AccessDenied:
+                                                    error = MyCommonTexts.MessageBoxTextPublishFailed_AccessDenied;
+                                                    break;
+                                                default:
+                                                    error = MyCommonTexts.MessageBoxTextWorldPublishFailed;
+                                                    break;
+                                            }
+
+                                            MyGuiSandbox.AddScreen(MyGuiSandbox.CreateMessageBox(
+                                                messageText: MyTexts.Get(error),
+                                                messageCaption: MyTexts.Get(MyCommonTexts.MessageBoxCaptionWorldPublishFailed)));
+                                        }
+                                    });
+                            }
+                        };
+
+                        if (MySteamWorkshop.BlueprintCategories.Length > 0)
+                            MyGuiSandbox.AddScreen(new MyGuiScreenWorkshopTags(MySteamWorkshop.WORKSHOP_BLUEPRINT_TAG, MySteamWorkshop.BlueprintCategories, null, onTagsChosen));
+                        else
+                            onTagsChosen(MyGuiScreenMessageBox.ResultEnum.YES, new string[] { MySteamWorkshop.WORKSHOP_BLUEPRINT_TAG });
+                    }
+                }));
+
+        }
+
         public static MyObjectBuilder_Definitions LoadWorkshopPrefab(string archive, ulong? publishedItemId)
         {
             if (!File.Exists(archive) || publishedItemId == null)
@@ -208,6 +231,9 @@ namespace Sandbox.Game.Gui
                 return null;
 
             var extracted = MyZipArchive.OpenOnFile(archive);
+            if (!extracted.FileExists("bp.sbc"))
+                return null;
+
             var stream = extracted.GetFile("bp.sbc").GetStream();
             
             if (stream == null)
@@ -224,8 +250,9 @@ namespace Sandbox.Game.Gui
                 objectBuilder.ShipBlueprints[0].CubeGrids[0].DisplayName = subItem.Title;
                 return objectBuilder;
             }
-            return null;
+			return null;
         }
+#endif // !XB1
 
         public static MyObjectBuilder_Definitions LoadPrefab(string filePath)
         {

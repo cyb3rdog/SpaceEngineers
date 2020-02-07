@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using VRage.Collections;
+using VRage.Library.Collections;
 
 namespace VRageMath.Spatial
 {
@@ -15,6 +16,8 @@ namespace VRageMath.Spatial
         public Func<int, BoundingBoxD, object> OnClusterCreated;
         public Action<object> OnClusterRemoved;
         public Action<object> OnFinishBatch;
+        public Action OnClustersReordered;
+        public Func<long, bool> GetEntityReplicableExistsById; //Debug function. Remove once crash with inconsistent clusters is resolved
 
         #endregion
 
@@ -33,7 +36,6 @@ namespace VRageMath.Spatial
             /// Called when standalone object is removed from cluster
             /// </summary>
             /// <param name="userData"></param>
-            /// <param name="clusterObjectID"></param>
             void Deactivate(object userData);
 
             /// <summary>
@@ -47,7 +49,6 @@ namespace VRageMath.Spatial
             /// Called when multiple objects are removed from cluster.
             /// </summary>
             /// <param name="userData"></param>
-            /// <param name="clusterObjectID"></param>
             void DeactivateBatch(object userData);
 
             /// <summary>
@@ -77,6 +78,7 @@ namespace VRageMath.Spatial
         public static Vector3 MaximumForSplit = IdealClusterSize * 2; //If bigger than this, cluster tries to split
 
         public readonly BoundingBoxD? SingleCluster;
+        public readonly bool ForcedClusters;
 
 
         class MyCluster
@@ -99,6 +101,8 @@ namespace VRageMath.Spatial
             public IMyActivationHandler ActivationHandler;
             public BoundingBoxD AABB;
             public int StaticId;
+            public string Tag;
+            public long EntityId;
         }
 
         public struct MyClusterQueryResult
@@ -121,12 +125,13 @@ namespace VRageMath.Spatial
 
         #region Cluster management
 
-        public MyClusterTree(BoundingBoxD? singleCluster)
+        public MyClusterTree(BoundingBoxD? singleCluster, bool forcedClusters)
         {
             SingleCluster = singleCluster;
+            ForcedClusters = forcedClusters;
         }
 
-        public ulong AddObject(BoundingBoxD bbox, Vector3 velocity, IMyActivationHandler activationHandler, ulong? customId)
+        public ulong AddObject(BoundingBoxD bbox, IMyActivationHandler activationHandler, ulong? customId, string tag, long entityId)
         {
             if (SingleCluster.HasValue && m_clusters.Count == 0)
             {
@@ -136,7 +141,7 @@ namespace VRageMath.Spatial
             }
 
             BoundingBoxD inflatedBBox;
-            if (SingleCluster.HasValue)
+            if (SingleCluster.HasValue || ForcedClusters)
                 inflatedBBox = bbox;
             else
                 inflatedBBox = bbox.GetInflated(MinimumDistanceFromBorder);
@@ -163,32 +168,41 @@ namespace VRageMath.Spatial
                         needReorder = true;
             }
             else
-            if (m_returnedClusters.Count > 1)
-                needReorder = true;
-            else
-                if (m_returnedClusters.Count == 0)
+                if (m_returnedClusters.Count > 1)
                 {
                     if (!activationHandler.IsStaticForCluster)
-                    {
-                        var clusterBB = new BoundingBoxD(bbox.Center - IdealClusterSize / 2, bbox.Center + IdealClusterSize / 2);
-                        m_clusterTree.OverlapAllBoundingBox(ref clusterBB, m_returnedClusters);
-
-                        if (m_returnedClusters.Count == 0)
-                        { //Space is empty, create new cluster
-
-                            m_staticTree.OverlapAllBoundingBox(ref clusterBB, m_objectDataResultList);
-                            cluster = CreateCluster(ref clusterBB);
-
-                            foreach (var ob in m_objectDataResultList)
-                            {
-                                System.Diagnostics.Debug.Assert(m_objectsData[ob].Cluster == null, "Found object must not be in cluster!");
-                                AddObjectToCluster(cluster, ob, false);
-                            }
-                        }
-                        else  //There is still some blocking cluster
-                            needReorder = true;
-                    }
+                        needReorder = true;
                 }
+                else
+                    if (m_returnedClusters.Count == 0)
+                    {
+                        if (SingleCluster.HasValue)
+                            return VRageMath.Spatial.MyClusterTree.CLUSTERED_OBJECT_ID_UNITIALIZED;
+
+                        if (!activationHandler.IsStaticForCluster)
+                        {
+                            var clusterBB = new BoundingBoxD(bbox.Center - IdealClusterSize / 2, bbox.Center + IdealClusterSize / 2);
+                            m_clusterTree.OverlapAllBoundingBox(ref clusterBB, m_returnedClusters);
+
+                            if (m_returnedClusters.Count == 0)
+                            { //Space is empty, create new cluster
+
+                                m_staticTree.OverlapAllBoundingBox(ref clusterBB, m_objectDataResultList);
+                                cluster = CreateCluster(ref clusterBB);
+
+                                foreach (var ob in m_objectDataResultList)
+                                {
+                                    System.Diagnostics.Debug.Assert(m_objectsData[ob].Cluster == null, "Found object must not be in cluster!");
+                                    if (m_objectsData[ob].Cluster == null)
+                                    {
+                                        AddObjectToCluster(cluster, ob, false);
+                                    }
+                                }
+                            }
+                            else  //There is still some blocking cluster
+                                needReorder = true;
+                        }
+                    }
 
             ulong objectId = customId.HasValue ? customId.Value : m_clusterObjectCounter++;
             int staticObjectId = MyDynamicAABBTreeD.NullNode;
@@ -199,12 +213,16 @@ namespace VRageMath.Spatial
                 Cluster = cluster,
                 ActivationHandler = activationHandler,
                 AABB = bbox,
-                StaticId = staticObjectId
+                StaticId = staticObjectId,
+                Tag = tag,
+                EntityId = entityId
             };
 
             System.Diagnostics.Debug.Assert(!needReorder || (!SingleCluster.HasValue && needReorder), "Object cannot be added outside borders of a single cluster");
 
-            if (needReorder && !SingleCluster.HasValue)
+            System.Diagnostics.Debug.Assert(!needReorder || (!ForcedClusters && needReorder), "Error in cluster data, they dont correspond to provided objects");
+
+            if (needReorder && !SingleCluster.HasValue && !ForcedClusters)
             {
                 System.Diagnostics.Debug.Assert(cluster == null, "Error in cluster logic");
 
@@ -266,7 +284,7 @@ namespace VRageMath.Spatial
 
         private MyCluster CreateCluster(ref BoundingBoxD clusterBB)
         {
-            MyCluster cluster = new MyCluster() //Center = {X:-10968.2552425968 Y:-3958.99401506744 Z:-188.682065703847} Max = {X:11118.0759795131 Y:11202.10024965 Z:11287.440539642}Min = {X:-33054.5864647067 Y:-19120.0882797849 Z:-11664.8046710497}
+            MyCluster cluster = new MyCluster() 
             {
                 AABB = clusterBB,
                 Objects = new HashSet<ulong>()
@@ -282,8 +300,19 @@ namespace VRageMath.Spatial
             return cluster;
         }
 
+        public static BoundingBoxD AdjustAABBByVelocity(BoundingBoxD aabb, Vector3 velocity)
+        {
+            if (velocity.LengthSquared() > 0.001f)
+            {
+                velocity.Normalize();
+            }
 
-        public void MoveObject(ulong id, BoundingBoxD oldAabb, BoundingBoxD aabb, Vector3 velocity)
+            aabb.Include(aabb.Center + velocity * 2000.0f);
+
+            return aabb;
+        }
+
+        public void MoveObject(ulong id, BoundingBoxD aabb, Vector3 velocity)
         {
             System.Diagnostics.Debug.Assert(id != CLUSTERED_OBJECT_ID_UNITIALIZED, "Unitialized object in cluster!");
 
@@ -293,19 +322,41 @@ namespace VRageMath.Spatial
                 System.Diagnostics.Debug.Assert(!objectData.ActivationHandler.IsStaticForCluster, "Cannot move static object!");
 
                 var oldAABB = objectData.AABB;
-                m_objectsData[id].AABB = aabb;
+                objectData.AABB = aabb;
 
-                BoundingBoxD originalAABB = aabb;
-                Vector3 velocityDir = Vector3.Normalize(velocity);
-
-                BoundingBoxD extendedAABB = aabb.Include(aabb.Center + velocityDir * 2000);
-                //                BoundingBoxD newClusterAABB = aabb.Include(aabb.Center + velocityDir * IdealClusterSize / 2);
-
+                aabb = AdjustAABBByVelocity(aabb, velocity);
+                
                 System.Diagnostics.Debug.Assert(m_clusters.Contains(objectData.Cluster));
 
-                if (objectData.Cluster.AABB.Contains(extendedAABB) != ContainmentType.Contains && !SingleCluster.HasValue)
+                var newContainmentType = objectData.Cluster.AABB.Contains(aabb);
+                if (newContainmentType != ContainmentType.Contains && !SingleCluster.HasValue && !ForcedClusters)
                 {
-                    ReorderClusters(originalAABB.Include(oldAABB), id);
+                    if (newContainmentType == ContainmentType.Disjoint)
+                    {
+                        //Probably caused by teleport 
+                        m_clusterTree.OverlapAllBoundingBox(ref aabb, m_returnedClusters);
+                        if ((m_returnedClusters.Count == 1) &&
+                            (m_returnedClusters[0].AABB.Contains(aabb) == ContainmentType.Contains))
+                        {
+                            //Just move object from one cluster to another
+                            var oldCluster = objectData.Cluster;
+                            RemoveObjectFromCluster(objectData, false);
+                            if (oldCluster.Objects.Count == 0)
+                                RemoveCluster(oldCluster);
+
+                            AddObjectToCluster(m_returnedClusters[0], objectData.Id, false);
+                        }
+                        else
+                        {
+                            aabb.InflateToMinimum(IdealClusterSize);
+                            ReorderClusters(aabb.Include(oldAABB), id);
+                        }
+                    }
+                    else
+                    {
+                        aabb.InflateToMinimum(IdealClusterSize);
+                        ReorderClusters(aabb.Include(oldAABB), id);
+                    }
                 }
 
                 System.Diagnostics.Debug.Assert(m_objectsData[id].Cluster.AABB.Contains(objectData.AABB) == ContainmentType.Contains || SingleCluster.HasValue, "Inconsistency in clusters");
@@ -319,6 +370,45 @@ namespace VRageMath.Spatial
             //      if (!ob.Value.ActivationHandler.IsStatic)
             //        System.Diagnostics.Debug.Assert(ob.Value.Cluster.AABB.Contains(ob.Value.AABB) == ContainmentType.Contains, "Inconsistency in clusters");
             //}
+        }
+
+        public void EnsureClusterSpace(BoundingBoxD aabb)
+        {
+            if (SingleCluster.HasValue)
+                return;
+            if (ForcedClusters)
+                return;
+
+            m_clusterTree.OverlapAllBoundingBox(ref aabb, m_returnedClusters);
+
+            bool needReorder = true;
+
+            if (m_returnedClusters.Count == 1)
+            {
+                if (m_returnedClusters[0].AABB.Contains(aabb) == ContainmentType.Contains)
+                    needReorder = false;
+            }
+
+            if (needReorder)
+            {
+                ulong objectId = m_clusterObjectCounter++;
+                int staticObjectId = MyDynamicAABBTreeD.NullNode;
+
+                m_objectsData[objectId] = new MyObjectData()
+                {
+                    Id = objectId,
+                    Cluster = null,
+                    ActivationHandler = null,
+                    AABB = aabb,
+                    StaticId = staticObjectId
+                };
+
+                ReorderClusters(aabb, objectId);
+
+                RemoveObjectFromCluster(m_objectsData[objectId], false);
+
+                m_objectsData.Remove(objectId);
+            }
         }
 
         public void RemoveObject(ulong id)
@@ -399,6 +489,13 @@ namespace VRageMath.Spatial
             return Vector3D.Zero;
         }
 
+        public object GetClusterForPosition(Vector3D pos)
+        {
+            var bs = new BoundingSphereD(pos, 1);
+            m_clusterTree.OverlapAllBoundingSphere(ref bs, m_returnedClusters);
+            return m_returnedClusters.Count > 0 ? m_returnedClusters.Single().UserData : null;
+        }
+
         public void Dispose()
         {
             foreach (var cluster in m_clusters)
@@ -421,17 +518,57 @@ namespace VRageMath.Spatial
             return new ListReader<object>(m_userObjects);
         }
 
-        List<MyLineSegmentOverlapResult<MyCluster>> m_lineResultList = new List<MyLineSegmentOverlapResult<MyCluster>>();
-        List<MyCluster> m_resultList = new List<MyCluster>();
-        List<ulong> m_objectDataResultList = new List<ulong>();
+        [ThreadStatic]
+        static List<MyLineSegmentOverlapResult<MyCluster>> m_lineResultListPerThread;
+        static List<MyLineSegmentOverlapResult<MyCluster>> m_lineResultList
+        {
+            get
+            {
+                if (m_lineResultListPerThread == null)
+                    m_lineResultListPerThread = new List<MyLineSegmentOverlapResult<MyCluster>>();
+                return m_lineResultListPerThread;
+            }
+        }
+
+        [ThreadStatic]
+        static List<MyCluster> m_resultListPerThread;
+        static List<MyCluster> m_resultList
+        {
+            get
+            {
+                if (m_resultListPerThread == null)
+                    m_resultListPerThread = new List<MyCluster>();
+                return m_resultListPerThread;
+            }
+        }
+
+        [ThreadStatic]
+        static List<ulong> m_objectDataResultListPerThread;
+        static List<ulong> m_objectDataResultList
+        {
+            get
+            {
+                if (m_objectDataResultListPerThread == null)
+                    m_objectDataResultListPerThread = new List<ulong>();
+                return m_objectDataResultListPerThread;
+            }
+        }
 
         public void CastRay(Vector3D from, Vector3D to, List<MyClusterQueryResult> results)
         {
+            // If m_clusterTree doesn't exist, or the results array is null, don't perform function
+            if (m_clusterTree == null || results == null)
+                return;
+
             LineD line = new LineD(from, to);
             m_clusterTree.OverlapAllLineSegment(ref line, m_lineResultList);
 
             foreach (var res in m_lineResultList)
             {
+                // Skip results without an element
+                if (res.Element == null)
+                    continue;
+
                 results.Add(new MyClusterQueryResult()
                 {
                     AABB = res.Element.AABB,
@@ -520,7 +657,7 @@ namespace VRageMath.Spatial
         //6A  split until only allowed size      
         //6B  leave lowest larger size
         //repeat 6 until dominant axis is allowed size or not splittable
-        public void ReorderClusters(BoundingBoxD aabb, ulong objectId)
+        public void ReorderClusters(BoundingBoxD aabb, ulong objectId = ulong.MaxValue)
         {
             //1+2
             aabb.InflateToMinimum(IdealClusterSize);
@@ -536,7 +673,9 @@ namespace VRageMath.Spatial
             {
                 //4
                 objectsInUnion.Clear();
-                objectsInUnion.Add(m_objectsData[objectId]);
+
+                if (objectId != ulong.MaxValue)
+                    objectsInUnion.Add(m_objectsData[objectId]);
 
                 foreach (MyCluster collidedCluster in m_resultList)
                 {
@@ -590,8 +729,8 @@ namespace VRageMath.Spatial
             var unionClusterDesc = new MyClusterDescription()
             {
                 AABB = unionCluster,
-                DynamicObjects = objectsInUnion.Where(x => !x.ActivationHandler.IsStaticForCluster).ToList(),
-                StaticObjects = objectsInUnion.Where(x => x.ActivationHandler.IsStaticForCluster).ToList(),
+                DynamicObjects = objectsInUnion.Where(x => x.ActivationHandler == null || !x.ActivationHandler.IsStaticForCluster).ToList(),
+                StaticObjects = objectsInUnion.Where(x => (x.ActivationHandler != null) && x.ActivationHandler.IsStaticForCluster).ToList(),
             };
             clustersToDivide.Push(unionClusterDesc);
 
@@ -878,27 +1017,6 @@ namespace VRageMath.Spatial
 
             System.Diagnostics.Debug.Assert(staticObjectsTotal >= staticObjectsAdded, "Static objects appeared out of union");
 
-#if DEBUG
-            //foreach (var finalCluster in finalClusters)
-            //{
-            //    foreach (var obj in finalCluster.DynamicObjects)
-            //    {
-            //        System.Diagnostics.Debug.Assert(!oldClusters.Contains(obj.Cluster), "Object was not added to correct cluster");
-            //    }
-            //}
-
-            //foreach (var objectData in m_objectsData)
-            //{
-            //    if (!objectData.Value.ActivationHandler.IsStaticForCluster)
-            //        System.Diagnostics.Debug.Assert(!oldClusters.Contains(objectData.Value.Cluster));
-            //}
-
-            //foreach (var objectData in m_objectsData)
-            //{
-            //    if (!objectData.Value.ActivationHandler.IsStaticForCluster)
-            //        System.Diagnostics.Debug.Assert(m_clusters.Contains(objectData.Value.Cluster));
-            //}
-#endif
             foreach (MyCluster oldCluster in oldClusters)
             {
                 RemoveCluster(oldCluster);
@@ -912,9 +1030,13 @@ namespace VRageMath.Spatial
 
                 foreach (var ob in newCluster.Objects)
                 {
-                    m_objectsData[ob].ActivationHandler.FinishAddBatch();
+                    if (m_objectsData[ob].ActivationHandler != null)
+                        m_objectsData[ob].ActivationHandler.FinishAddBatch();
                 }
             }
+
+            if (OnClustersReordered != null)
+                OnClustersReordered();
         }
 
         public void GetAllStaticObjects(List<BoundingBoxD> staticObjects)
@@ -925,6 +1047,82 @@ namespace VRageMath.Spatial
             {
                 staticObjects.Add(m_objectsData[ob].AABB);
             }
+        }
+
+        public void Serialize(List<BoundingBoxD> list)
+        {
+            foreach (var cluster in m_clusters)
+            {
+                list.Add(cluster.AABB);
+            }
+        }
+
+        public void Deserialize(List<BoundingBoxD> list)
+        { 
+            //Remove all
+            foreach (var obj in m_objectsData.Values)
+            {
+                if (obj.Cluster != null)
+                {
+                    RemoveObjectFromCluster(obj, true);
+                }
+                else
+                {
+                }
+            }
+            foreach (var obj in m_objectsData.Values)
+            {
+                if (obj.Cluster != null)
+                {
+                    obj.ActivationHandler.FinishRemoveBatch(obj.Cluster.UserData);
+                    obj.Cluster = null;
+                }
+            }
+            foreach (MyCluster oldCluster in m_clusters)
+            {
+                if (OnFinishBatch != null)
+                    OnFinishBatch(oldCluster.UserData);
+            }
+
+            while (m_clusters.Count > 0)
+            {
+                RemoveCluster(m_clusters[0]);
+            }
+
+
+            for (int i = 0; i < list.Count; i++)
+            {
+                BoundingBoxD aabb = list[i];
+                CreateCluster(ref aabb);
+            }
+
+            foreach (var obj in m_objectsData)
+            {
+                m_clusterTree.OverlapAllBoundingBox(ref obj.Value.AABB, m_returnedClusters);
+
+                if (m_returnedClusters.Count != 1 && !(obj.Value.ActivationHandler.IsStaticForCluster))
+                {
+                    throw new Exception(String.Format("Inconsistent objects and deserialized clusters. Entity name: {0}, Found clusters: {1}, Replicable exists: {2}", obj.Value.Tag, m_returnedClusters.Count, GetEntityReplicableExistsById(obj.Value.EntityId)));
+                }
+
+                if (m_returnedClusters.Count == 1)
+                {
+                    AddObjectToCluster(m_returnedClusters[0], obj.Key, true);
+                }
+            }
+
+            foreach (var cluster in m_clusters)
+            {
+                if (OnFinishBatch != null)
+                    OnFinishBatch(cluster.UserData);
+
+                foreach (var ob in cluster.Objects)
+                {
+                    if (m_objectsData[ob].ActivationHandler != null)
+                        m_objectsData[ob].ActivationHandler.FinishAddBatch();
+                }
+            }
+
         }
     }
 }

@@ -4,8 +4,14 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using Sandbox.ModAPI.Interfaces;
+using Sandbox.Game.GameSystems;
+using VRage.Game;
 using VRage.Utils;
 using VRage.Library.Utils;
+using VRage.Game.Components;
+using VRage.ModAPI;
+using VRage.Game.ModAPI;
+using VRage.Game.ModAPI.Interfaces;
 
 namespace Sandbox.Game.World
 {
@@ -16,7 +22,7 @@ namespace Sandbox.Game.World
             get { return VoxelMaps; }
         }
 
-        ModAPI.Interfaces.IMyCameraController IMySession.CameraController
+        IMyCameraController IMySession.CameraController
         {
             get { return CameraController; }
         }
@@ -53,7 +59,7 @@ namespace Sandbox.Game.World
 
         bool IMySession.ClientCanSave
         {
-            get { return ClientCanSave; }
+            get { return false; }
         }
 
         bool IMySession.CreativeMode
@@ -90,10 +96,10 @@ namespace Sandbox.Game.World
 
         bool IMySession.EnableCopyPaste
         {
-            get { return EnableCopyPaste; }
+            get { return IsCopyPastingEnabled; }
         }
 
-        Common.ObjectBuilders.MyEnvironmentHostilityEnum IMySession.EnvironmentHostility
+        MyEnvironmentHostilityEnum IMySession.EnvironmentHostility
         {
             get { return EnvironmentHostility; }
         }
@@ -120,22 +126,22 @@ namespace Sandbox.Game.World
             GameOver(customMessage);
         }
 
-        Common.ObjectBuilders.MyObjectBuilder_Checkpoint IMySession.GetCheckpoint(string saveName)
+        MyObjectBuilder_Checkpoint IMySession.GetCheckpoint(string saveName)
         {
             return GetCheckpoint(saveName);
         }
 
-        Common.ObjectBuilders.MyObjectBuilder_Sector IMySession.GetSector()
+        MyObjectBuilder_Sector IMySession.GetSector()
         {
             return GetSector();
         }
 
         Dictionary<string, byte[]> IMySession.GetVoxelMapsArray()
         {
-            return GetVoxelMapsArray();
+            return GetVoxelMapsArray(true);
         }
 
-        Common.ObjectBuilders.MyObjectBuilder_World IMySession.GetWorld()
+        MyObjectBuilder_World IMySession.GetWorld()
         {
             return GetWorld();
         }
@@ -175,6 +181,11 @@ namespace Sandbox.Game.World
         short IMySession.MaxFloatingObjects
         {
             get { return MaxFloatingObjects; }
+        }
+
+        short IMySession.MaxBackupSaves
+        {
+            get { return MaxBackupSaves; }
         }
 
         short IMySession.MaxPlayers
@@ -242,7 +253,7 @@ namespace Sandbox.Game.World
             }
         }
 
-        Common.ObjectBuilders.MyOnlineModeEnum IMySession.OnlineMode
+        MyOnlineModeEnum IMySession.OnlineMode
         {
             get { return OnlineMode; }
         }
@@ -276,7 +287,7 @@ namespace Sandbox.Game.World
             get { return RefinerySpeedMultiplier; }
         }
 
-        void IMySession.RegisterComponent(Common.MySessionComponentBase component, Common.MyUpdateOrder updateOrder, int priority)
+        void IMySession.RegisterComponent(MySessionComponentBase component, MyUpdateOrder updateOrder, int priority)
         {
             RegisterComponent(component, updateOrder, priority);
         }
@@ -346,7 +357,7 @@ namespace Sandbox.Game.World
             UnloadMultiplayer();
         }
 
-        void IMySession.UnregisterComponent(Common.MySessionComponentBase component)
+        void IMySession.UnregisterComponent(VRage.Game.Components.MySessionComponentBase component)
         {
             UnregisterComponent(component);
         }
@@ -377,24 +388,24 @@ namespace Sandbox.Game.World
         }
 
         IMyPlayer IMySession.Player
-        { 
-            get { return LocalHumanPlayer; } 
+        {
+            get { return LocalHumanPlayer; }
         }
 
-        IMyControllableEntity IMySession.ControlledObject 
+        IMyControllableEntity IMySession.ControlledObject
         {
-            get { return ControlledEntity; } 
+            get { return ControlledEntity; }
         }
 
-        Common.ObjectBuilders.MyObjectBuilder_SessionSettings IMySession.SessionSettings
+        MyObjectBuilder_SessionSettings IMySession.SessionSettings
         {
-            get { return Settings;}
+            get { return Settings; }
         }
 
 
         IMyFactionCollection IMySession.Factions
         {
-            get { return Factions;}
+            get { return Factions; }
         }
 
         IMyCamera IMySession.Camera
@@ -407,9 +418,58 @@ namespace Sandbox.Game.World
             get { return MySandboxGame.Config; }
         }
 
+        IMyDamageSystem IMySession.DamageSystem
+        {
+            get { return MyDamageSystem.Static; }
+        }
+
         IMyGpsCollection IMySession.GPS
         {
             get { return MySession.Static.Gpss; }
+        }
+        
+        bool IMySession.IsUserAdmin( ulong steamId )
+        {
+            return MySession.Static.IsUserAdmin( steamId );
+        }
+        
+        [Obsolete("Use GetUserPromoteLevel")]
+        bool IMySession.IsUserPromoted( ulong steamId )
+        {
+            return MySession.Static.IsUserSpaceMaster( steamId );
+        }
+
+        [Obsolete("Use HasCreativeRights")]
+        bool IMySession.HasAdminPrivileges
+        {
+            get { return HasCreativeRights; }
+        }
+
+        event Action IMySession.OnSessionReady
+        {
+            add { MySession.Static.OnReady += value; }
+            remove { MySession.Static.OnReady -= value; }
+        }
+
+        event Action IMySession.OnSessionLoading
+        {
+            add { MySession.OnLoading += value; }
+            remove { MySession.OnLoading -= value; }
+        }
+
+        MyPromoteLevel IMySession.PromoteLevel
+        {
+            get { return PromoteLevel; }
+        }
+
+        MyPromoteLevel IMySession.GetUserPromoteLevel(ulong steamId)
+        {
+            return GetUserPromoteLevel(steamId);
+        }
+
+        bool IMySession.HasCreativeRights
+        {
+            get { return HasCreativeRights; }
         }
     }
 }

@@ -1,29 +1,32 @@
-﻿using System;
+﻿using Sandbox.Common.ObjectBuilders;
+using Sandbox.Definitions;
+using Sandbox.Game.Entities;
+using Sandbox.Game.GUI;
+using Sandbox.Game.World;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Linq;
-using System.Text;
-using Sandbox.Common.ObjectBuilders;
-using Sandbox.Common.ObjectBuilders.Definitions;
-using Sandbox.Definitions;
-using Sandbox.Engine.Utils;
-using Sandbox.Game.Entities;
-using Sandbox.Game.Entities.Character;
-using Sandbox.Game.Gui;
-using Sandbox.Game.World;
-using VRageMath;
 using Sandbox.Game.Entities.Cube;
-using Sandbox.Graphics;
-using Sandbox.Common;
-using Sandbox.Game.GUI;
 using VRage;
-using Sandbox.Common.Components;
-using Sandbox.Game.SessionComponents;
+using VRage.Audio;
+using VRage.Game;
+using VRage.Game.Definitions;
+using VRage.Game.Entity;
+using VRage.ObjectBuilders;
+using VRageMath;
+using VRage.Collections;
+using VRage.Profiler;
 
 namespace Sandbox.Game.Screens.Helpers
 {
     public class MyToolbar
     {
+        public interface IMyToolbarExtension
+        {
+            void Update();
+            void AddedToToolbar(MyToolbar toolbar);
+        }
+
         public struct SlotArgs
         {
             public int? SlotNumber;
@@ -40,13 +43,15 @@ namespace Sandbox.Game.Screens.Helpers
         }
 
         public const int DEF_SLOT_COUNT = 9;
-        public const int DEF_PAGE_COUNT = 4;
+        public const int DEF_PAGE_COUNT = 9;
 
-        public int SlotCount = 9;
-        public int PageCount = 4;
+        public int SlotCount;
+        public int PageCount;
         public int ItemCount { get { return SlotCount * PageCount; } }
 
         private MyToolbarItem[] m_items;
+
+        private CachingDictionary<Type, IMyToolbarExtension> m_extensions;
 
         private MyToolbarType m_toolbarType;
         public MyToolbarType ToolbarType
@@ -67,29 +72,12 @@ namespace Sandbox.Game.Screens.Helpers
         private int? m_stagedSelectedSlot;
         private bool m_activateSelectedItem;
         private int m_currentPage;
-        private const int m_colorMaskSlotCount = 14;
-        public static List<Vector3> m_colorMaskHSVSlots;
-        public static int m_currentColorMaskHSV = 0;
 
         #region Properties
 
-        public static Vector3 ColorMaskHSV
-        {
-            get
-            {
-                if (m_colorMaskHSVSlots == null || !MyFakes.ENABLE_BLOCK_COLORING)
-                    return Vector3.Zero;
-                return m_colorMaskHSVSlots[m_currentColorMaskHSV];
-            }
-            set
-            {
-                m_colorMaskHSVSlots[m_currentColorMaskHSV] = value;
-            }
-        }
-
         public bool ShowHolsterSlot
         {
-            get { return m_toolbarType == MyToolbarType.Character; }
+            get { return m_toolbarType == MyToolbarType.Character || m_toolbarType == MyToolbarType.BuildCockpit; }
         }
 
         public int? SelectedSlot
@@ -172,6 +160,30 @@ namespace Sandbox.Game.Screens.Helpers
             return this[index];
         }
 
+        public MyToolbarItem GetItemAtSlot(int slot)
+        {
+            if (!IsValidSlot(slot) && !IsHolsterSlot(slot))
+                return null;
+
+            if (IsValidSlot(slot))
+            {
+                return m_items[SlotToIndex(slot)];
+            }
+            return null;
+        }
+
+        public int GetItemIndex(MyToolbarItem item)
+        {
+            for (int i = 0; i < m_items.Length; ++i)
+            {
+                if (m_items[i] == item)
+                {
+                    return i;
+                }
+            }
+            return -1;
+        }
+
         /// <summary>
         /// Override value for Enabled state of items. null means that per item state is reported, otherwise this value is reported.
         /// </summary>
@@ -235,74 +247,14 @@ namespace Sandbox.Game.Screens.Helpers
                 }
             }
 
-            if ((builder.ColorMaskHSVList == null) || (builder.ColorMaskHSVList.Count == 0))
-            {
-                SetDefaultColors();
-            }
-            else if (builder.ColorMaskHSVList.Count == m_colorMaskSlotCount)
-            {
-                if(ColorsSetToDefaults(m_colorMaskHSVSlots))
-                    m_colorMaskHSVSlots = builder.ColorMaskHSVList;
-            }
-            else if (builder.ColorMaskHSVList.Count > m_colorMaskSlotCount)
-            {
-                m_colorMaskHSVSlots = new List<Vector3>(m_colorMaskSlotCount);
-                for (int i = 0; i < m_colorMaskSlotCount; i++)
-                    m_colorMaskHSVSlots.Add(builder.ColorMaskHSVList[i]);
-            }
-            else
-            {
-                m_colorMaskHSVSlots = builder.ColorMaskHSVList;
-                for (int i = m_colorMaskHSVSlots.Count - 1; i < m_colorMaskSlotCount; i++)
-                    m_colorMaskHSVSlots.Add(MyRenderComponentBase.OldBlackToHSV);
-            }
-        }
-
-        public static bool ColorsSetToDefaults(List<Vector3> colors)
-        {
-            if(colors[0] != (MyRenderComponentBase.OldGrayToHSV))
-                return false;
-            if (colors[1] != (MyRenderComponentBase.OldRedToHSV))
-                return false;
-            if (colors[2] != (MyRenderComponentBase.OldGreenToHSV))
-                return false;
-            if (colors[3] != (MyRenderComponentBase.OldBlueToHSV))
-                return false;
-            if (colors[4] != (MyRenderComponentBase.OldYellowToHSV))
-                return false;
-            if (colors[5] != (MyRenderComponentBase.OldWhiteToHSV))
-                return false;
-            if (colors[6] != (MyRenderComponentBase.OldBlackToHSV))
-                return false;
-            
-            return true;
-        }
-
-        public static void SetDefaultColors()
-        {
-            if (m_colorMaskHSVSlots == null)
-                m_colorMaskHSVSlots = new List<Vector3>(m_colorMaskSlotCount);
-            if (m_colorMaskHSVSlots.Count < m_colorMaskSlotCount)
-            {
-                int x = (m_colorMaskSlotCount - m_colorMaskHSVSlots.Count);
-                for (int i = 0; i < x; i++)
-                    m_colorMaskHSVSlots.Add(MyRenderComponentBase.OldBlackToHSV);
-            }
-            m_colorMaskHSVSlots[0] = (MyRenderComponentBase.OldGrayToHSV);
-            m_colorMaskHSVSlots[1] = (MyRenderComponentBase.OldRedToHSV);
-            m_colorMaskHSVSlots[2] = (MyRenderComponentBase.OldGreenToHSV);
-            m_colorMaskHSVSlots[3] = (MyRenderComponentBase.OldBlueToHSV);
-            m_colorMaskHSVSlots[4] = (MyRenderComponentBase.OldYellowToHSV);
-            m_colorMaskHSVSlots[5] = (MyRenderComponentBase.OldWhiteToHSV);
-            m_colorMaskHSVSlots[6] = (MyRenderComponentBase.OldBlackToHSV);
-            for (int i = 7; i < m_colorMaskSlotCount; i++)
-                if (m_colorMaskHSVSlots[i] == MyRenderComponentBase.OldBlackToHSV)
-                    m_colorMaskHSVSlots[i] = (m_colorMaskHSVSlots[i - 7] + new Vector3(0, 0.15f, 0.2f));
+            MyCockpit cockpit = Owner as MyCockpit;
+            if (cockpit != null && cockpit.CubeGrid != null)
+                cockpit.CubeGrid.OnBlockClosed += OnBlockClosed;
         }
 
         public MyObjectBuilder_Toolbar GetObjectBuilder()
         {
-            var objectBuilder = Sandbox.Common.ObjectBuilders.Serializer.MyObjectBuilderSerializer.CreateNewObject<MyObjectBuilder_Toolbar>();
+            var objectBuilder = MyObjectBuilderSerializer.CreateNewObject<MyObjectBuilder_Toolbar>();
 
             if (objectBuilder.Slots == null)
                 objectBuilder.Slots = new List<MyObjectBuilder_Toolbar.Slot>(m_items.Length);
@@ -313,8 +265,6 @@ namespace Sandbox.Game.Screens.Helpers
             {
                 if (m_items[i] != null)
                 {
-
-                    //This is only for compatibility with old save. Item and Index slots will be empty for new toolbar item types
                     MyObjectBuilder_ToolbarItem slotObjectBuilder = m_items[i].GetObjectBuilder();
                     var data = m_items[i].GetObjectBuilder();
                     if (data != null)
@@ -322,36 +272,17 @@ namespace Sandbox.Game.Screens.Helpers
                         objectBuilder.Slots.Add(new MyObjectBuilder_Toolbar.Slot()
                         {
                             Index = i,
-                            Item = "",
+                            Item = "", // "Item" field is only for backwards compatibility, new items serialize into "Data"
                             Data = data
                         });
                     }
                 }
             }
 
-            objectBuilder.ColorMaskHSVList = new List<Vector3>(m_colorMaskHSVSlots);
             return objectBuilder;
         }
 
         #endregion
-
-        public static void NextColorSlot()
-        {
-            m_currentColorMaskHSV++;
-            m_currentColorMaskHSV %= m_colorMaskSlotCount;
-        }
-
-        public static void PrevColorSlot()
-        {
-            m_currentColorMaskHSV--;
-            if (m_currentColorMaskHSV < 0)
-                m_currentColorMaskHSV = m_colorMaskSlotCount - 1;
-        }
-
-        public static int CurrentColorMaskHSV
-        {
-            get { return m_currentColorMaskHSV; }
-        }
 
         public void PageUp()
         {
@@ -408,6 +339,10 @@ namespace Sandbox.Game.Screens.Helpers
         {
             if (!m_items.IsValidIndex(i))
                 return;
+
+			var definitionItem = item as MyToolbarItemDefinition;
+			if (definitionItem != null && definitionItem.Definition != null && !definitionItem.Definition.AvailableInSurvival && MySession.Static.SurvivalMode)
+				return;
             
             if (item != null && !item.AllowedInToolbarType(m_toolbarType))
                 return;
@@ -418,13 +353,13 @@ namespace Sandbox.Game.Screens.Helpers
             if (m_items[i] != null)
             {
                 oldEnabledState = m_items[i].Enabled;
-                m_items[i].OnClose();
+                m_items[i].OnRemovedFromToolbar(this);
             }
 
             m_items[i] = item;
-
-            if (m_items[i] != null)
+            if (item != null)
             {
+                item.OnAddedToToolbar(this);
                 newEnabledState = true;
             }
 
@@ -443,15 +378,41 @@ namespace Sandbox.Game.Screens.Helpers
             }
         }
 
-        void ToolbarItemUpdated(MyToolbarItem obj, MyToolbarItem.ChangeInfo changed)
+        public void AddExtension(IMyToolbarExtension newExtension)
         {
-            if (ItemUpdated != null)
+            if (m_extensions == null)
             {
-                int index = Array.IndexOf(m_items, obj);
-                if (index != -1)
-                {
-                    ItemUpdated(this, new IndexArgs() { ItemIndex = index }, changed);
-                }
+                m_extensions = new CachingDictionary<Type, IMyToolbarExtension>();
+            }
+
+            m_extensions.Add(newExtension.GetType(), newExtension);
+            newExtension.AddedToToolbar(this);
+        }
+
+        public bool TryGetExtension<T>(out T extension)
+            where T: class, IMyToolbarExtension
+        {
+            extension = null;
+
+            if (m_extensions == null) return false;
+            IMyToolbarExtension retval = null;
+            if (m_extensions.TryGetValue(typeof(T), out retval))
+            {
+                extension = retval as T;
+            }
+            return extension != null;
+        }
+
+        public void RemoveExtension(IMyToolbarExtension toRemove)
+        {
+            m_extensions.Remove(toRemove.GetType());
+        }
+
+        void ToolbarItemUpdated(int index, MyToolbarItem.ChangeInfo changed)
+        {
+            if (m_items.IsValidIndex(index) && ItemUpdated != null)
+            {
+                ItemUpdated(this, new IndexArgs() { ItemIndex = index }, changed);
             }
         }
 
@@ -483,9 +444,43 @@ namespace Sandbox.Game.Screens.Helpers
                 ItemEnabledChanged(this, new SlotArgs() { SlotNumber = slotIndex });
         }
 
-        public void CharacterInventory_OnContentsChanged(MyInventory inventory)
+        public void CharacterInventory_OnContentsChanged(MyInventoryBase inventory)
         {
             Update();
+        }
+
+        private void OnBlockClosed(MySlimBlock block)
+        {
+            if (block.FatBlock == null)
+                return;
+
+            // Check if this toolbar is owned by the removed block, in which case clear out all the items.
+            if (Owner != null && Owner.EntityId == block.FatBlock.EntityId)
+            {
+                for (int i = 0; i < m_items.Length; i++)
+                {
+                    if (m_items[i] == null) continue;
+
+                    m_items[i].OnRemovedFromToolbar(this);
+                    m_items[i] = null;
+                }
+                return;
+            }
+
+            // Check if the toolbar refers to the removed block, in which case, disable the removed item.
+            for (int i = 0; i < m_items.Length; i++)
+            {
+                if (m_items[i] == null) continue;
+
+                if (m_items[i] is IMyToolbarItemEntity)
+                {
+                    IMyToolbarItemEntity item = (IMyToolbarItemEntity)m_items[i];
+                    if (item.CompareEntityIds(block.FatBlock.EntityId))
+                    {
+                        m_items[i].SetEnabled(false);
+                    }
+                }
+            }
         }
 
         public void SetDefaults(bool sendEvent = true)
@@ -513,9 +508,6 @@ namespace Sandbox.Game.Screens.Helpers
 
                 for (int i = v; i < m_items.Length; ++i)
                     SetItemAtIndex(i, null);
-
-                m_currentColorMaskHSV = 0;
-                SetDefaultColors();
             }
         }
 
@@ -525,7 +517,7 @@ namespace Sandbox.Game.Screens.Helpers
                 SetItemAtIndex(i, null);
         }
 
-        public void ActivateItemAtSlot(int slot, bool checkIfWantsToBeActivated = false)
+        public void ActivateItemAtSlot(int slot, bool checkIfWantsToBeActivated = false, bool playActivationSound = true)
         {
             if (!IsValidSlot(slot) && !IsHolsterSlot(slot))
                 return;
@@ -534,7 +526,10 @@ namespace Sandbox.Game.Screens.Helpers
             {
                 if (ActivateItemAtIndex(SlotToIndex(slot), checkIfWantsToBeActivated))
                 {
-                    MyGuiAudio.PlaySound(MyGuiSounds.HudClick);
+                    if (playActivationSound)
+                    {
+                        MyGuiAudio.PlaySound(MyGuiSounds.HudClick);
+                    }
                     if (SlotActivated != null)
                         SlotActivated(this, new SlotArgs { SlotNumber = slot });
                 }
@@ -614,11 +609,17 @@ namespace Sandbox.Game.Screens.Helpers
         {
             var itemToActivate = m_items[index];
             if (StagedSelectedSlot.HasValue && SlotToIndex(StagedSelectedSlot.Value) != index)
-                    StagedSelectedSlot = null;
+                StagedSelectedSlot = null;
             if (itemToActivate != null && itemToActivate.Enabled)
             {
                 if (checkIfWantsToBeActivated && !itemToActivate.WantsToBeActivated)
                     return false;
+
+                if (itemToActivate.WantsToBeActivated || MyCubeBuilder.Static.IsActivated)
+                {
+                    if (SelectedItem != itemToActivate)
+                        Unselect(false);
+                }
                 return itemToActivate.Activate();
             }
             if (itemToActivate == null)
@@ -626,22 +627,20 @@ namespace Sandbox.Game.Screens.Helpers
             return false;
         }
 
-        public void Unselect()
+        public void Unselect(bool unselectSound = true)
         {
             if (MyToolbarComponent.CurrentToolbar != this)
                 return;
-            if (SelectedItem != null)
+            if (SelectedItem != null && unselectSound)
                 MyGuiAudio.PlaySound(MyGuiSounds.HudClick);
 
-            var controlledObject = MySession.ControlledEntity as IMyControllableEntity;
+            if (unselectSound)
+                MySession.Static.GameFocusManager.Clear();
+
+            var controlledObject = MySession.Static.ControlledEntity;
             if (controlledObject != null)
                 controlledObject.SwitchToWeapon(null);
-
-            if (MyCubeBuilder.Static.IsActivated)
-            {
-                MyCubeBuilder.Static.Deactivate();
-            }
-
+            
             if (Unselected != null)
                 Unselected(this);
         }
@@ -673,15 +672,15 @@ namespace Sandbox.Game.Screens.Helpers
             return true;
         }
 
-        public string GetItemIcon(int idx)
+        public string[] GetItemIcons(int idx)
         {
             if (!IsValidIndex(idx))
-                return "";
+                return null;
 
             if (m_items[idx] != null)
-                return m_items[idx].Icon;
+                return m_items[idx].Icons;
 
-            return "";
+            return null;
         }
 
         public long GetControllerPlayerID()
@@ -716,7 +715,7 @@ namespace Sandbox.Game.Screens.Helpers
                     var updated = m_items[i].Update(Owner, playerID);
                     if (updated == MyToolbarItem.ChangeInfo.None) continue;
 
-                    ToolbarItemUpdated(m_items[i], updated);
+                    ToolbarItemUpdated(i, updated);
                 }
             }
 
@@ -758,6 +757,15 @@ namespace Sandbox.Game.Screens.Helpers
                 SelectedSlotChanged(this, new SlotArgs() { SlotNumber = m_selectedSlot });
 
             EnabledOverride = null;
+
+            if (m_extensions != null)
+            {
+                foreach (var extension in m_extensions.Values)
+                {
+                    extension.Update();
+                }
+                m_extensions.ApplyChanges();
+            }
 
             ProfilerShort.End();
         }

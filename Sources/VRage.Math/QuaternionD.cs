@@ -17,22 +17,22 @@ namespace VRageMath
         /// <summary>
         /// Specifies the x-value of the vector component of the quaternion.
         /// </summary>
-        [ProtoBuf.ProtoMember(1)]
+        [ProtoBuf.ProtoMember]
         public double X;
         /// <summary>
         /// Specifies the y-value of the vector component of the quaternion.
         /// </summary>
-        [ProtoBuf.ProtoMember(2)]
+        [ProtoBuf.ProtoMember]
         public double Y;
         /// <summary>
         /// Specifies the z-value of the vector component of the quaternion.
         /// </summary>
-        [ProtoBuf.ProtoMember(3)]
+        [ProtoBuf.ProtoMember]
         public double Z;
         /// <summary>
         /// Specifies the rotation component of the quaternion.
         /// </summary>
-        [ProtoBuf.ProtoMember(4)]
+        [ProtoBuf.ProtoMember]
         public double W;
 
         static QuaternionD()
@@ -1023,6 +1023,22 @@ namespace VRageMath
         public static bool IsZero(QuaternionD value, double epsilon)
         {
             return Math.Abs(value.X) < epsilon && Math.Abs(value.Y) < epsilon && Math.Abs(value.Z) < epsilon && Math.Abs(value.W) < epsilon;
+        }
+
+        public static void CreateFromTwoVectors(ref Vector3D firstVector, ref Vector3D secondVector, out QuaternionD result)
+        {
+            Vector3D thirdVector;
+            Vector3D.Cross(ref firstVector, ref secondVector, out thirdVector);
+            result = new QuaternionD(thirdVector.X, thirdVector.Y, thirdVector.Z, Vector3.Dot(firstVector, secondVector));
+            result.W += result.Length();
+            result.Normalize();
+        }
+
+        public static QuaternionD CreateFromTwoVectors(Vector3D firstVector, Vector3D secondVector)
+        {
+            QuaternionD rtn;
+            CreateFromTwoVectors(ref firstVector, ref secondVector, out rtn);
+            return rtn;
         }
     }
 }

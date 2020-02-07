@@ -35,7 +35,7 @@ namespace Sandbox.Game.Gui
             m_searchChangedFunc += RefreshHistoryGameList;
 
             m_historyPage = m_selectedPage;
-            m_historyPage.SetToolTip(MyTexts.GetString(MySpaceTexts.JoinGame_TabTooltip_History));
+            m_historyPage.SetToolTip(MyTexts.GetString(MyCommonTexts.JoinGame_TabTooltip_History));
 
 
             RefreshHistoryGameList();
@@ -77,7 +77,7 @@ namespace Sandbox.Game.Gui
             m_gameTypeText.Clear();
             m_gameTypeToolTip.Clear();
             m_servers.Clear();
-            m_historyPage.Text = new StringBuilder().Append(MyTexts.Get(MySpaceTexts.JoinGame_TabTitle_History));
+            m_historyPage.Text = new StringBuilder().Append(MyTexts.Get(MyCommonTexts.JoinGame_TabTitle_History));
 
             MySandboxGame.Log.WriteLine("Requesting dedicated servers");
 
@@ -100,14 +100,22 @@ namespace Sandbox.Game.Gui
 
         void OnHistoryServerListResponded(int server)
         {
+            VRage.Profiler.ProfilerShort.Begin("OnHistoryServerListResponded");
             GameServerItem serverItem = SteamAPI.Instance.GetHistoryServerDetails(server);
-            AddServerItem(serverItem, false);
-            m_historyPage.Text = new StringBuilder().Append(MyTexts.Get(MySpaceTexts.JoinGame_TabTitle_History).ToString()).Append(" (").Append(m_gamesTable.RowsCount).Append(")");
+            AddServerItem(serverItem, 
+                delegate() 
+                {
+                    m_historyPage.Text = new StringBuilder().Append(MyTexts.Get(MyCommonTexts.JoinGame_TabTitle_History).ToString()).Append(" (").Append(m_gamesTable.RowsCount).Append(")");
+                },
+                isFiltered: false);
+            VRage.Profiler.ProfilerShort.End();
         }
 
         void OnHistoryServersCompleteResponse(MatchMakingServerResponseEnum response)
         {
+            VRage.Profiler.ProfilerShort.Begin("OnHistoryServersCompleteResponse");
             CloseHistoryRequest();
+            VRage.Profiler.ProfilerShort.End();
         }
 
         void CloseHistoryRequest()

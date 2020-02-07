@@ -15,6 +15,7 @@ using Sandbox.Engine.Physics;
 using Sandbox.Engine.Utils;
 using Sandbox.Game.Debugging;
 using Sandbox.Game.GameSystems.Electricity;
+using Sandbox.Game.GameSystems;
 
 using VRage.Utils;
 using VRage.Trace;
@@ -27,21 +28,28 @@ using Sandbox.Game.Gui;
 using Sandbox.Engine.Multiplayer;
 using Sandbox.Common.ObjectBuilders.Definitions;
 using SteamSDK;
-using Sandbox.ModAPI.Ingame;
+using Sandbox.ModAPI;
 using Sandbox.ModAPI.Interfaces;
 using Sandbox.Game.Localization;
+using VRage.Game.Entity;
+using VRage;
+using VRage.Game;
+using VRage.Game.ModAPI;
+using VRage.Game.ModAPI.Interfaces;
+using VRage.Network;
+using VRage.Sync;
 
 #endregion
 
 namespace Sandbox.Game.Entities.Cube
 {
     [MyCubeBlockType(typeof(MyObjectBuilder_Warhead))]
-    class MyWarhead : MyTerminalBlock, IMyDestroyableObject, IMyWarhead
+    public class MyWarhead : MyTerminalBlock, IMyDestroyableObject, IMyWarhead
     {
         const float m_maxExplosionRadius = 30.0f;
         public static float ExplosionImpulse = 30000;
         bool m_isExploded = false;
-        MyDamageType m_damageType = MyDamageType.Deformation;
+        MyStringHash m_damageType = MyDamageType.Deformation;
         public int RemainingMS = 0;
         BoundingSphereD m_explosionShrinkenSphere;
         BoundingSphereD m_explosionFullSphere;
@@ -53,8 +61,12 @@ namespace Sandbox.Game.Entities.Cube
 
         private bool m_countdownEmissivityColor;
 
-        private int m_countdownMs;
+        private readonly Sync<int> m_countdownMs;
         public bool IsCountingDown { get; private set; }
+
+        // Used for achievement to get player who clicked Detonate button
+        // Called only on client
+        public static Action<MyWarhead> OnWarheadDetonatedClient;
 
         private int BlinkDelay
         {
@@ -67,7 +79,7 @@ namespace Sandbox.Game.Entities.Cube
             }
         }
 
-        private bool m_isArmed;
+        private readonly Sync<bool> m_isArmed;
         public bool IsArmed
         {
             get
@@ -76,22 +88,34 @@ namespace Sandbox.Game.Entities.Cube
             }
             set
             {
-                m_isArmed = value;
-                RaisePropertiesChanged();
-                UpdateEmissivity();
+                m_isArmed.Value = value;
             }
         }
 
         private MyWarheadDefinition m_warheadDefinition;
 
-        static MyWarhead()
+        public MyWarhead()
         {
+#if XB1 // XB1_SYNC_NOREFLECTION
+            m_countdownMs = SyncType.CreateAndAddProp<int>();
+            m_isArmed = SyncType.CreateAndAddProp<bool>();
+#endif // XB1
+            CreateTerminalControls();
+
+            m_isArmed.ValueChanged += (x) => UpdateEmissivity();
+        }
+
+        protected override void CreateTerminalControls()
+        {
+            if (MyTerminalControlFactory.AreControlsCreated<MyWarhead>())
+                return;
+            base.CreateTerminalControls();
             var slider = new MyTerminalControlSlider<MyWarhead>("DetonationTime", MySpaceTexts.TerminalControlPanel_Warhead_DetonationTime, MySpaceTexts.TerminalControlPanel_Warhead_DetonationTime);
             slider.SetLogLimits(1, 60 * 60);
             slider.DefaultValue = 10;
             slider.Enabled = (x) => !x.IsCountingDown;
             slider.Getter = (x) => x.DetonationTime;
-            slider.Setter = (x, v) => MySyncWarhead.SetTimer(x, v * 1000);
+            slider.Setter = (x, v) => x.m_countdownMs.Value = (int)(v * 1000);
             slider.Writer = (x, sb) => MyValueFormatter.AppendTimeExact(Math.Max(x.m_countdownMs, 1000) / 1000, sb);
             slider.EnableActions();
             MyTerminalControlFactory.AddControl(slider);
@@ -100,7 +124,7 @@ namespace Sandbox.Game.Entities.Cube
                 "StartCountdown",
                 MySpaceTexts.TerminalControlPanel_Warhead_StartCountdown,
                 MySpaceTexts.TerminalControlPanel_Warhead_StartCountdown,
-                (b) => MySyncWarhead.StartCountdown(b));
+                (b) => MyMultiplayer.RaiseEvent(b, x => x.SetCountdown, true));
             startButton.EnableAction();
             MyTerminalControlFactory.AddControl(startButton);
 
@@ -108,7 +132,7 @@ namespace Sandbox.Game.Entities.Cube
                 "StopCountdown",
                 MySpaceTexts.TerminalControlPanel_Warhead_StopCountdown,
                 MySpaceTexts.TerminalControlPanel_Warhead_StopCountdown,
-                (b) => MySyncWarhead.StopCountdown(b));
+                (b) => MyMultiplayer.RaiseEvent(b, x => x.SetCountdown, false));
             stopButton.EnableAction();
             MyTerminalControlFactory.AddControl(stopButton);
 
@@ -121,7 +145,7 @@ namespace Sandbox.Game.Entities.Cube
                 MySpaceTexts.TerminalControlPanel_Warhead_SwitchTextDisarmed,
                 MySpaceTexts.TerminalControlPanel_Warhead_SwitchTextArmed);
             safetyCheckbox.Getter = (x) => !x.IsArmed;
-            safetyCheckbox.Setter = (x, v) => MySyncWarhead.SetArm(x, !v);
+            safetyCheckbox.Setter = (x, v) => x.IsArmed = !v;
             safetyCheckbox.EnableAction();
             MyTerminalControlFactory.AddControl(safetyCheckbox);
 
@@ -129,7 +153,15 @@ namespace Sandbox.Game.Entities.Cube
                 "Detonate",
                 MySpaceTexts.TerminalControlPanel_Warhead_Detonate,
                 MySpaceTexts.TerminalControlPanel_Warhead_Detonate,
-                (b) => MySyncWarhead.Detonate(b));
+                (b) =>
+                {
+                    if (b.IsArmed)
+                    {
+                        MyMultiplayer.RaiseEvent(b, x => x.DetonateRequest);
+                        var handler = OnWarheadDetonatedClient;
+                        if (handler != null) handler(b);
+                    }
+                });
             detonateButton.Enabled = (x) => x.IsArmed;
             detonateButton.EnableAction();
             MyTerminalControlFactory.AddControl(detonateButton);
@@ -142,12 +174,13 @@ namespace Sandbox.Game.Entities.Cube
 
             var ob = (MyObjectBuilder_Warhead)objectBuilder;
 
-            m_countdownMs = ob.CountdownMs;
-            m_isArmed = ob.IsArmed;
-            if (ob.IsCountingDown)
-                StartCountdown();
+            m_countdownMs.Value = ob.CountdownMs;
+            m_isArmed.Value = ob.IsArmed;
+            IsCountingDown = ob.IsCountingDown;
 
             this.IsWorkingChanged += MyWarhead_IsWorkingChanged;
+
+            UseDamageSystem = true;
         }
 
         public override MyObjectBuilder_CubeBlock GetObjectBuilderCubeBlock(bool copy = false)
@@ -200,7 +233,7 @@ namespace Sandbox.Game.Entities.Cube
                 MyCubeBlock.UpdateEmissiveParts(Render.RenderObjectIDs[0], 0.0f, Color.Gray, Color.White);
         }
 
-        internal override void ContactPointCallback(ref MyGridContactInfo value)
+        public override void ContactPointCallback(ref MyGridContactInfo value)
         {
             base.ContactPointCallback(ref value);
 
@@ -209,12 +242,12 @@ namespace Sandbox.Game.Entities.Cube
 
             if (System.Math.Abs(value.Event.SeparatingVelocity) > 5 && IsFunctional)
             {
-                if (MySession.Static.DestructibleBlocks)
+                if (CubeGrid.BlocksDestructionEnabled)
                     Explode();
             }
         }
 
-        //public void DoDamage(float damage, MyDamageType damageType, bool sync)
+        //public void DoDamage(float damage, MyStringHash damageType, bool sync)
         //{
         //    if (MarkedToExplode)
         //        return;
@@ -264,7 +297,7 @@ namespace Sandbox.Game.Entities.Cube
         {
             if (!IsFunctional) return false;
 
-            m_countdownMs -= frameMs;
+            m_countdownMs.Value -= frameMs;
 
             // Update emissivity
             if ((m_countdownMs % BlinkDelay) < frameMs)
@@ -273,9 +306,6 @@ namespace Sandbox.Game.Entities.Cube
                 UpdateEmissivity();
             }
 
-            // Update clients' countdown every five seconds (but only if there's no interpolation, which should take care of the timer sync)
-            if (true && Sync.IsServer && (m_countdownMs % 5000) < frameMs)
-                MySyncWarhead.SyncClientTimers(this);
             RaisePropertiesChanged();
             return m_countdownMs <= 0;
         }
@@ -289,7 +319,7 @@ namespace Sandbox.Game.Entities.Cube
 
         public void Explode()
         {
-            if (m_isExploded || !MySession.Static.WeaponsEnabled)
+            if (m_isExploded || !MySession.Static.WeaponsEnabled || CubeGrid.Physics == null)
                 return;
 
             m_isExploded = true;
@@ -323,7 +353,7 @@ namespace Sandbox.Game.Entities.Cube
             {
                 PlayerDamage = 0,
                 //Damage = m_ammoProperties.Damage,
-                Damage = MyFakes.ENABLE_VOLUMETRIC_EXPLOSION ? 15000 : 5000,
+                Damage = MyFakes.ENABLE_VOLUMETRIC_EXPLOSION ? m_warheadDefinition.WarheadExplosionDamage : 5000,
                 ExplosionType = particleID,
                 ExplosionSphere = m_explosionFullSphere,
                 LifespanMiliseconds = MyExplosionsConstants.EXPLOSION_LIFESPAN,
@@ -335,7 +365,7 @@ namespace Sandbox.Game.Entities.Cube
                 VoxelExplosionCenter = m_explosionFullSphere.Center,// + 2 * WorldMatrix.Forward * 0.5f,
                 ExplosionFlags = MyExplosionFlags.AFFECT_VOXELS | MyExplosionFlags.APPLY_FORCE_AND_DAMAGE | MyExplosionFlags.CREATE_DEBRIS | MyExplosionFlags.CREATE_DECALS | MyExplosionFlags.CREATE_PARTICLE_EFFECT | MyExplosionFlags.CREATE_SHRAPNELS | MyExplosionFlags.APPLY_DEFORMATION,
                 VoxelCutoutScale = 1.0f,
-                PlaySound = true,
+                PlaySound = false,
                 ApplyForceAndDamage = true,
                 ObjectsRemoveDelayInMiliseconds = 40
             };
@@ -349,7 +379,7 @@ namespace Sandbox.Game.Entities.Cube
             //Small grid = 2.5m radius
             float radiusMultiplier = 4; //reduced by 20%
             float warheadBlockRadius = CubeGrid.GridSize * radiusMultiplier;
-           
+
             float shrink = 0.85f;
             m_explosionShrinkenSphere = new BoundingSphereD(PositionComp.GetPosition(), (double)warheadBlockRadius * shrink);
 
@@ -359,6 +389,8 @@ namespace Sandbox.Game.Entities.Cube
             m_warheadsInsideCount = 0;
             foreach (var entity in m_entitiesInShrinkenSphere)
             {
+                if (entity as MyCubeBlock != null && (entity as MyCubeBlock).CubeGrid.Projector != null)
+                    continue;
                 if (Vector3D.DistanceSquared(PositionComp.GetPosition(), entity.PositionComp.GetPosition()) < warheadBlockRadius * shrink * warheadBlockRadius * shrink)
                 {
                     MyWarhead warhead = entity as MyWarhead;
@@ -399,6 +431,17 @@ namespace Sandbox.Game.Entities.Cube
 
         public override void OnDestroy()
         {
+            MySoundPair cueEnum = BlockDefinition.ActionSound;
+            if (cueEnum != MySoundPair.Empty)
+            {
+                MyEntity3DSoundEmitter emitter = MyAudioComponent.TryGetSoundEmitter();
+                if (emitter != null)
+                {
+                    emitter.Entity = this;
+                    emitter.SetPosition(PositionComp.GetPosition());
+                    emitter.PlaySound(cueEnum);
+                }
+            }
             if (Sandbox.Game.Multiplayer.Sync.IsServer)
             {
                 if (!IsFunctional) return;
@@ -441,208 +484,41 @@ namespace Sandbox.Game.Entities.Cube
         void ExplodeDelayed(int maxMiliseconds)
         {
             RemainingMS = MyUtils.GetRandomInt(maxMiliseconds);
-            m_countdownMs = 0;
+            m_countdownMs.Value = 0;
             MyWarheads.AddWarhead(this);
         }
 
-        //public float Integrity
-        //{
-        //    get { return 1; }
-        //}
+        public bool UseDamageSystem { get; private set; }
 
-        [PreloadRequired]
-        class MySyncWarhead
+
+        [Event,Reliable,Server]
+        void DetonateRequest()
         {
-            [MessageIdAttribute(7511, P2PMessageEnum.Reliable)]
-            protected struct SetTimerMsg : IEntityMessage
+            Detonate();
+        }
+
+        [Event, Reliable, Server]
+        void SetCountdown(bool countdownState)
+        {
+            bool success = false;
+            if (countdownState)
+                success = StartCountdown();
+            else
+                success = StopCountdown();
+
+            if (success)
             {
-                public long EntityId;
-                public long GetEntityId() { return EntityId; }
-
-                public int TimerMs;
+                MyMultiplayer.RaiseEvent(this, x => x.SetCountdownClient, countdownState);
             }
+        }
 
-            [MessageIdAttribute(7512, P2PMessageEnum.Reliable)]
-            protected struct CountdownMsg : IEntityMessage
-            {
-                public long EntityId;
-                public long GetEntityId() { return EntityId; }
-
-                public BoolBlit CountdownState;
-            }
-
-            [MessageIdAttribute(7513, P2PMessageEnum.Reliable)]
-            protected struct ArmMsg : IEntityMessage
-            {
-                public long EntityId;
-                public long GetEntityId() { return EntityId; }
-
-                public BoolBlit IsArmed;
-            }
-
-            [MessageIdAttribute(7514, P2PMessageEnum.Reliable)]
-            protected struct DetonateMsg : IEntityMessage
-            {
-                public long EntityId;
-                public long GetEntityId() { return EntityId; }
-            }
-
-            static MySyncWarhead()
-            {
-                MySyncLayer.RegisterMessage<SetTimerMsg>(SetTimerRequest, MyMessagePermissions.ToServer, MyTransportMessageEnum.Request);
-                MySyncLayer.RegisterMessage<SetTimerMsg>(SetTimerSuccess, MyMessagePermissions.FromServer, MyTransportMessageEnum.Success);
-                MySyncLayer.RegisterMessage<CountdownMsg>(CountdownRequest, MyMessagePermissions.ToServer, MyTransportMessageEnum.Request);
-                MySyncLayer.RegisterMessage<CountdownMsg>(CountdownSuccess, MyMessagePermissions.FromServer, MyTransportMessageEnum.Success);
-                MySyncLayer.RegisterMessage<ArmMsg>(ArmSuccess, MyMessagePermissions.Any);
-                MySyncLayer.RegisterMessage<DetonateMsg>(DetonateRequest, MyMessagePermissions.Any);
-            }
-
-            public static void SetTimer(MyWarhead warhead, float newTimerValue)
-            {
-                SetTimerMsg msg = new SetTimerMsg();
-                msg.EntityId = warhead.EntityId;
-                msg.TimerMs = (int)newTimerValue;
-    
-                if (Sync.IsServer)
-                    Sync.Layer.SendMessageToAllAndSelf(ref msg, MyTransportMessageEnum.Success);
-                else
-                    Sync.Layer.SendMessageToServer(ref msg, MyTransportMessageEnum.Request);
-            }
-
-            public static void SyncClientTimers(MyWarhead warhead)
-            {
-                Debug.Assert(Sync.IsServer);
-                if (!Sync.IsServer) return;
-
-                SetTimerMsg msg = new SetTimerMsg();
-                msg.EntityId = warhead.EntityId;
-                msg.TimerMs = warhead.m_countdownMs;
-
-                Sync.Layer.SendMessageToAll(ref msg, MyTransportMessageEnum.Success);
-            }
-
-            static void SetTimerRequest(ref SetTimerMsg msg, MyNetworkClient sender)
-            {
-                Debug.Assert(Sync.IsServer);
-                MyEntity entity;
-                MyEntities.TryGetEntityById(msg.EntityId, out entity);
-                var warhead = entity as MyWarhead;
-                if (warhead != null)
-                    Sync.Layer.SendMessageToAllAndSelf(ref msg, MyTransportMessageEnum.Success);
-            }
-
-            static void SetTimerSuccess(ref SetTimerMsg msg, MyNetworkClient sender)
-            {
-                MyEntity entity;
-                MyEntities.TryGetEntityById(msg.EntityId, out entity);
-                var warhead = entity as MyWarhead;
-                if (warhead != null)
-                {
-                    warhead.m_countdownMs = msg.TimerMs;
-                    warhead.RaisePropertiesChanged();
-                }
-            }
-
-            public static void StartCountdown(MyWarhead warhead)
-            {
-                SetCountdown(warhead, true);
-            }
-
-            public static void StopCountdown(MyWarhead warhead)
-            {
-                SetCountdown(warhead, false);
-            }
-
-            private static void SetCountdown(MyWarhead warhead, bool countdownState)
-            {
-                CountdownMsg msg = new CountdownMsg();
-                msg.EntityId = warhead.EntityId;
-                msg.CountdownState = countdownState;
-
-                if (Sync.IsServer)
-                {
-                    SetCountdownServer(warhead, ref msg);
-                }
-                else
-                    Sync.Layer.SendMessageToServer(ref msg, MyTransportMessageEnum.Request);
-            }
-
-            private static void SetCountdownServer(MyWarhead warhead, ref CountdownMsg msg)
-            {
-                bool success = false;
-                if (msg.CountdownState)
-                    success = warhead.StartCountdown();
-                else
-                    success = warhead.StopCountdown();
-                if (success)
-                    Sync.Layer.SendMessageToAll(ref msg, MyTransportMessageEnum.Success);
-            }
-
-            static void CountdownRequest(ref CountdownMsg msg, MyNetworkClient sender)
-            {
-                Debug.Assert(Sync.IsServer);
-                MyEntity entity;
-                MyEntities.TryGetEntityById(msg.EntityId, out entity);
-                var warhead = entity as MyWarhead;
-                if (warhead != null)
-                    SetCountdownServer(warhead, ref msg);
-            }
-
-            static void CountdownSuccess(ref CountdownMsg msg, MyNetworkClient sender)
-            {
-                MyEntity entity;
-                MyEntities.TryGetEntityById(msg.EntityId, out entity);
-                var warhead = entity as MyWarhead;
-                if (warhead != null)
-                {
-                    if (msg.CountdownState)
-                        warhead.StartCountdown();
-                    else
-                        warhead.StopCountdown();
-                }
-            }
-
-            public static void SetArm(MyWarhead warhead, bool armed)
-            {
-                warhead.IsArmed = armed;
-
-                ArmMsg msg = new ArmMsg();
-                msg.EntityId = warhead.EntityId;
-                msg.IsArmed = armed;
-
-                Sync.Layer.SendMessageToAll(ref msg);
-            }
-
-            static void ArmSuccess(ref ArmMsg msg, MyNetworkClient sender)
-            {
-                MyEntity entity;
-                MyEntities.TryGetEntityById(msg.EntityId, out entity);
-                var warhead = entity as MyWarhead;
-                if (warhead != null)
-                    warhead.IsArmed = msg.IsArmed;
-            }
-
-            public static void Detonate(MyWarhead warhead)
-            {
-                // Armed state is checked only locally. Otherwise, it could happen that server does not detonate the warhead even though it was armed on the client
-                if (!warhead.IsArmed) return;
-
-                DetonateMsg msg = new DetonateMsg();
-                msg.EntityId = warhead.EntityId;
-
-                Sync.Layer.SendMessageToServer(ref msg);
-            }
-
-            static void DetonateRequest(ref DetonateMsg msg, MyNetworkClient sender)
-            {
-                MyEntity entity;
-                MyEntities.TryGetEntityById(msg.EntityId, out entity);
-                var warhead = entity as MyWarhead;
-                if (warhead != null)
-                {
-                    warhead.Detonate();
-                }
-            }
+        [Event, Reliable, Broadcast]
+        void SetCountdownClient(bool countdownState)
+        {
+            if (countdownState)
+                StartCountdown();
+            else
+                StopCountdown();
         }
 
         void IMyDestroyableObject.OnDestroy()
@@ -650,34 +526,52 @@ namespace Sandbox.Game.Entities.Cube
             OnDestroy();
         }
 
-        void IMyDestroyableObject.DoDamage(float damage, MyDamageType damageType, bool sync)
+        bool IMyDestroyableObject.DoDamage(float damage, MyStringHash damageType, bool sync, MyHitInfo? hitInfo, long attackerId)
         {
             if (MarkedToExplode || (!MySession.Static.DestructibleBlocks))
-                return;
+                return false;
             //if (!IsFunctional)
             //    return false;
 
             if (sync)
             {
                 if (Sync.IsServer)
-                    MySyncHelper.DoDamageSynced(this, damage, damageType);
+                    MySyncDamage.DoDamageSynced(this, damage, damageType, attackerId);
             }
             else
             {
+                MyDamageInformation damageInfo = new MyDamageInformation(false, damage, damageType, attackerId);
+                if (UseDamageSystem)
+                    MyDamageSystem.Static.RaiseBeforeDamageApplied(this, ref damageInfo);
+
                 m_damageType = damageType;
-                if (damage > 0)
+
+                if (damageInfo.Amount > 0)
+                {
+                    if (UseDamageSystem)
+                        MyDamageSystem.Static.RaiseAfterDamageApplied(this, damageInfo);
+
                     OnDestroy();
+
+                    if (UseDamageSystem)
+                        MyDamageSystem.Static.RaiseDestroyed(this, damageInfo);
+                }
             }
-            return;
+            return true;
         }
 
         float IMyDestroyableObject.Integrity
         {
             get { return 1; }
         }
-      
+
+        bool IMyDestroyableObject.UseDamageSystem
+        {
+            get { return UseDamageSystem; }
+        }
+
         public float DetonationTime { get { return Math.Max(m_countdownMs, 1000) / 1000; } }
-        bool IMyWarhead.IsCountingDown { get { return IsCountingDown; } }
-        float IMyWarhead.DetonationTime { get { return DetonationTime; } }
+        bool ModAPI.Ingame.IMyWarhead.IsCountingDown { get { return IsCountingDown; } }
+        float ModAPI.Ingame.IMyWarhead.DetonationTime { get { return DetonationTime; } }
     }
 }

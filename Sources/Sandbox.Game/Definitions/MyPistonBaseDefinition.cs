@@ -1,19 +1,17 @@
 ﻿using Sandbox.Common.ObjectBuilders.Definitions;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using Sandbox.Engine.Utils;
+using VRage.Game;
+using VRage.Game.Definitions;
+using VRage.Utils;
 
 namespace Sandbox.Definitions
 {
     [MyDefinitionType(typeof(MyObjectBuilder_PistonBaseDefinition))]
-    public class MyPistonBaseDefinition : MyCubeBlockDefinition
+    public class MyPistonBaseDefinition : MyMechanicalConnectionBlockBaseDefinition
     {
         public float Minimum;
         public float Maximum;
-        public string TopPart;
         public float MaxVelocity;
+	    public MyStringHash ResourceSinkGroup;
         public float RequiredPowerInput;
 
         protected override void Init(MyObjectBuilder_DefinitionBase builder)
@@ -23,8 +21,8 @@ namespace Sandbox.Definitions
             var ob = (MyObjectBuilder_PistonBaseDefinition)builder;
             Minimum = ob.Minimum;
             Maximum = ob.Maximum;
-            TopPart = ob.TopPart;
             MaxVelocity = ob.MaxVelocity;
+	        ResourceSinkGroup = MyStringHash.GetOrCompute(ob.ResourceSinkGroup);
             RequiredPowerInput = ob.RequiredPowerInput;
         }
     }

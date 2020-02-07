@@ -4,18 +4,16 @@ using ParallelTasks;
 using Sandbox.Definitions;
 using Sandbox.Engine.Voxels;
 using Sandbox.Game.Gui;
-using Sandbox.Game.World;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Linq;
-using VRage;
 using VRage.Collections;
-using VRage;
 using VRage.Generics;
+using VRage.Profiler;
 using VRage.Utils;
 using VRage.Voxels;
 using VRageMath;
+using VRageRender.Utils;
 
 #endregion
 
@@ -30,7 +28,7 @@ namespace Sandbox.Game.Entities.Cube
 
             internal void ComputeWorldPosition(MyVoxelBase voxelMap, out Vector3D oreWorldPosition)
             {
-                MyVoxelCoordSystems.LocalPositionToWorldPosition(voxelMap.PositionLeftBottomCorner - (Vector3D)voxelMap.StorageMin, ref AverageLocalPosition, out oreWorldPosition);
+                MyVoxelCoordSystems.LocalPositionToWorldPosition(voxelMap.PositionComp.GetPosition() - (Vector3D)voxelMap.StorageMin, ref AverageLocalPosition, out oreWorldPosition);
             }
         }
 
@@ -86,7 +84,9 @@ namespace Sandbox.Game.Entities.Cube
             Debug.Assert(m_issuedQueries.Contains(depositCell));
             m_issuedQueries.Remove(depositCell);
             m_depositsByCellCoord[depositCell] = deposit;
+            ProfilerShort.Begin("IssueQueries");
             IssueQueries();
+            ProfilerShort.End();
         }
 
         public DictionaryValuesReader<Vector3I, MyEntityOreDeposit> Deposits
@@ -102,7 +102,7 @@ namespace Sandbox.Game.Entities.Cube
                 var worldMax = worldDetectionSphere.Center + worldDetectionSphere.Radius;
                 MyVoxelCoordSystems.WorldPositionToVoxelCoord(m_voxelMap.PositionLeftBottomCorner, ref worldMin, out min);
                 MyVoxelCoordSystems.WorldPositionToVoxelCoord(m_voxelMap.PositionLeftBottomCorner, ref worldMax, out max);
-                // mk:TODO Get rid of this computation. Might require a mechanism to figure out whether MyVoxelMap is subpart of MyPlane or not. (Maybe third class for subparts?)
+                // mk:TODO Get rid of this computation. Might require a mechanism to figure out whether MyVoxelMap is subpart of MyPlanet or not. (Maybe third class for subparts?)
                 min += m_voxelMap.StorageMin;
                 max += m_voxelMap.StorageMin;
 
@@ -292,13 +292,13 @@ namespace Sandbox.Game.Entities.Cube
         private static readonly MyDynamicObjectPool<MyDepositQuery> m_instancePool = new MyDynamicObjectPool<MyDepositQuery>(16);
 
         [ThreadStatic]
-        private static MyStorageDataCache m_cache;
-        private static MyStorageDataCache Cache
+        private static MyStorageData m_cache;
+        private static MyStorageData Cache
         {
             get
             {
                 if (m_cache == null)
-                    m_cache = new MyStorageDataCache();
+                    m_cache = new MyStorageData();
                 return m_cache;
             }
         }
@@ -335,10 +335,12 @@ namespace Sandbox.Game.Entities.Cube
 
         private void OnComplete()
         {
+            ProfilerShort.Begin("MyOreDetectorComponent - OnComplete");
             m_args.CompletionCallback(m_args.Cell, m_result);
             m_args = default(Args);
             m_result = null;
             m_instancePool.Deallocate(this);
+            ProfilerShort.End();
         }
 
         WorkPriority IPrioritizedWork.Priority
@@ -346,41 +348,45 @@ namespace Sandbox.Game.Entities.Cube
             get { return WorkPriority.VeryLow; }
         }
 
-        void IWork.DoWork()
+        void IWork.DoWork(WorkData workData = null)
         {
             ProfilerShort.Begin("MyDepositQuery.DoWork");
             try
             {
-                var storage = m_args.VoxelMap.Storage;
-                if (storage == null)
-                    return; // voxel map was probably closed in the meantime.
-
                 var cache = Cache;
                 cache.Resize(new Vector3I(MyOreDetectorComponent.CELL_SIZE_IN_LOD_VOXELS));
                 var min = m_args.Cell << MyOreDetectorComponent.CELL_SIZE_IN_VOXELS_BITS;
                 var max = min + (MyOreDetectorComponent.CELL_SIZE_IN_LOD_VOXELS - 1);
-                storage.ReadRange(cache, MyStorageDataTypeFlags.Content, MyOreDetectorComponent.QUERY_LOD, ref min, ref max);
-                if (!cache.ContainsVoxelsAboveIsoLevel())
-                    return;
+
+                var storage = m_args.VoxelMap.Storage;
+                if (storage == null || storage.Closed)
+                    return; // voxel map was probably closed in the meantime.
+                using (storage.Pin())
+                {
+                    storage.ReadRange(cache, MyStorageDataTypeFlags.Content, MyOreDetectorComponent.QUERY_LOD, ref min, ref max);
+                    if (!cache.ContainsVoxelsAboveIsoLevel())
+                        return;
+
+                    storage.ReadRange(cache, MyStorageDataTypeFlags.Material, MyOreDetectorComponent.QUERY_LOD, ref min, ref max);
+                }
 
                 var materialData = MaterialData;
-                storage.ReadRange(cache, MyStorageDataTypeFlags.Material, MyOreDetectorComponent.QUERY_LOD, ref min, ref max);
                 Vector3I c;
                 for (c.Z = 0; c.Z < MyOreDetectorComponent.CELL_SIZE_IN_LOD_VOXELS; ++c.Z)
-                for (c.Y = 0; c.Y < MyOreDetectorComponent.CELL_SIZE_IN_LOD_VOXELS; ++c.Y)
-                for (c.X = 0; c.X < MyOreDetectorComponent.CELL_SIZE_IN_LOD_VOXELS; ++c.X)
-                {
-                    int i = cache.ComputeLinear(ref c);
-                    if (cache.Content(i) > MyVoxelConstants.VOXEL_ISO_LEVEL)
-                    {
-                        const float VOXEL_SIZE = MyVoxelConstants.VOXEL_SIZE_IN_METRES * (1 << MyOreDetectorComponent.QUERY_LOD);
-                        const float VOXEL_SIZE_HALF = VOXEL_SIZE * 0.5f;
-                        var material = cache.Material(i);
-                        Vector3D localPos = (c + min) * VOXEL_SIZE + VOXEL_SIZE_HALF;
-                        materialData[material].Sum += localPos;
-                        materialData[material].Count += 1;
-                    }
-                }
+                    for (c.Y = 0; c.Y < MyOreDetectorComponent.CELL_SIZE_IN_LOD_VOXELS; ++c.Y)
+                        for (c.X = 0; c.X < MyOreDetectorComponent.CELL_SIZE_IN_LOD_VOXELS; ++c.X)
+                        {
+                            int i = cache.ComputeLinear(ref c);
+                            if (cache.Content(i) > MyVoxelConstants.VOXEL_ISO_LEVEL)
+                            {
+                                const float VOXEL_SIZE = MyVoxelConstants.VOXEL_SIZE_IN_METRES * (1 << MyOreDetectorComponent.QUERY_LOD);
+                                const float VOXEL_SIZE_HALF = VOXEL_SIZE * 0.5f;
+                                var material = cache.Material(i);
+                                Vector3D localPos = (c + min) * VOXEL_SIZE + VOXEL_SIZE_HALF;
+                                materialData[material].Sum += localPos;
+                                materialData[material].Count += 1;
+                            }
+                        }
 
                 for (int materialIdx = 0; materialIdx < materialData.Length; ++materialIdx)
                 {
@@ -396,7 +402,7 @@ namespace Sandbox.Game.Entities.Cube
                         m_result.Materials.Add(new MyEntityOreDeposit.Data()
                         {
                             Material = material,
-                            AverageLocalPosition = materialData[materialIdx].Sum / materialData[materialIdx].Count,
+                            AverageLocalPosition = Vector3D.Transform((materialData[materialIdx].Sum / materialData[materialIdx].Count - m_args.VoxelMap.SizeInMetresHalf), Quaternion.CreateFromRotationMatrix(m_args.VoxelMap.WorldMatrix)),
                         });
                     }
                 }

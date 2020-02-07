@@ -1,4 +1,5 @@
-﻿#region Using
+﻿#if !XB1 // XB1_NOPROFILER
+#region Using
 
 using System;
 using System.Collections.Generic;
@@ -9,6 +10,7 @@ using System.Runtime.CompilerServices;
 using ParallelTasks;
 using System.Threading;
 using VRage.Library.Utils;
+using System.IO;
 
 #endregion
 
@@ -19,6 +21,7 @@ namespace VRage.Profiler
     /// </summary>
     public partial class MyProfiler
     {
+        
         public struct HistoryLock : IDisposable
         {
             private MyProfiler m_profiler;
@@ -44,18 +47,22 @@ namespace VRage.Profiler
         public static readonly int MAX_FRAMES = 1024;
         public static readonly int UPDATE_WINDOW = 16; // 16 frames is reserved for update, so we don't need locking
 
+        private static readonly int INITIAL_PROFILER_BLOCK_COUNT = 2000;
+        private static readonly int PROFILER_BLOCK_INCREMENT_STEP = 100;
+
         private const int ROOT_ID = 0;
         private int m_nextId = 1;
         private Dictionary<MyProfilerBlockKey, MyProfilerBlock> m_profilingBlocks = new Dictionary<MyProfilerBlockKey, MyProfilerBlock>(8192, new MyProfilerBlockKeyComparer());
         private List<MyProfilerBlock> m_rootBlocks = new List<MyProfilerBlock>(32);
         private Stack<MyProfilerBlock> m_currentProfilingStack = new Stack<MyProfilerBlock>(1024);
-        private MyProfiler.MyProfilerBlock m_selectedRoot = null;
+        private MyProfilerBlock m_selectedRoot = null;
         private int m_levelLimit = -1;
         private int m_levelSkipCount;
         private volatile int m_newLevelLimit = -1;
         private int m_remainingWindow = UPDATE_WINDOW;
-        public FastResourceLock m_historyLock = new FastResourceLock();
-        public string m_customName;
+        private FastResourceLock m_historyLock = new FastResourceLock();
+        private string m_customName;
+        private string m_axisName;
 
         private Dictionary<MyProfilerBlockKey, MyProfilerBlock> m_blocksToAdd = new Dictionary<MyProfilerBlockKey, MyProfilerBlock>(8192, new MyProfilerBlockKeyComparer());
 
@@ -71,10 +78,16 @@ namespace VRage.Profiler
         public bool AutoCommit = true;
 
         public readonly bool MemoryProfiling;
-        public readonly int GlobalProfilerIndex;
         public readonly Thread OwnerThread;
         public readonly Stopwatch Stopwatch = new Stopwatch();
-        
+
+        private StreamWriter m_logWriter;
+        private static readonly int LOG_THRESHOLD_MS = 50;
+        //very simple logging - it will create csv files with anything above ^^threshold into c:\keenswh dir
+        private static readonly bool ENABLE_PROFILER_LOG = false;
+
+        private List<MyProfilerBlock> blockPool = new List<MyProfilerBlock>(INITIAL_PROFILER_BLOCK_COUNT);
+
         public MyProfilerBlock SelectedRoot
         {
             get { return m_selectedRoot; }
@@ -86,24 +99,29 @@ namespace VRage.Profiler
             get { return m_selectedRoot != null ? m_selectedRoot.Children : m_rootBlocks; }
         }
 
+        public List<MyProfilerBlock> RootBlocks
+        {
+            get { return m_rootBlocks; }
+        }
+
         public int LastFrameIndexDebug
         {
-            get 
-            {
-                return m_lastFrameIndex; 
-            }
+            get { return m_lastFrameIndex; }
         }
 
         public string DisplayedName
         {
-            get
-            {
-                if (m_customName != null)
-                {
-                    return m_customName;
-                }
-                return OwnerThread.Name;
-            }
+            get { return m_customName; }
+        }
+
+        public string AxisName
+        {
+            get { return m_axisName; }
+        }
+
+        public int LevelLimit
+        {
+            get { return m_levelLimit; }
         }
 
         string GetParentName()
@@ -122,12 +140,20 @@ namespace VRage.Profiler
             return ROOT_ID;
         }
 
-        public MyProfiler(int globalProfilerIndex, bool memoryProfiling)
+        public MyProfiler(bool memoryProfiling, string name, string axisName)
         {
-            GlobalProfilerIndex = globalProfilerIndex;
             OwnerThread = Thread.CurrentThread;
             MemoryProfiling = memoryProfiling;
             m_lastFrameIndex = MAX_FRAMES - 1;
+            m_customName = name ?? OwnerThread.Name;
+            m_axisName = axisName;
+            if (ENABLE_PROFILER_LOG)
+                m_logWriter = new StreamWriter(@"c:\keenswh\profiler" + Thread.CurrentThread.ManagedThreadId + "_" + m_customName + ".csv");
+
+            for (int i = 0; i < 2000; i++)
+            {
+                blockPool.Add(new MyProfilerBlock());
+            }
         }
 
         /// <summary>
@@ -139,7 +165,7 @@ namespace VRage.Profiler
             Interlocked.Exchange(ref m_remainingWindow, UPDATE_WINDOW);
         }
 
-        public static MyProfiler.MyProfilerBlock CreateExternalBlock(string name, int blockId)
+        public static MyProfilerBlock CreateExternalBlock(string name, int blockId)
         {
             MyProfilerBlockKey key = new MyProfilerBlockKey(String.Empty, String.Empty, name, 0, ROOT_ID);
             return new MyProfilerBlock(ref key, String.Empty, blockId);
@@ -181,11 +207,11 @@ namespace VRage.Profiler
                     {
                         if (block.Value.Parent != null)
                         {
-                            block.Value.Parent.Children.Add(block.Value);
+                            block.Value.Parent.Children.AddOrInsert(block.Value, block.Value.ForceOrder);
                         }
                         else
                         {
-                            m_rootBlocks.Add(block.Value);
+                            m_rootBlocks.AddOrInsert(block.Value, block.Value.ForceOrder);
                         }
 
                         m_profilingBlocks.Add(block.Key, block.Value);
@@ -212,22 +238,39 @@ namespace VRage.Profiler
             m_levelLimit = m_newLevelLimit;
 
             int writeFrame = (m_lastFrameIndex + 1) % MyProfiler.MAX_FRAMES;
-            foreach (MyProfiler.MyProfilerBlock profilerBlock in m_profilingBlocks.Values)
+            foreach (MyProfilerBlock profilerBlock in m_profilingBlocks.Values)
             {
                 callCount += profilerBlock.NumCalls;
 
-                profilerBlock.ManagedMemory[writeFrame] = profilerBlock.ManagedDeltaMB;
+                profilerBlock.ManagedMemoryBytes[writeFrame] = profilerBlock.DeltaManagedB;
                 if (MemoryProfiling)
                 {
                     profilerBlock.ProcessMemory[writeFrame] = profilerBlock.ProcessDeltaMB;
                 }
                 profilerBlock.NumCallsArray[writeFrame] = profilerBlock.NumCalls;
                 profilerBlock.CustomValues[writeFrame] = profilerBlock.CustomValue;
-                profilerBlock.Miliseconds[writeFrame] = (float)profilerBlock.Elapsed.Miliseconds;
+                profilerBlock.Miliseconds[writeFrame] = (float)profilerBlock.Elapsed.Milliseconds;
 
                 // Unused
-                profilerBlock.averageMiliseconds = 0.9f * profilerBlock.averageMiliseconds + 0.1f * (float)profilerBlock.Elapsed.Miliseconds;
+                profilerBlock.averageMiliseconds = 0.9f * profilerBlock.averageMiliseconds + 0.1f * (float)profilerBlock.Elapsed.Milliseconds;
                 //profilerBlock.NumChildCalls = profilerBlock.GetNumChildCalls();
+
+                if (ENABLE_PROFILER_LOG)
+                    if (profilerBlock.Elapsed.Milliseconds > LOG_THRESHOLD_MS)
+                    {
+                        m_logWriter.Write(DateTime.Now.ToString());
+                        m_logWriter.Write("; ");
+                        m_logWriter.Write(((int)profilerBlock.Elapsed.Milliseconds).ToString());
+                        m_logWriter.Write("; ");
+                        m_logWriter.Write(profilerBlock.Name);
+                        MyProfilerBlock tempBlock = profilerBlock;
+                        while (tempBlock.Parent != null)
+                        {
+                            tempBlock = tempBlock.Parent;
+                            m_logWriter.Write(" <- " + tempBlock.Name);
+                        }
+                        m_logWriter.WriteLine("");
+                    }
 
                 profilerBlock.Clear();
             }
@@ -244,11 +287,36 @@ namespace VRage.Profiler
             Debug.Assert(!EnableAsserts || OwnerThread == Thread.CurrentThread);
             Debug.Assert(m_currentProfilingStack.Count == 0, "ClearFrame cannot be called when there are some opened blocks, it must be outside blocks!");
 
+            m_currentProfilingStack.Clear();
+
+            if (m_blocksToAdd.Count > 0)
+                m_blocksToAdd.Clear();
+
             m_levelLimit = m_newLevelLimit;
 
-            foreach (MyProfiler.MyProfilerBlock profilerBlock in m_profilingBlocks.Values)
+            foreach (MyProfilerBlock profilerBlock in m_profilingBlocks.Values)
             {
                 profilerBlock.Clear();
+            }
+        }
+
+        public void Reset()
+        {
+            using(new HistoryLock(this, m_historyLock))
+            {
+                foreach(var block in m_profilingBlocks)
+                {
+                    for (int i = 0; i < MAX_FRAMES; i++)
+                    {
+                        block.Value.ProcessMemory[i] = 0;
+                        block.Value.ManagedMemoryBytes[i] = 0;
+                        block.Value.Miliseconds[i] = 0;
+                        block.Value.CustomValues[i] = 0;
+                        block.Value.NumCallsArray[i] = 0;
+                    }
+                }
+
+                m_lastFrameIndex = MAX_FRAMES - 1;
             }
         }
 
@@ -269,7 +337,7 @@ namespace VRage.Profiler
             }
         }
 
-        public void StartBlock(string name, string memberName, int line, string file)
+        public void StartBlock(string name, string memberName, int line, string file, int forceOrder = int.MaxValue)
         {
             Debug.Assert(!EnableAsserts || OwnerThread == Thread.CurrentThread);
 
@@ -284,7 +352,16 @@ namespace VRage.Profiler
 
             if (!m_profilingBlocks.TryGetValue(key, out profilingBlock) && !m_blocksToAdd.TryGetValue(key, out profilingBlock))
             {
-                profilingBlock = new MyProfilerBlock(ref key, memberName, m_nextId++);
+                if (blockPool.Count == 0)
+                {
+                    for (int i = 0; i < PROFILER_BLOCK_INCREMENT_STEP; i++)
+                        blockPool.Add(new MyProfilerBlock());
+                }
+
+                profilingBlock = blockPool[0];
+                blockPool.RemoveAt(0);
+
+                profilingBlock.SetBlockData(ref key, m_nextId++, forceOrder);
 
                 if (m_currentProfilingStack.Count > 0)
                 {
@@ -320,7 +397,7 @@ namespace VRage.Profiler
             }
         }
 
-        public void EndBlock(string member, int line, string file, MyTimeSpan? customTime = null, float customValue = 0, string timeFormat = null, string valueFormat = null)
+        public void EndBlock(string member, int line, string file, MyTimeSpan? customTime = null, float customValue = 0, string timeFormat = null, string valueFormat = null, string callFormat = null)
         {
             Debug.Assert(!EnableAsserts || OwnerThread == Thread.CurrentThread);
 
@@ -330,22 +407,71 @@ namespace VRage.Profiler
                 return;
             }
 
-            MyProfilerBlock profilingBlock = m_currentProfilingStack.Pop();
-            CheckEndBlock(profilingBlock, member, file, GetParentId());
-
-            profilingBlock.CustomValue = customValue;
-            profilingBlock.TimeFormat = timeFormat;
-            profilingBlock.ValueFormat = valueFormat;
-            profilingBlock.End(MemoryProfiling, customTime);
+            if (m_currentProfilingStack.Count > 0)
+            {
+                MyProfilerBlock profilingBlock = m_currentProfilingStack.Pop();
+                CheckEndBlock(profilingBlock, member, file, GetParentId());
+                profilingBlock.CustomValue = customValue;
+                profilingBlock.TimeFormat = timeFormat;
+                profilingBlock.ValueFormat = valueFormat;
+                profilingBlock.CallFormat = callFormat;
+                profilingBlock.End(MemoryProfiling, customTime);
+            }
+            else
+            {
+                Debug.Fail(String.Format("Unpaired profiling end block encountered for '{0}'{1}File: {2}({3}){1}", member, Environment.NewLine, file, line));
+            }
 
             if (AutoCommit && m_currentProfilingStack.Count == 0)
                 CommitInternal();
         }
 
-        public void ProfileCustomValue(string name, string member, int line, string file, float value, MyTimeSpan? customTime, string timeFormat, string valueFormat)
+        public void ProfileCustomValue(string name, string member, int line, string file, float value, MyTimeSpan? customTime, string timeFormat, string valueFormat, string callFormat = null)
         {
             StartBlock(name, member, line, file);
-            EndBlock(member, line, file, customTime, value, timeFormat, valueFormat);
+            EndBlock(member, line, file, customTime, value, timeFormat, valueFormat, callFormat);
+        }
+
+        public StringBuilder Dump()
+        {
+            var sb = new StringBuilder();
+
+            foreach (var block in m_rootBlocks)
+            {
+                block.Dump(sb, m_lastFrameIndex);
+            }
+
+            return sb;
+        }
+
+        public class MyProfilerObjectBuilderInfo
+        {
+            public Dictionary<MyProfilerBlockKey, MyProfilerBlock> ProfilingBlocks;
+            public List<MyProfilerBlock> RootBlocks;
+            public string CustomName;
+            public string AxisName;
+            public int[] TotalCalls;
+        }
+
+        public MyProfilerObjectBuilderInfo GetObjectBuilderInfo()
+        {
+            MyProfilerObjectBuilderInfo objectBuilder = new MyProfilerObjectBuilderInfo();
+            objectBuilder.ProfilingBlocks = m_profilingBlocks;
+            objectBuilder.RootBlocks = m_rootBlocks;
+            objectBuilder.CustomName = m_customName;
+            objectBuilder.AxisName = m_axisName;
+            objectBuilder.TotalCalls = TotalCalls;
+            return objectBuilder;
+        }
+
+        public void Init(MyProfilerObjectBuilderInfo data)
+        {
+            m_profilingBlocks = data.ProfilingBlocks;
+            m_rootBlocks = data.RootBlocks;
+            m_customName = data.CustomName;
+            m_axisName = data.AxisName;
+            TotalCalls = data.TotalCalls;
         }
     }
 }
+#endif // !XB1

@@ -1,75 +1,111 @@
 ﻿using System.Collections.Generic;
 using System.Diagnostics;
 using System.Text;
-using Sandbox.Common;
-
 using Sandbox.Common.ObjectBuilders;
-using Sandbox.Common.ObjectBuilders.Definitions;
 using Sandbox.Definitions;
-using Sandbox.Graphics.GUI;
 using Sandbox.Engine.Utils;
-using Sandbox.Game.Entities.Character;
-using Sandbox.Game.Gui;
+using Sandbox.Game.EntityComponents;
 using Sandbox.Game.World;
-
-using VRage.Trace;
-using VRageMath;
 using Sandbox.Game.Multiplayer;
 using VRage.Utils;
-using Sandbox.Game.Screens;
-using Sandbox.Game.GameSystems.Conveyors;
 using Sandbox.Game.GameSystems;
 using VRage;
-using Sandbox.ModAPI.Ingame;
+using Sandbox.ModAPI;
 using Sandbox.Game.Localization;
-using Sandbox.Game.Entities.Interfaces;
+using VRage.ObjectBuilders;
+using System;
+using VRage.Game;
+using VRage.Game.Entity;
+using VRage.Profiler;
 
 namespace Sandbox.Game.Entities.Cube
 {
     [MyCubeBlockType(typeof(MyObjectBuilder_Refinery))]
-    class MyRefinery : MyProductionBlock, IMyRefinery
+    public class MyRefinery : MyProductionBlock, IMyRefinery
     {
         private MyEntity m_currentUser;
         private MyRefineryDefinition m_refineryDef;
         private bool m_queueNeedsRebuild;
         private bool m_processingLock; // Signal to ignore all inventory contents changed events.
 
-        private List<KeyValuePair<int, MyBlueprintDefinitionBase>> m_tmpSortedBlueprints = new List<KeyValuePair<int, MyBlueprintDefinitionBase>>();
+        private readonly List<KeyValuePair<int, MyBlueprintDefinitionBase>> m_tmpSortedBlueprints = new List<KeyValuePair<int, MyBlueprintDefinitionBase>>();
 
-        public MyRefinery() :
-            base()
+        public MyRefinery()
         {
-            m_baseIdleSound.Init("BlockRafinery");
-            m_processSound.Init("BlockRafineryProcess");
         }
 
         public override void Init(MyObjectBuilder_CubeBlock objectBuilder, MyCubeGrid cubeGrid)
         {
+            // Need to be initialized before base.Init because when loading world with producting refinery
+            // it will be missing when recompute power and cause disappearing of refinery.
+            UpgradeValues.Add("Productivity", 0f);
+            UpgradeValues.Add("Effectiveness", 1f);
+            UpgradeValues.Add("PowerEfficiency", 1f);
+
             base.Init(objectBuilder, cubeGrid);
 
             MyDebug.AssertDebug(BlockDefinition is MyRefineryDefinition);
             m_refineryDef = BlockDefinition as MyRefineryDefinition;
 
+            if (InventoryAggregate.InventoryCount > 2)
+            {
+                Debug.Fail("Inventory aggregate has to many inventories, probably wrong save. If you continue the unused inventories will be removed. Save the world to correct it. Please report this is if problem prevail.");
+
+                FixInputOutputInventories(m_refineryDef.InputInventoryConstraint, m_refineryDef.OutputInventoryConstraint);
+            }
+
             InputInventory.Constraint = m_refineryDef.InputInventoryConstraint;
             bool removed = InputInventory.FilterItemsUsingConstraint();
             Debug.Assert(!removed, "Inventory filter removed items which were present in the object builder.");
-            InputInventory.ContentsChanged += inventory_OnContentsChanged;
 
             OutputInventory.Constraint = m_refineryDef.OutputInventoryConstraint;
             removed = OutputInventory.FilterItemsUsingConstraint();
             Debug.Assert(!removed, "Inventory filter removed items which were present in the object builder.");
-            OutputInventory.ContentsChanged += inventory_OnContentsChanged;
 
             m_queueNeedsRebuild = true;
 
-            UpgradeValues.Add("Productivity", 0f);
-            UpgradeValues.Add("Effectiveness", 1f);
-            UpgradeValues.Add("PowerEfficiency", 1f);
+            m_baseIdleSound = BlockDefinition.PrimarySound;
+            m_processSound = BlockDefinition.ActionSound;
 
-            PowerReceiver.RequiredInputChanged += PowerReceiver_RequiredInputChanged;
+            ResourceSink.RequiredInputChanged += PowerReceiver_RequiredInputChanged;
             OnUpgradeValuesChanged += UpdateDetailedInfo;
 
             UpdateDetailedInfo();
+            NeedsUpdate |= VRage.ModAPI.MyEntityUpdateEnum.EACH_100TH_FRAME;
+        }       
+
+        protected override void OnBeforeInventoryRemovedFromAggregate(Inventory.MyInventoryAggregate aggregate, MyInventoryBase inventory)
+        {                        
+            if (inventory == InputInventory)
+            {
+                InputInventory.ContentsChanged += inventory_OnContentsChanged;
+            }
+            else if (inventory == OutputInventory)
+            {
+                OutputInventory.ContentsChanged += inventory_OnContentsChanged;
+            }
+            else
+            {
+                Debug.Fail("Added inventory to aggregate, but not input or output invenoty?! This shouldn't happen.");
+            }
+            base.OnBeforeInventoryRemovedFromAggregate(aggregate, inventory); // Base method needs to be called here, cuz it removes the inventories from properties
+        }
+
+        protected override void OnInventoryAddedToAggregate(Inventory.MyInventoryAggregate aggregate, MyInventoryBase inventory)
+        {
+            base.OnInventoryAddedToAggregate(aggregate, inventory);
+            if (inventory == InputInventory)
+            {
+                InputInventory.ContentsChanged += inventory_OnContentsChanged;
+            }
+            else if (inventory == OutputInventory)
+            {
+                OutputInventory.ContentsChanged += inventory_OnContentsChanged;
+            }
+            else
+            {
+                Debug.Fail("Added inventory to aggregate, but not input or output invenoty?! This shouldn't happen.");
+            }
         }
 
         public override void UpdateBeforeSimulation100()
@@ -79,7 +115,8 @@ namespace Sandbox.Game.Entities.Cube
             {
                 if (InputInventory.VolumeFillFactor < 0.6f)
                 {
-                    MyGridConveyorSystem.PullAllRequest(this, InputInventory, OwnerId, InputInventory.Constraint);
+                    if(MyGridConveyorSystem.PullAllRequest(this, InputInventory, OwnerId, InputInventory.Constraint))
+                        m_queueNeedsRebuild = true;
                 }
                 if (OutputInventory.VolumeFillFactor > 0.75f)
                 {
@@ -89,12 +126,12 @@ namespace Sandbox.Game.Entities.Cube
             }
         }
 
-        void PowerReceiver_RequiredInputChanged(GameSystems.Electricity.MyPowerReceiver receiver, float oldRequirement, float newRequirement)
+        void PowerReceiver_RequiredInputChanged(MyDefinitionId resourceTypeId, MyResourceSinkComponent receiver, float oldRequirement, float newRequirement)
         {
             UpdateDetailedInfo();
         }
-        
-        private void inventory_OnContentsChanged(MyInventory inv)
+
+        private void inventory_OnContentsChanged(MyInventoryBase inv)
         {
             if (m_processingLock)
                 return;
@@ -105,26 +142,23 @@ namespace Sandbox.Game.Entities.Cube
 
         private void RebuildQueue()
         {
-            Debug.Assert(Sync.IsServer || !MyFakes.ENABLE_PRODUCTION_SYNC);
+            Debug.Assert(Sync.IsServer);
 
             m_queueNeedsRebuild = false;
             ClearQueue(false);
 
-            InitializeInventoryCounts(inputInventory: true);
-
-            // Find all blueprints that contain as a prerequisite any item from the input inventory and sort them by the input inventory
-            // index of the first item found.
+            //Changed by Gregory: Allow for duplicate blueprints cause it should be a supported functionality to add resources of the same type more than once
+            //So now the index is essentially given by input items of inventory. Maybe try something more efficient?
             m_tmpSortedBlueprints.Clear();
             var inputItems = InputInventory.GetItems();
-            for (int i = 0; i < m_refineryDef.BlueprintClasses.Count; ++i)
+            for (int indx = 0; indx < inputItems.Count; indx++)
             {
-                foreach (var blueprint in m_refineryDef.BlueprintClasses[i])
+                for (int i = 0; i < m_refineryDef.BlueprintClasses.Count; ++i)
                 {
-                    int firstRequirementIndex = 0;
-                    bool found = false;
-                    while (firstRequirementIndex < inputItems.Count)
+                    foreach (var blueprint in m_refineryDef.BlueprintClasses[i])
                     {
-                        MyDefinitionId inputItemId = new MyDefinitionId(inputItems[firstRequirementIndex].Content.TypeId, inputItems[firstRequirementIndex].Content.SubtypeId);
+                        bool found = false;
+                        MyDefinitionId inputItemId = new MyDefinitionId(inputItems[indx].Content.TypeId, inputItems[indx].Content.SubtypeId);
                         for (int j = 0; j < blueprint.Prerequisites.Length; ++j)
                         {
                             if (blueprint.Prerequisites[j].Id.Equals(inputItemId))
@@ -135,26 +169,23 @@ namespace Sandbox.Game.Entities.Cube
                         }
                         if (found)
                         {
-                            m_tmpSortedBlueprints.Add(new KeyValuePair<int, MyBlueprintDefinitionBase>(firstRequirementIndex, blueprint));
+                            m_tmpSortedBlueprints.Add(new KeyValuePair<int, MyBlueprintDefinitionBase>(indx, blueprint));
                             break;
                         }
-                        firstRequirementIndex++;
                     }
                 }
             }
-            m_tmpSortedBlueprints.Sort((pair1, pair2) => pair1.Key - pair2.Key);
 
 
             MyFixedPoint buildAmount, remainingAmount;
-            foreach (var pair in m_tmpSortedBlueprints)
+            for (int i = 0; i < m_tmpSortedBlueprints.Count; i++)
             {
-                var blueprint = pair.Value;
+                var blueprint = m_tmpSortedBlueprints[i].Value;
 
                 buildAmount = MyFixedPoint.MaxValue;
                 foreach (var requirement in blueprint.Prerequisites)
                 {
-                    remainingAmount = 0;
-                    m_tmpInventoryCounts.TryGetValue(requirement.Id, out remainingAmount);
+                    remainingAmount = inputItems[i].Amount;
                     if (remainingAmount == 0)
                     {
                         buildAmount = 0;
@@ -168,34 +199,23 @@ namespace Sandbox.Game.Entities.Cube
                 if (buildAmount > 0 && buildAmount != MyFixedPoint.MaxValue)
                 {
                     InsertQueueItemRequest(-1, blueprint, buildAmount);
-                    foreach (var prerequisite in blueprint.Prerequisites)
-                    {
-                        m_tmpInventoryCounts.TryGetValue(prerequisite.Id, out remainingAmount);
-                        remainingAmount -= prerequisite.Amount * buildAmount;
-                        //Debug.Assert(remainingAmount >= 0);
-                        if (remainingAmount == 0)
-                            m_tmpInventoryCounts.Remove(prerequisite.Id);
-                        else
-                            m_tmpInventoryCounts[prerequisite.Id] = remainingAmount;
-                    }
                 }
             }
 
             m_tmpSortedBlueprints.Clear();
-            m_tmpInventoryCounts.Clear();
         }
 
         private void UpdateDetailedInfo()
         {
             DetailedInfo.Clear();
-            DetailedInfo.AppendStringBuilder(MyTexts.Get(MySpaceTexts.BlockPropertiesText_Type));
+            DetailedInfo.AppendStringBuilder(MyTexts.Get(MyCommonTexts.BlockPropertiesText_Type));
             DetailedInfo.Append(BlockDefinition.DisplayNameText);
             DetailedInfo.AppendFormat("\n");
             DetailedInfo.AppendStringBuilder(MyTexts.Get(MySpaceTexts.BlockPropertiesText_MaxRequiredInput));
             MyValueFormatter.AppendWorkInBestUnit(GetOperationalPowerConsumption(), DetailedInfo);
             DetailedInfo.AppendFormat("\n");
             DetailedInfo.AppendStringBuilder(MyTexts.Get(MySpaceTexts.BlockPropertiesText_RequiredInput));
-            MyValueFormatter.AppendWorkInBestUnit(PowerReceiver.RequiredInput, DetailedInfo);
+            MyValueFormatter.AppendWorkInBestUnit(ResourceSink.RequiredInputByType(MyResourceDistributorComponent.ElectricityId), DetailedInfo);
 
             DetailedInfo.AppendFormat("\n\n");
             DetailedInfo.Append("Productivity: ");
@@ -204,7 +224,7 @@ namespace Sandbox.Game.Entities.Cube
             DetailedInfo.Append("Effectiveness: ");
             DetailedInfo.Append(((UpgradeValues["Effectiveness"]) * 100f).ToString("F0"));
             DetailedInfo.Append("%\n");
-            DetailedInfo.Append("Power Efficinecy: ");
+            DetailedInfo.Append("Power Efficiency: ");
             DetailedInfo.Append(((UpgradeValues["PowerEfficiency"]) * 100f).ToString("F0"));
             DetailedInfo.Append("%\n");
 
@@ -213,15 +233,15 @@ namespace Sandbox.Game.Entities.Cube
 
         protected override void UpdateProduction(int timeDelta)
         {
-            if (!MyFakes.OCTOBER_RELEASE_REFINERY_ENABLED)
-                return;
-
-            if (m_queueNeedsRebuild && (Sync.IsServer || !MyFakes.ENABLE_PRODUCTION_SYNC))
+            ProfilerShort.Begin("Rebuild Queue");
+            if (m_queueNeedsRebuild && (Sync.IsServer))
                 RebuildQueue();
 
+            ProfilerShort.BeginNextBlock("ProcessQueueItems");
             IsProducing = IsWorking && !IsQueueEmpty && !OutputInventory.IsFull;
             if (IsProducing)
                 ProcessQueueItems(timeDelta);
+            ProfilerShort.End();
         }
 
         private void ProcessQueueItems(int timeDelta)
@@ -251,10 +271,12 @@ namespace Sandbox.Game.Entities.Cube
                         }
                     }
 
-                    Debug.Assert(blueprintsProcessed > 0, "No items in inventory but there are blueprints in the queue!");
+                    //GR: This assertion happens on last item to be removed when allowing duplicate blueprints. The queue is emptied but with small delay. Synchronization needed?
+                    //Debug.Assert(blueprintsProcessed > 0, "No items in inventory but there are blueprints in the queue!");
                     if (blueprintsProcessed == 0)
                     {
-                        MySandboxGame.Log.WriteLine("MyRefinery.ProcessQueueItems: Inventory empty while there are still blueprints in the queue!");
+                        //GR: For now comment out bcause it spams the log on servers on occasions
+                        //MySandboxGame.Log.WriteLine("MyRefinery.ProcessQueueItems: Inventory empty while there are still blueprints in the queue!");
                         m_queueNeedsRebuild = true;
                         break;
                     }
@@ -276,16 +298,40 @@ namespace Sandbox.Game.Entities.Cube
         {
             Debug.Assert(Sync.IsServer);
 
+            Debug.Assert(m_refineryDef != null, "m_refineryDef shouldn't be null!!!");
+            if (m_refineryDef == null)
+            {
+                MyLog.Default.WriteLine("m_refineryDef shouldn't be null!!!" + this);
+                return;
+            }
+
+            if(Sync.IsServer == false)
+            {
+                return;
+            }
+
+            if (MySession.Static == null || queueItem == null || queueItem.Prerequisites == null || OutputInventory == null || InputInventory == null || queueItem.Results == null || m_refineryDef == null) 
+            {
+                return;
+            }
+
             if (!MySession.Static.CreativeMode)
             {
                 blueprintAmount = MyFixedPoint.Min(OutputInventory.ComputeAmountThatFits(queueItem), blueprintAmount);
             }
+
             if (blueprintAmount == 0)
                 return;
 
             foreach (var prerequisite in queueItem.Prerequisites)
             {
-                var obPrerequisite = (MyObjectBuilder_PhysicalObject)Sandbox.Common.ObjectBuilders.Serializer.MyObjectBuilderSerializer.CreateNewObject(prerequisite.Id);
+                MyObjectBuilder_PhysicalObject obPrerequisite = MyObjectBuilderSerializer.CreateNewObject(prerequisite.Id) as MyObjectBuilder_PhysicalObject;
+                if (obPrerequisite == null)
+                {
+                    Debug.Fail("obPrerequisite shouldn't be null!!!");
+                    MyLog.Default.WriteLine("obPrerequisite shouldn't be null!!! " + this);
+                    continue;
+                }
                 var prerequisiteAmount = blueprintAmount * prerequisite.Amount;
                 InputInventory.RemoveItemsOfType(prerequisiteAmount, obPrerequisite);
             }
@@ -293,8 +339,20 @@ namespace Sandbox.Game.Entities.Cube
             foreach (var result in queueItem.Results)
             {
                 var resultId = result.Id;
-                var obResult = (MyObjectBuilder_PhysicalObject)Sandbox.Common.ObjectBuilders.Serializer.MyObjectBuilderSerializer.CreateNewObject(resultId);
-                var resultAmount = blueprintAmount * result.Amount * m_refineryDef.MaterialEfficiency * UpgradeValues["Effectiveness"];
+                MyObjectBuilder_PhysicalObject obResult = MyObjectBuilderSerializer.CreateNewObject(resultId) as MyObjectBuilder_PhysicalObject;
+                if (obResult == null)
+                {
+                    Debug.Fail("obResult shouldn't be null!!!");
+                    MyLog.Default.WriteLine("obResult shouldn't be null!!! " + this);
+                    continue;
+                }
+                var conversionRatio = result.Amount * m_refineryDef.MaterialEfficiency * UpgradeValues["Effectiveness"];
+                if (conversionRatio > (MyFixedPoint)1.0f)
+                {
+                    conversionRatio = (MyFixedPoint)1.0f;
+                }
+
+                var resultAmount = blueprintAmount * conversionRatio;
                 OutputInventory.AddItems(resultAmount, obResult);
             }
 

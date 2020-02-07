@@ -1,6 +1,5 @@
 ﻿
 using ParallelTasks;
-using Sandbox.Common.ObjectBuilders.Gui;
 using Sandbox.Engine.Networking;
 using Sandbox.Engine.Utils;
 using Sandbox.Game.Localization;
@@ -14,8 +13,10 @@ using System.Text;
 using VRage;
 using VRage;
 using VRage.FileSystem;
+using VRage.Game;
 using VRage.Input;
 using VRage.Library.Utils;
+using VRage.Profiler;
 using VRage.Utils;
 using VRageMath;
 
@@ -25,6 +26,7 @@ namespace Sandbox.Game.Gui
     {
         public string Description;
         public string ScriptName;
+#if !XB1 // XB1_NOWORKSHOP
         public MySteamWorkshop.SubscribedItem SteamItem;
 
         public MyScriptItemInfo(MyBlueprintTypeEnum type,string scriptName,ulong? id = null,string description =null,MySteamWorkshop.SubscribedItem item=null):
@@ -34,9 +36,17 @@ namespace Sandbox.Game.Gui
             Description = description;
             SteamItem = item;
         }
+#else // XB1
+        public MyScriptItemInfo(MyBlueprintTypeEnum type, string scriptName, ulong? id = null, string description = null) :
+            base(type, id)
+        {
+            ScriptName = scriptName;
+            Description = description;
+        }
+#endif // XB1
     }
     [PreloadRequired]
-    public class MyGuiIngameScriptsPage : MyGuiBlueprintScreenBase
+    public class MyGuiIngameScriptsPage : MyGuiScreenDebugBase
     {
         public const string STEAM_THUMBNAIL_NAME = @"Textures\GUI\Icons\IngameProgrammingIcon.png";
         public const string THUMBNAIL_NAME = @"thumb.png";
@@ -50,7 +60,9 @@ namespace Sandbox.Game.Gui
 
         private static Task m_task;
 
+#if !XB1 // XB1_NOWORKSHOP
         private static List<MySteamWorkshop.SubscribedItem> m_subscribedItemsList = new List<MySteamWorkshop.SubscribedItem>();
+#endif // !XB1
 
         private Vector2 m_controlPadding = new Vector2(0.02f, 0.02f);
         private float m_textScale = 0.8f;
@@ -68,6 +80,8 @@ namespace Sandbox.Game.Gui
         private bool m_activeDetail = false;
         private MyGuiControlListbox.Item m_selectedItem = null;
         private MyGuiControlRotatingWheel m_wheel;
+        string m_localScriptFolder;
+        string m_workshopFolder;
         
         Action OnClose = null;
         Action<string> OnScriptOpened = null;
@@ -89,27 +103,38 @@ namespace Sandbox.Game.Gui
             OnClose = close;
             this.GetCodeFromEditor = getCodeFromEditor;
             this.OnScriptOpened = onScriptOpened;
-            m_localBlueprintFolder = Path.Combine(MyFileSystem.UserDataPath, SCRIPTS_DIRECTORY, "local");
-            m_workshopBlueprintFolder = Path.Combine(MyFileSystem.UserDataPath, SCRIPTS_DIRECTORY, "workshop");
+            m_localScriptFolder = Path.Combine(MyFileSystem.UserDataPath, SCRIPTS_DIRECTORY, "local");
+            m_workshopFolder = Path.Combine(MyFileSystem.UserDataPath, SCRIPTS_DIRECTORY, "workshop");
 
-            if (!Directory.Exists(m_localBlueprintFolder))
+            if (!Directory.Exists(m_localScriptFolder))
             {
-                Directory.CreateDirectory(m_localBlueprintFolder);
+                Directory.CreateDirectory(m_localScriptFolder);
             }
 
-            if (!Directory.Exists(m_workshopBlueprintFolder))
+            if (!Directory.Exists(m_workshopFolder))
             {
-                Directory.CreateDirectory(m_workshopBlueprintFolder);
+                Directory.CreateDirectory(m_workshopFolder);
             }
 
             m_scriptList.Items.Clear();
 
+#if !XB1 // XB1_NOWORKSHOP
             GetLocalScriptNames(m_subscribedItemsList.Count == 0);
+#else // XB1
+            GetLocalScriptNames(true);
+#endif // XB1
             RecreateControls(true);
 
             m_scriptList.ItemsSelected += OnSelectItem;
             m_scriptList.ItemDoubleClicked += OnItemDoubleClick;
             OnEnterCallback += Ok;
+
+            m_canShareInput = false;
+            CanBeHidden = true;
+            CanHideOthers = false;
+            m_canCloseInCloseAllScreenCalls = true;
+            m_isTopScreen = false;
+            m_isTopMostScreen = false;
 
             m_searchBox.TextChanged += OnSearchTextChange;
         }
@@ -120,10 +145,10 @@ namespace Sandbox.Game.Gui
             Vector2 buttonOffset = new Vector2(0.11f, 0.035f);
             float width = 0.11f;
 
-            var okButton = CreateButton(width, MyTexts.Get(MySpaceTexts.Ok), OnOk, textScale: m_textScale);
+            var okButton = CreateButton(width, MyTexts.Get(MyCommonTexts.Ok), OnOk, textScale: m_textScale);
             okButton.Position = buttonPosition;
 
-            var cancelButton = CreateButton(width, MyTexts.Get(MySpaceTexts.Cancel), OnCancel, textScale: m_textScale);
+            var cancelButton = CreateButton(width, MyTexts.Get(MyCommonTexts.Cancel), OnCancel, textScale: m_textScale);
             cancelButton.Position = buttonPosition + new Vector2(1f, 0f) * buttonOffset;
 
             m_detailsButton = CreateButton(width, MyTexts.Get(MySpaceTexts.ProgrammableBlock_ButtonDetails), OnDetails, textScale: m_textScale, enabled: false);
@@ -134,7 +159,7 @@ namespace Sandbox.Game.Gui
 
             width = 0.22f;
 
-            m_deleteButton = CreateButton(width, MyTexts.Get(MySpaceTexts.LoadScreenButtonDelete), OnDelete, false, textScale: m_textScale);
+            m_deleteButton = CreateButton(width, MyTexts.Get(MyCommonTexts.LoadScreenButtonDelete), OnDelete, false, textScale: m_textScale);
             m_deleteButton.Position = (buttonPosition + new Vector2(0f, 2f) * buttonOffset) * new Vector2(0.29f, 1f);
 
             m_createFromEditorButton = CreateButton(width, MyTexts.Get(MySpaceTexts.ProgrammableBlock_ButtonCreateFromEditor), OnCreateFromEditor, textScale: m_textScale, enabled: true);
@@ -143,11 +168,21 @@ namespace Sandbox.Game.Gui
             m_replaceButton = CreateButton(width, MyTexts.Get(MySpaceTexts.ProgrammableBlock_ButtonReplaceFromEditor), OnReplaceFromEditor, textScale: m_textScale, enabled: true);
             m_replaceButton.Position = (buttonPosition + new Vector2(0f, 4f) * buttonOffset) * new Vector2(0.29f, 1f);
 
-            var workshopButton = CreateButton(width, MyTexts.Get(MySpaceTexts.ScreenLoadSubscribedWorldBrowseWorkshop), OnOpenWorkshop, textScale: m_textScale);
-            workshopButton.Position = (buttonPosition + new Vector2(0f, 5f) * buttonOffset) * new Vector2(0.29f, 1f);
+            if (!MyFakes.XB1_PREVIEW)
+            {
+#if !XB1 // XB1_NOWORKSHOP
+                var workshopButton = CreateButton(width, MyTexts.Get(MyCommonTexts.ScreenLoadSubscribedWorldBrowseWorkshop), OnOpenWorkshop, textScale: m_textScale);
+                workshopButton.Position = (buttonPosition + new Vector2(0f, 5f) * buttonOffset) * new Vector2(0.29f, 1f);
 
-            var reloadButton = CreateButton(width, MyTexts.Get(MySpaceTexts.ProgrammableBlock_ButtonRefreshScripts), OnReload, textScale: m_textScale);
-            reloadButton.Position = (buttonPosition + new Vector2(0f, 6f) * buttonOffset) * new Vector2(0.29f, 1f);
+                var reloadButton = CreateButton(width, MyTexts.Get(MySpaceTexts.ProgrammableBlock_ButtonRefreshScripts), OnReload, textScale: m_textScale);
+                reloadButton.Position = (buttonPosition + new Vector2(0f, 6f) * buttonOffset) * new Vector2(0.29f, 1f);
+#endif // !XB1
+            }
+            else
+            {
+                var reloadButton = CreateButton(width, MyTexts.Get(MySpaceTexts.ProgrammableBlock_ButtonRefreshScripts), OnReload, textScale: m_textScale);
+                reloadButton.Position = (buttonPosition + new Vector2(0f, 5f) * buttonOffset) * new Vector2(0.29f, 1f);
+            }
         }
 
         public override void RecreateControls(bool constructor)
@@ -158,7 +193,7 @@ namespace Sandbox.Game.Gui
 
             float hiddenPartTop = (SCREEN_SIZE.Y - 1.0f) / 2.0f;
 
-            var searchBoxLabel = MakeLabel(MyTexts.GetString(MySpaceTexts.ScreenCubeBuilderBlockSearch), searchPosition + new Vector2(-0.129f, -0.015f), m_textScale);
+            var searchBoxLabel = MakeLabel(MyTexts.GetString(MyCommonTexts.ScreenCubeBuilderBlockSearch), searchPosition + new Vector2(-0.129f, -0.015f), m_textScale);
             m_searchBox = new MyGuiControlTextbox(searchPosition);
             m_searchBox.Size = new Vector2(0.15f, 0.2f);
 
@@ -200,9 +235,9 @@ namespace Sandbox.Game.Gui
 
         void GetLocalScriptNames(bool reload = false)
         {
-            if (!Directory.Exists(m_localBlueprintFolder))
+            if (!Directory.Exists(m_localScriptFolder))
                 return;
-            string[] scriptNames = Directory.GetDirectories(m_localBlueprintFolder);
+            string[] scriptNames = Directory.GetDirectories(m_localScriptFolder);
 
             foreach(var scriptName in scriptNames)
             {
@@ -212,6 +247,7 @@ namespace Sandbox.Game.Gui
                 m_scriptList.Add(item);
             }
 
+#if !XB1 // XB1_NOWORKSHOP
             if (m_task.IsComplete && reload)
             {
                 GetWorkshopScripts();
@@ -220,10 +256,15 @@ namespace Sandbox.Game.Gui
             {
                 AddWorkshopItemsToList();
             }
+#endif // !XB1
         }
 
+#if !XB1 // XB1_NOWORKSHOP
         private static void AddWorkshopItemsToList()
         {
+            if (MyFakes.XB1_PREVIEW)
+                return;
+
             foreach (var steamItem in m_subscribedItemsList)
             {
                 var info = new MyScriptItemInfo(MyBlueprintTypeEnum.STEAM, steamItem.Title, steamItem.SteamIDOwner, steamItem.Description, steamItem);
@@ -240,17 +281,17 @@ namespace Sandbox.Game.Gui
             bool success = MySteamWorkshop.GetSubscribedIngameScriptsBlocking(m_subscribedItemsList);
             if (success)
             {
-                if (Directory.Exists(m_workshopBlueprintFolder))
+                if (Directory.Exists(m_workshopFolder))
                 {
                     try
                     {
-                        Directory.Delete(m_workshopBlueprintFolder, true);
+                        Directory.Delete(m_workshopFolder, true);
                     }
                     catch (System.IO.IOException)
                     {
                     }
-                }           
-                Directory.CreateDirectory(m_workshopBlueprintFolder);
+                }
+                Directory.CreateDirectory(m_workshopFolder);
             }
             if (success )
             {
@@ -267,10 +308,14 @@ namespace Sandbox.Game.Gui
 
         void GetWorkshopScripts()
         {
+            if (MyFakes.XB1_PREVIEW)
+                return;
+
             m_task = Parallel.Start(GetScriptsInfo);
         }
+#endif // !XB1
 
-        override public void RefreshBlueprintList(bool fromTask = false)
+        public void RefreshBlueprintList(bool fromTask = false)
         {
             m_scriptList.Items.Clear();
             GetLocalScriptNames(fromTask);
@@ -307,11 +352,13 @@ namespace Sandbox.Game.Gui
                 m_replaceButton.Enabled = true;
                 m_renameButton.Enabled = true;
             }
+#if !XB1 // XB1_NOWORKSHOP
             else if (type == MyBlueprintTypeEnum.STEAM)
             {
                 m_deleteButton.Enabled = false;
                 m_replaceButton.Enabled = false;
             }
+#endif // !XB1
             else if (type == MyBlueprintTypeEnum.SHARED)
             {
                 m_renameButton.Enabled = false;
@@ -361,6 +408,7 @@ namespace Sandbox.Game.Gui
             }
         }
 
+#if !XB1 // XB1_NOWORKSHOP
         void OpenSharedScript(MyScriptItemInfo itemInfo)
         {
             m_scriptList.Enabled = false;
@@ -385,6 +433,7 @@ namespace Sandbox.Game.Gui
             }
             m_scriptList.Enabled = true;
         }
+#endif // !XB1
 
         void OnItemDoubleClick(MyGuiControlListbox list)
         {
@@ -406,11 +455,13 @@ namespace Sandbox.Game.Gui
         private void OpenSelectedSript()
         {
             var itemInfo = m_selectedItem.UserData as MyScriptItemInfo;
+#if !XB1 // XB1_NOWORKSHOP
             if (itemInfo.Type == MyBlueprintTypeEnum.STEAM)
             {
                 OpenSharedScript(itemInfo);
             }
             else
+#endif // !XB1
             {
                 if (OnScriptOpened != null)
                 {
@@ -457,7 +508,7 @@ namespace Sandbox.Game.Gui
             {
                 if ((m_selectedItem.UserData as MyBlueprintItemInfo).Type == MyBlueprintTypeEnum.LOCAL)
                 {
-                    var path = Path.Combine(m_localBlueprintFolder, m_selectedItem.Text.ToString());
+                    var path = Path.Combine(m_localScriptFolder, m_selectedItem.Text.ToString());
                     if (Directory.Exists(path))
                     {
                         m_detailScreen = new MyGuiDetailScreenScriptLocal(
@@ -488,11 +539,12 @@ namespace Sandbox.Game.Gui
                         MyGuiSandbox.AddScreen(MyGuiSandbox.CreateMessageBox(
                                     buttonType: MyMessageBoxButtonsType.OK,
                                     styleEnum: MyMessageBoxStyleEnum.Error,
-                                    messageCaption: MyTexts.Get(MySpaceTexts.MessageBoxCaptionError),
+                                    messageCaption: MyTexts.Get(MyCommonTexts.MessageBoxCaptionError),
                                     messageText: MyTexts.Get(MySpaceTexts.ProgrammableBlock_ScriptNotFound)
                                     ));
                     }
                 }
+#if !XB1 // XB1_NOWORKSHOP
                 else if ((m_selectedItem.UserData as MyBlueprintItemInfo).Type == MyBlueprintTypeEnum.STEAM)
                 {
                     m_detailScreen = new MyGuiDetailScreenScriptLocal(
@@ -512,6 +564,7 @@ namespace Sandbox.Game.Gui
                     MyScreenManager.InputToNonFocusedScreens = true;
                     MyScreenManager.AddScreen(m_detailScreen);
                 }
+#endif // !XB1
             }
         }
 
@@ -543,8 +596,8 @@ namespace Sandbox.Game.Gui
             newName = MyUtils.StripInvalidChars(newName);
             string oldName = m_selectedItem.Text.ToString();
 
-            string file = Path.Combine(m_localBlueprintFolder, oldName);
-            string newFile = Path.Combine(m_localBlueprintFolder, newName);
+            string file = Path.Combine(m_localScriptFolder, oldName);
+            string newFile = Path.Combine(m_localScriptFolder, newName);
 
             if (file == newFile)
             {
@@ -596,7 +649,7 @@ namespace Sandbox.Game.Gui
                         MyGuiSandbox.AddScreen(MyGuiSandbox.CreateMessageBox(
                             buttonType: MyMessageBoxButtonsType.OK,
                             styleEnum: MyMessageBoxStyleEnum.Error,
-                            messageCaption: MyTexts.Get(MySpaceTexts.LoadScreenButtonDelete),
+                            messageCaption: MyTexts.Get(MyCommonTexts.LoadScreenButtonDelete),
                             messageText: MyTexts.Get(MySpaceTexts.ProgrammableBlock_ReplaceScriptNameUsed))
                             );
 
@@ -611,7 +664,7 @@ namespace Sandbox.Game.Gui
             MyGuiSandbox.AddScreen(MyGuiSandbox.CreateMessageBox(
                 buttonType: MyMessageBoxButtonsType.YES_NO,
                 styleEnum: MyMessageBoxStyleEnum.Info,
-                messageCaption: MyTexts.Get(MySpaceTexts.LoadScreenButtonDelete),
+                messageCaption: MyTexts.Get(MyCommonTexts.LoadScreenButtonDelete),
                 messageText: MyTexts.Get(MySpaceTexts.ProgrammableBlock_DeleteScriptDialogText),
                 callback: delegate(MyGuiScreenMessageBox.ResultEnum callbackReturn)
                 {
@@ -638,10 +691,10 @@ namespace Sandbox.Game.Gui
 
         private void RenameScript(string oldName, string newName)
         {
-            string oldFilePath = Path.Combine(m_localBlueprintFolder, oldName);
+            string oldFilePath = Path.Combine(m_localScriptFolder, oldName);
             if (Directory.Exists(oldFilePath))
             {
-                string newFilePath = Path.Combine(m_localBlueprintFolder, newName);
+                string newFilePath = Path.Combine(m_localScriptFolder, newName);
                 Directory.Move(oldFilePath, newFilePath);
             }
             DeleteScript(oldName);
@@ -649,7 +702,7 @@ namespace Sandbox.Game.Gui
 
         private bool DeleteScript(string p)
         {
-            string fileName = Path.Combine(m_localBlueprintFolder, p);
+            string fileName = Path.Combine(m_localScriptFolder, p);
             if (Directory.Exists(fileName))
             {
                 Directory.Delete(fileName,true);
@@ -703,18 +756,18 @@ namespace Sandbox.Game.Gui
         {
             if (GetCodeFromEditor != null)
             {
-                if (!Directory.Exists(m_localBlueprintFolder))
+                if (!Directory.Exists(m_localScriptFolder))
                 {
                     return;
                 }
                 int numTrys = 0;
-                
-                while(Directory.Exists(Path.Combine(m_localBlueprintFolder, DEFAULT_SCRIPT_NAME +"_"+numTrys.ToString())))
+
+                while (Directory.Exists(Path.Combine(m_localScriptFolder, DEFAULT_SCRIPT_NAME + "_" + numTrys.ToString())))
                 {
                     numTrys++;
                 }
 
-                string newScriptPath = Path.Combine(m_localBlueprintFolder, DEFAULT_SCRIPT_NAME + "_" + numTrys);
+                string newScriptPath = Path.Combine(m_localScriptFolder, DEFAULT_SCRIPT_NAME + "_" + numTrys);
                 Directory.CreateDirectory(newScriptPath);
                 var fsPath = Path.Combine(MyFileSystem.ContentPath, STEAM_THUMBNAIL_NAME);
                 File.Copy(fsPath, Path.Combine(newScriptPath,THUMBNAIL_NAME),true);
@@ -731,7 +784,7 @@ namespace Sandbox.Game.Gui
             }
             if (GetCodeFromEditor != null)
             {
-                if (!Directory.Exists(m_localBlueprintFolder))
+                if (!Directory.Exists(m_localScriptFolder))
                 {
                     return;
                 }          
@@ -745,7 +798,7 @@ namespace Sandbox.Game.Gui
                                if (callbackReturn == MyGuiScreenMessageBox.ResultEnum.YES)
                                {
                                    MyScriptItemInfo info = m_selectedItem.UserData as MyScriptItemInfo;
-                                   string filePath = Path.Combine(m_localBlueprintFolder, info.ScriptName, DEFAULT_SCRIPT_NAME + SCRIPT_EXTENSION);
+                                   string filePath = Path.Combine(m_localScriptFolder, info.ScriptName, DEFAULT_SCRIPT_NAME + SCRIPT_EXTENSION);
                                    if (File.Exists(filePath))
                                    {
                                        string code = GetCodeFromEditor();
@@ -762,9 +815,31 @@ namespace Sandbox.Game.Gui
             }
         }
 
+#if !XB1 // XB1_NOWORKSHOP
         void OnOpenWorkshop(MyGuiControlButton button)
         {
             MyGuiSandbox.OpenUrlWithFallback(MySteamConstants.URL_BROWSE_WORKSHOP_INGAMESCRIPTS, "Steam Workshop");
+        }
+#endif // !XB1
+
+        protected MyGuiControlButton CreateButton(float usableWidth, StringBuilder text, Action<MyGuiControlButton> onClick, bool enabled = true, MyStringId? tooltip = null, float textScale = 1f)
+        {
+            var button = AddButton(text, onClick);
+            button.VisualStyle = MyGuiControlButtonStyleEnum.Rectangular;
+            button.TextScale = textScale;
+            button.Size = new Vector2(usableWidth, button.Size.Y);
+            button.Position = button.Position + new Vector2(-0.04f / 2.0f, 0.0f);
+            button.Enabled = enabled;
+            if (tooltip != null)
+            {
+                button.SetToolTip(tooltip.Value);
+            }
+            return button;
+        }
+
+        protected MyGuiControlLabel MakeLabel(String text, Vector2 position, float textScale = 1.0f)
+        {
+            return new MyGuiControlLabel(text: text, originAlign: MyGuiDrawAlignEnum.HORISONTAL_LEFT_AND_VERTICAL_TOP, position: position, textScale: textScale);
         }
     }
 }

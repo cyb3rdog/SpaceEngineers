@@ -1,27 +1,166 @@
-﻿using SharpDX.Direct3D11;
-using SharpDX.DXGI;
-using System;
-using System.Collections;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Text;
 using VRage;
 using VRage.Import;
 using VRage.Utils;
-using VRage.Voxels;
 using VRageMath;
 using VRageMath.PackedVector;
 using VRageRender.Vertex;
-using VRage.Library.Utils;
 using VRage.FileSystem;
+using SharpDX.Direct3D11;
+using VRage.Profiler;
+using VRage.Render11.Common;
+using VRage.Render11.Resources;
+using VRage.Voxels;
+using VRageRender.Import;
+using VRageRender.Messages;
 
 namespace VRageRender
 {
+    public class MyMeshData
+    {
+        public int VerticesNum { get { return Positions.Length; } }
+        public bool ValidStreams { get; private set; }
+        public bool IsAnimated { get; set; }
+        public float PatternScale { get; private set; }
+
+
+        public MyLODDescriptor[] Lods;
+
+        public HalfVector4[] Positions;
+
+        public Byte4[] Normals;
+        public Byte4[] Tangents;
+        public Byte4[] Bitangents;
+
+        public HalfVector2[] Texcoords;
+        public Vector4I[] TexIndices;
+
+        public MyModelBone[] Bones;
+        public Vector4I[] BoneIndices;
+        public Vector4[] BoneWeights;
+
+        public List<MyMeshPartInfo> PartInfos;
+        public List<MyMeshSectionInfo> SectionInfos;
+
+        public BoundingBox BoundindBox;
+        public BoundingSphere BoundingSphere;
+
+
+        #region Data not filled during import (filled from the outside)
+
+        public List<uint> NewIndices;
+        public uint MaxIndex;
+
+        public Byte4[] StoredTangents;
+
+        // Used to containt mapping from material name to PartIndex, Index offset of the part and BaseVertex of the part
+        public Dictionary<string, Tuple<int, int, int>> MatsIndices;
+
+        #endregion
+
+
+        public void DoImport(MyModelImporter importer, string fsPath)
+        {
+            importer.ImportData(fsPath, new[]
+            {
+                MyImporterConstants.TAG_VERTICES,
+                MyImporterConstants.TAG_BLENDINDICES,
+                MyImporterConstants.TAG_BLENDWEIGHTS,
+                MyImporterConstants.TAG_NORMALS,
+                MyImporterConstants.TAG_TEXCOORDS0,
+                MyImporterConstants.TAG_TANGENTS,
+                MyImporterConstants.TAG_BINORMALS,
+                MyImporterConstants.TAG_BONES,
+                MyImporterConstants.TAG_MESH_PARTS,
+                MyImporterConstants.TAG_MESH_SECTIONS,
+                MyImporterConstants.TAG_BOUNDING_BOX,
+                MyImporterConstants.TAG_BOUNDING_SPHERE,
+                MyImporterConstants.TAG_LODS,
+                MyImporterConstants.TAG_PATTERN_SCALE
+            });
+
+            Dictionary<string, object> tagData = importer.GetTagData();
+
+
+            // Parts
+            MyRenderProxy.Assert(tagData.ContainsKey(MyImporterConstants.TAG_MESH_PARTS));
+            PartInfos = tagData[MyImporterConstants.TAG_MESH_PARTS] as List<MyMeshPartInfo>;
+
+            // Sections
+            if (tagData.ContainsKey(MyImporterConstants.TAG_MESH_SECTIONS))
+                SectionInfos = tagData[MyImporterConstants.TAG_MESH_SECTIONS] as List<MyMeshSectionInfo>;
+
+            // Common buffers
+            if (tagData.ContainsKey(MyImporterConstants.TAG_LODS))
+                Lods = (MyLODDescriptor[])tagData[MyImporterConstants.TAG_LODS];
+
+            Positions = (HalfVector4[])tagData[MyImporterConstants.TAG_VERTICES];
+
+            Normals = (Byte4[])tagData[MyImporterConstants.TAG_NORMALS];
+            Tangents = (Byte4[])tagData[MyImporterConstants.TAG_TANGENTS];
+            Bitangents = (Byte4[])tagData[MyImporterConstants.TAG_BINORMALS];
+
+            Texcoords = (HalfVector2[])tagData[MyImporterConstants.TAG_TEXCOORDS0];
+            TexIndices = MyManagers.GeometryTextureSystem.CreateTextureIndices(PartInfos, VerticesNum, MyMeshes.GetContentPath(fsPath));
+
+            BoneIndices = (Vector4I[])tagData[MyImporterConstants.TAG_BLENDINDICES];
+            BoneWeights = (Vector4[])tagData[MyImporterConstants.TAG_BLENDWEIGHTS];
+
+            // Validation
+            ValidStreams =
+                ((Normals.Length > 0) && Normals.Length == VerticesNum) &&
+                ((Texcoords.Length > 0) && Texcoords.Length == VerticesNum) &&
+                ((Tangents.Length > 0) && Tangents.Length == VerticesNum) &&
+                ((Bitangents.Length > 0) && Bitangents.Length == VerticesNum);
+
+            if (ValidStreams == false)
+            {
+                MyRender11.Log.WriteLine(String.Format("Mesh asset {0} has inconsistent vertex streams", Path.GetFileName(fsPath)));
+                Normals = new Byte4[0];
+                Texcoords = new HalfVector2[0];
+                Tangents = new Byte4[0];
+                Bitangents = new Byte4[0];
+            }
+
+            // Scale
+            object patternScale;
+            PatternScale = 1f;
+            if (tagData.TryGetValue(MyImporterConstants.TAG_PATTERN_SCALE, out patternScale))
+                PatternScale = (float)patternScale;
+
+            // Animations
+            IsAnimated = BoneIndices.Length > 0 && BoneWeights.Length > 0 && BoneIndices.Length == VerticesNum &&
+                              BoneWeights.Length == VerticesNum;
+            Bones = (MyModelBone[])tagData[MyImporterConstants.TAG_BONES];
+
+            BoundindBox = (BoundingBox)tagData[MyImporterConstants.TAG_BOUNDING_BOX];
+            BoundingSphere = (BoundingSphere)tagData[MyImporterConstants.TAG_BOUNDING_SPHERE];
+
+        }
+    }
+
     struct MeshId
     {
         internal int Index;
+
+        #region Equals
+        public class MyMeshIdComparerType : IEqualityComparer<MeshId>
+        {
+            public bool Equals(MeshId left, MeshId right)
+            {
+                return left.Index == right.Index;
+            }
+
+            public int GetHashCode(MeshId meshId)
+            {
+                return meshId.Index;
+            }
+        }
+        public static readonly MyMeshIdComparerType Comparer = new MyMeshIdComparerType();
 
         public static bool operator ==(MeshId x, MeshId y)
         {
@@ -32,15 +171,31 @@ namespace VRageRender
         {
             return x.Index != y.Index;
         }
+        #endregion
 
         internal static readonly MeshId NULL = new MeshId { Index = -1 };
 
-        internal MyMeshInfo Info { get { return MyMeshes.Meshes.Data[Index]; } }
+        internal MyMeshInfo Info { get { return MyMeshes.MeshInfos.Data[Index]; } }
     }
 
     struct LodMeshId
     {
         internal int Index;
+
+        #region Equals
+        public class MyLodMeshIdComparerType : IEqualityComparer<LodMeshId>
+        {
+            public bool Equals(LodMeshId left, LodMeshId right)
+            {
+                return left.Index == right.Index;
+            }
+
+            public int GetHashCode(LodMeshId lodMeshId)
+            {
+                return lodMeshId.Index;
+            }
+        }
+        internal static readonly MyLodMeshIdComparerType Comparer = new MyLodMeshIdComparerType();
 
         public static bool operator ==(LodMeshId x, LodMeshId y)
         {
@@ -51,17 +206,35 @@ namespace VRageRender
         {
             return x.Index != y.Index;
         }
+        #endregion
 
         internal static readonly LodMeshId NULL = new LodMeshId { Index = -1 };
 
-        internal MyLodMeshInfo Info { get { return MyMeshes.Lods.Data[Index]; } }
-        internal MyMeshBuffers Buffers { get { return MyMeshes.LodMeshBuffers[Index]; } }
-        internal VertexLayoutId VertexLayout { get { return MyMeshes.Lods.Data[Index].Data.VertexLayout; } }
+        internal MyLodMeshInfo Info { get { return MyMeshes.LodMeshInfos.Data[Index]; } }
+
+        internal MyMeshBuffers Buffers { get { return Index != -1 ? MyMeshes.LodMeshBuffers[Index] : MyMeshBuffers.Empty; } }
+
+        internal VertexLayoutId VertexLayout { get { return MyMeshes.LodMeshInfos.Data[Index].Data.VertexLayout; } }
     }
 
     struct MeshPartId
     {
         internal int Index;
+
+        #region Equals
+        public class MyMeshPartIdComparerType : IEqualityComparer<MeshPartId>
+        {
+            public bool Equals(MeshPartId left, MeshPartId right)
+            {
+                return left.Index == right.Index;
+            }
+
+            public int GetHashCode(MeshPartId meshPartId)
+            {
+                return meshPartId.Index;
+            }
+        }
+        public static readonly MyMeshPartIdComparerType Comparer = new MyMeshPartIdComparerType();
 
         public static bool operator ==(MeshPartId x, MeshPartId y)
         {
@@ -72,15 +245,81 @@ namespace VRageRender
         {
             return x.Index != y.Index;
         }
+        #endregion
 
         internal static readonly MeshPartId NULL = new MeshPartId { Index = -1 };
 
         internal MyMeshPartInfo1 Info { get { return MyMeshes.Parts.Data[Index]; } }
     }
 
+    struct MeshSectionId
+    {
+        internal int Index;
+
+        #region Equals
+        public class MyMeshSectionIdComparerType : IEqualityComparer<MeshSectionId>
+        {
+            public bool Equals(MeshSectionId left, MeshSectionId right)
+            {
+                return left.Index == right.Index;
+            }
+
+            public int GetHashCode(MeshSectionId sectionId)
+            {
+                return sectionId.Index;
+            }
+        }
+        public static readonly MyMeshSectionIdComparerType Comparer = new MyMeshSectionIdComparerType();
+
+        public static bool operator ==(MeshSectionId x, MeshSectionId y)
+        {
+            return x.Index == y.Index;
+        }
+
+        public static bool operator !=(MeshSectionId x, MeshSectionId y)
+        {
+            return x.Index != y.Index;
+        }
+
+        public override bool Equals(object obj)
+        {
+            if (!(obj is MeshSectionId))
+                return false;
+
+            MeshSectionId id = (MeshSectionId)obj;
+            return Index == id.Index;
+        }
+
+        public override int GetHashCode()
+        {
+            return Index;
+        }
+
+        #endregion
+
+        internal static readonly MeshSectionId NULL = new MeshSectionId { Index = -1 };
+
+        internal MyMeshSectionInfo1 Info { get { return MyMeshes.Sections.Data[Index]; } }
+    }
+
     struct VoxelPartId
     {
         internal int Index;
+
+        #region Equals
+        public class MyVoxelPartIdComparerType : IEqualityComparer<VoxelPartId>
+        {
+            public bool Equals(VoxelPartId left, VoxelPartId right)
+            {
+                return left.Index == right.Index;
+            }
+
+            public int GetHashCode(VoxelPartId voxelPartId)
+            {
+                return voxelPartId.Index;
+            }
+        }
+        public static readonly MyVoxelPartIdComparerType Comparer = new MyVoxelPartIdComparerType();
 
         public static bool operator ==(VoxelPartId x, VoxelPartId y)
         {
@@ -91,6 +330,7 @@ namespace VRageRender
         {
             return x.Index != y.Index;
         }
+        #endregion
 
         internal static readonly VoxelPartId NULL = new VoxelPartId { Index = -1 };
 
@@ -102,46 +342,42 @@ namespace VRageRender
         internal int IndexCount;
         internal int StartIndex;
         internal int BaseVertex;
+        internal int SectionSubmeshCount;
 
         internal int[] BonesMapping;
 
+        internal Vector3 CenterOffset;
+
+        internal MyMeshMaterialId Material;
+        // Materials that are not used after part merging (they are replaced by the new Material)
+        public HashSet<string> UnusedMaterials;
+    }
+
+
+    [DebuggerDisplay("Name = {Name}, MeshCount = {Meshes.Length}")]
+    struct MyMeshSectionInfo1
+    {
+        internal string Name;
+        internal MyMeshSectionPartInfo1[] Meshes;
+    }
+
+    struct MyMeshSectionPartInfo1
+    {
+        internal int StartIndex;
+        internal int IndexCount;
+        internal int BaseVertex;
+        internal int PartIndex;
+        internal int PartSubmeshIndex;
         internal MyMeshMaterialId Material;
     }
 
-    struct MyLodMeshInfo
-    {
-        internal string Name;
-        internal string FileName;
-        internal int PartsNum;
-        internal bool HasBones { get { return Data.VertexLayout.Info.HasBonesInfo; } }
-
-        internal int VerticesNum;
-        internal int IndicesNum;
-
-        internal float LodDistance;
-
-        internal MyMeshRawData Data;
-
-        internal BoundingBox? BoundingBox;
-        internal BoundingSphere? BoundingSphere;
-    }
-
-    struct MyMeshInfo
-    {
-        internal int LodsNum;
-        internal MyStringId Name;
-        internal bool Dynamic;
-        internal bool RuntimeGenerated;
-        internal bool Loaded;
-        internal bool FileExists;
-    }
 
     struct MyMeshRawData
     {
         internal VertexLayoutId VertexLayout;
 
         internal byte[] Indices;
-        internal Format IndicesFmt;
+        internal MyIndexBufferFormat IndicesFmt;
 
         internal byte[] VertexStream0;
         internal int Stride0;
@@ -150,13 +386,62 @@ namespace VRageRender
         internal int Stride1;
     }
 
+    struct MyLodMeshInfo
+    {
+        internal string Name;
+        internal string FileName;
+        internal int PartsNum;
+        internal string[] SectionNames;
+        internal bool HasBones { get { return Data.VertexLayout.Info.HasBonesInfo; } }
+
+        internal int VerticesNum;
+        internal int IndicesNum;
+        internal int TrianglesNum;
+
+        /// <summary>Triangle density in the squared diagonal</summary>
+        internal float TriangleDensity;
+
+        internal float LodDistance;
+
+        internal MyMeshRawData Data;
+        internal MyClipmapCellBatch[] DataBatches;
+        internal MyClipmapCellMeshMetadata BatchMetadata;
+
+        internal BoundingBox? BoundingBox;
+        internal BoundingSphere? BoundingSphere;
+        internal bool NullLodMesh;
+    }
+
+    struct MyMeshInfo
+    {
+        internal int LodsNum;
+        internal string Name;
+        internal MyStringId NameKey;
+        internal bool Dynamic;
+        internal bool RuntimeGenerated;
+        internal bool Loaded;
+        internal bool FileExists;
+        public float Rescale;
+    }
+
+
     struct MyMeshBuffers
     {
-        internal VertexBufferId VB0;
-        internal VertexBufferId VB1;
-        internal IndexBufferId IB;
+        internal IVertexBuffer VB0;
+        internal IVertexBuffer VB1;
+        internal IIndexBuffer IB;
 
-        internal static readonly MyMeshBuffers Empty = new MyMeshBuffers { IB = IndexBufferId.NULL, VB0 = VertexBufferId.NULL, VB1 = VertexBufferId.NULL };
+        public static bool operator ==(MyMeshBuffers left, MyMeshBuffers right)
+        {
+            return left.VB0 == right.VB0 && left.VB1 == right.VB1 && left.IB == right.IB;
+        }
+
+        public static bool operator !=(MyMeshBuffers left, MyMeshBuffers right)
+        {
+            return left.VB0 != right.VB0 || left.VB1 != right.VB1 || left.IB == right.IB;
+        }
+
+        internal static readonly MyMeshBuffers Empty = new MyMeshBuffers();
     }
 
     struct MyVoxelCellInfo
@@ -192,6 +477,22 @@ namespace VRageRender
     {
         internal MeshId Mesh;
         internal int Lod;
+
+        #region Equals
+        public class MyLodMeshComparerType : IEqualityComparer<MyLodMesh>
+        {
+            public bool Equals(MyLodMesh left, MyLodMesh right)
+            {
+                return left.Mesh == right.Mesh && left.Lod == right.Lod;
+            }
+
+            public int GetHashCode(MyLodMesh lodMesh)
+            {
+                return (ushort)(MeshId.Comparer.GetHashCode() << 16) | (ushort)lodMesh.Lod;
+            }
+        }
+        public static readonly MyLodMeshComparerType Comparer = new MyLodMeshComparerType();
+        #endregion
     }
 
     struct MyMeshPart
@@ -199,47 +500,134 @@ namespace VRageRender
         internal MeshId Mesh;
         internal int Lod;
         internal int Part;
+
+        #region Equals
+        public class MyMeshPartComparerType : IEqualityComparer<MyMeshPart>
+        {
+            public bool Equals(MyMeshPart left, MyMeshPart right)
+            {
+                return left.Mesh == right.Mesh &&
+                        left.Lod == right.Lod &&
+                        left.Part == right.Part;
+            }
+
+            public int GetHashCode(MyMeshPart meshPart)
+            {
+                return meshPart.Mesh.GetHashCode() << 20 | meshPart.Lod << 10 | meshPart.Part;
+            }
+        }
+        public static readonly MyMeshPartComparerType Comparer = new MyMeshPartComparerType();
+        #endregion
+    }
+
+    struct MyMeshSection
+    {
+        internal MeshId Mesh;
+        internal int Lod;
+        internal string Section;
+
+        #region Equals
+        public class MyMeshSectionComparerType : IEqualityComparer<MyMeshSection>
+        {
+            public bool Equals(MyMeshSection left, MyMeshSection right)
+            {
+                return left.Mesh == right.Mesh &&
+                        left.Lod == right.Lod &&
+                        left.Section == right.Section;
+            }
+
+            public int GetHashCode(MyMeshSection section)
+            {
+                return section.Mesh.GetHashCode() << 20 | section.Lod << 10 | section.Section.GetHashCode();
+            }
+        }
+        public static readonly MyMeshSectionComparerType Comparer = new MyMeshSectionComparerType();
+
+        #endregion
+    }
+
+    // fractures are the only asset existing over sessions (performance reasons) and some parts need to be recreated after they get dropped on session end (like material ids)
+    struct MyRuntimeMeshPersistentInfo
+    {
+        internal MyRuntimeSectionInfo[] Sections;
     }
 
     static class MyMeshes
     {
-        static Dictionary<MyStringId, MeshId> MeshNameIndex = new Dictionary<MyStringId, MeshId>();
-        static Dictionary<MyStringId, MeshId> RuntimeMeshNameIndex = new Dictionary<MyStringId, MeshId>();
-        internal static MyFreelist<MyMeshInfo> Meshes = new MyFreelist<MyMeshInfo>(4096);
-        internal static MyFreelist<MyLodMeshInfo> Lods = new MyFreelist<MyLodMeshInfo>(4096);
+        static readonly Dictionary<MyStringId, MeshId> MeshNameIndex = new Dictionary<MyStringId, MeshId>(MyStringId.Comparer);
+        static readonly Dictionary<MyStringId, MeshId> RuntimeMeshNameIndex = new Dictionary<MyStringId, MeshId>(MyStringId.Comparer);
+
+        internal static readonly MyFreelist<MyMeshInfo> MeshInfos = new MyFreelist<MyMeshInfo>(4096);
+
+        internal static readonly MyFreelist<MyLodMeshInfo> LodMeshInfos = new MyFreelist<MyLodMeshInfo>(4096);
+
+        static readonly Dictionary<MyLodMesh, LodMeshId> LodMeshIndex =
+            new Dictionary<MyLodMesh, LodMeshId>(MyLodMesh.Comparer);
+
         internal static MyMeshBuffers[] LodMeshBuffers = new MyMeshBuffers[4096];
-        internal static MyFreelist<MyMeshPartInfo1> Parts = new MyFreelist<MyMeshPartInfo1>(8192);
 
-        static Dictionary<MyLodMesh, LodMeshId> LodMeshIndex = new Dictionary<MyLodMesh, LodMeshId>();
-        static Dictionary<MyMeshPart, MeshPartId> PartIndex = new Dictionary<MyMeshPart, MeshPartId>();
+        internal static readonly MyFreelist<MyMeshPartInfo1> Parts = new MyFreelist<MyMeshPartInfo1>(8192);
+        internal static readonly MyFreelist<MyMeshSectionInfo1> Sections = new MyFreelist<MyMeshSectionInfo1>(8192);
 
-        static Dictionary<MeshId, MyVoxelCellInfo> MeshVoxelInfo = new Dictionary<MeshId, MyVoxelCellInfo>();
-        internal static MyFreelist<MyVoxelPartInfo1> VoxelParts = new MyFreelist<MyVoxelPartInfo1>(2048);
-        static Dictionary<MyMeshPart, VoxelPartId> VoxelPartIndex = new Dictionary<MyMeshPart,VoxelPartId>();
+        static readonly Dictionary<MeshId, MyVoxelCellInfo> MeshVoxelInfo =
+            new Dictionary<MeshId, MyVoxelCellInfo>(MeshId.Comparer);
 
+        static readonly Dictionary<MyMeshPart, VoxelPartId> VoxelPartIndex =
+            new Dictionary<MyMeshPart, VoxelPartId>(MyMeshPart.Comparer);
 
+        static readonly Dictionary<MyMeshPart, MeshPartId> PartIndex =
+            new Dictionary<MyMeshPart, MeshPartId>(MyMeshPart.Comparer);
+
+        static readonly Dictionary<MyMeshSection, MeshSectionId> SectionIndex =
+            new Dictionary<MyMeshSection, MeshSectionId>(MyMeshSection.Comparer);
+
+        internal static readonly MyFreelist<MyVoxelPartInfo1> VoxelParts = new MyFreelist<MyVoxelPartInfo1>(2048);
+
+        static readonly Dictionary<MeshId, MyRuntimeMeshPersistentInfo> InterSessionData =
+            new Dictionary<MeshId, MyRuntimeMeshPersistentInfo>(MeshId.Comparer);
+
+        //static readonly HashSet<MeshId> InterSessionDirty = new HashSet<MeshId>(MeshId.Comparer);
 
         static HashSet<MeshId>[] State;
 
         internal static VertexLayoutId VoxelLayout = VertexLayoutId.NULL;
 
+        // Helpers to reduce allocations
+        static MyVertexFormatVoxel[] m_tmpVertices0;
+        static MyVertexFormatNormal[] m_tmpVertices1;
+        static uint[] m_tmpIndices;
+        static ushort[] m_tmpShortIndices;
+
+        // Geometry merging helpers
+        static readonly Dictionary<MyMeshMaterialId, List<int>> MergableParts = new Dictionary<MyMeshMaterialId, List<int>>(new MyMeshMaterialId.CustomMergingEqualityComparer());
+        static readonly Dictionary<MyMeshMaterialId, List<int>> NonMergableParts = new Dictionary<MyMeshMaterialId, List<int>>();
+        static readonly Dictionary<MyMeshMaterialId, List<int>> TempParts = new Dictionary<MyMeshMaterialId, List<int>>();
+        static int m_mergedPartCounter;
+
         internal static void Init()
         {
             int statesNum = Enum.GetNames(typeof(MyMeshState)).Length;
             State = new HashSet<MeshId>[statesNum];
-            for (int i = 0; i < statesNum; i++)
+            for (int stateIndex = 0; stateIndex < statesNum; ++stateIndex)
             {
-                State[i] = new HashSet<MeshId>();
+                State[stateIndex] = new HashSet<MeshId>(MeshId.Comparer);
+            }
+
+            for (int bufferIndex = 0; bufferIndex < LodMeshBuffers.Length; ++bufferIndex)
+            {
+                LodMeshBuffers[bufferIndex] = MyMeshBuffers.Empty;
             }
 
             VoxelLayout = MyVertexLayouts.GetLayout(
                 new MyVertexInputComponent(MyVertexInputComponentType.VOXEL_POSITION_MAT),
                 new MyVertexInputComponent(MyVertexInputComponentType.VOXEL_NORMAL, 1));
+
+            m_mergedPartCounter = 0;
         }
 
         internal static bool Exists(string name)
         {
-            var x = X.TEXT(name);
+            var x = X.TEXT_(name);
             return MeshNameIndex.ContainsKey(x) || RuntimeMeshNameIndex.ContainsKey(x);
         }
 
@@ -255,7 +643,15 @@ namespace VRageRender
 
         internal static LodMeshId GetLodMesh(MeshId mesh, int lod)
         {
-            return LodMeshIndex[new MyLodMesh { Mesh = mesh, Lod = lod }];
+            var id = new MyLodMesh { Mesh = mesh, Lod = lod };
+            return LodMeshIndex[id];
+        }
+
+        internal static bool TryGetLodMesh(MeshId mesh, int lod, out LodMeshId lodMeshId)
+        {
+            var lodMesh = new MyLodMesh { Mesh = mesh, Lod = lod };
+
+            return LodMeshIndex.TryGetValue(lodMesh, out lodMeshId);
         }
 
         internal static MeshPartId GetMeshPart(MeshId mesh, int lod, int part)
@@ -263,12 +659,27 @@ namespace VRageRender
             return PartIndex[new MyMeshPart { Mesh = mesh, Lod = lod, Part = part }];
         }
 
+        internal static bool TryGetMeshPart(MeshId mesh, int lod, int part, out MeshPartId partId)
+        {
+            return PartIndex.TryGetValue(new MyMeshPart { Mesh = mesh, Lod = lod, Part = part }, out partId);
+        }
+
+        internal static MeshSectionId GetMeshSection(MeshId mesh, int lod, string section)
+        {
+            return SectionIndex[new MyMeshSection { Mesh = mesh, Lod = lod, Section = section }];
+        }
+
+        internal static bool TryGetMeshSection(MeshId mesh, int lod, string section, out MeshSectionId sectionId)
+        {
+            return SectionIndex.TryGetValue(new MyMeshSection { Mesh = mesh, Lod = lod, Section = section }, out sectionId);
+        }
+
         internal static VoxelPartId GetVoxelPart(MeshId mesh, int part)
         {
             return VoxelPartIndex[new MyMeshPart { Mesh = mesh, Lod = 0, Part = part }];
         }
 
-        internal static void InitState(MeshId id, MyMeshState state)
+        private static void InitState(MeshId id, MyMeshState state)
         {
             Debug.Assert(!CheckState(id, MyMeshState.LOADED));
             Debug.Assert(!CheckState(id, MyMeshState.WAITING));
@@ -276,41 +687,45 @@ namespace VRageRender
             State[(int)state].Add(id);
         }
 
-        internal static void MoveState(MeshId id, MyMeshState from, MyMeshState to)
+        private static void MoveState(MeshId id, MyMeshState from, MyMeshState to)
         {
             State[(int)from].Remove(id);
             State[(int)to].Add(id);
         }
 
-        internal static bool CheckState(MeshId id, MyMeshState state)
+        private static bool CheckState(MeshId id, MyMeshState state)
         {
             return State[(int)state].Contains(id);
         }
 
         internal static void ClearState(MeshId id)
         {
-            for (int i = 0; i < State.Length; i++)
+            foreach (HashSet<MeshId> t in State)
             {
-                State[i].Remove(id);
+                t.Remove(id);
             }
         }
 
-        internal static MeshId GetMeshId(MyStringId name)
+        internal static MeshId GetMeshId(MyStringId nameKey, float rescale)
         {
-            if (RuntimeMeshNameIndex.ContainsKey(name))
+            if (RuntimeMeshNameIndex.ContainsKey(nameKey))
             {
-                return RuntimeMeshNameIndex[name];
+                var id = RuntimeMeshNameIndex[nameKey];
+
+                return id;
             }
 
-            if(!MeshNameIndex.ContainsKey(name))
+            if (!MeshNameIndex.ContainsKey(nameKey))
             {
-                var id = new MeshId{ Index = Meshes.Allocate() };
-                MeshNameIndex[name] = id;
+                var id = new MeshId { Index = MeshInfos.Allocate() };
+                MeshNameIndex[nameKey] = id;
 
-                Meshes.Data[id.Index] = new MyMeshInfo
+                MeshInfos.Data[id.Index] = new MyMeshInfo
                 {
-                    Name = name,
-                    LodsNum = -1
+                    Name = nameKey.ToString(),
+                    NameKey = nameKey,
+                    LodsNum = -1,
+                    Rescale = rescale
                 };
 
                 InitState(id, MyMeshState.WAITING);
@@ -318,7 +733,7 @@ namespace VRageRender
                 MoveState(id, MyMeshState.WAITING, MyMeshState.LOADED);
             }
 
-            return MeshNameIndex[name];
+            return MeshNameIndex[nameKey];
         }
 
         internal static void RemoveMesh(MeshId model)
@@ -326,29 +741,29 @@ namespace VRageRender
             Debug.Assert(!IsVoxelMesh(model));
 
             var lods = model.Info.LodsNum;
-            for(int l=0; l<lods; l++)
+            for (int lodIndex = 0; lodIndex < lods; ++lodIndex)
             {
-                var mesh = GetLodMesh(model, l);
+                var mesh = GetLodMesh(model, lodIndex);
 
                 DisposeLodMeshBuffers(mesh);
 
-                int parts = Lods.Data[mesh.Index].PartsNum;
-                for (int p = 0; p < parts; p++ )
+                int parts = LodMeshInfos.Data[mesh.Index].PartsNum;
+                for (int partIndex = 0; partIndex < parts; ++partIndex)
                 {
-                    var part = GetMeshPart(model, l, p);
+                    var part = GetMeshPart(model, lodIndex, partIndex);
                     Parts.Free(part.Index);
                 }
 
-                Lods.Free(mesh.Index);
+                LodMeshInfos.Free(mesh.Index);
             }
 
-            Meshes.Free(model.Index);
+            if (model.Info.NameKey != MyStringId.NullOrEmpty)
+            {
+                MeshNameIndex.Remove(model.Info.NameKey);
+                RuntimeMeshNameIndex.Remove(model.Info.NameKey);
+            }
 
-            MeshNameIndex.Remove(model.Info.Name);
-            RuntimeMeshNameIndex.Remove(model.Info.Name);
-
-            //internal static MyFreelist<MyLodMeshInfo> Lods = new MyFreelist<MyLodMeshInfo>(4096);
-            //internal static MyFreelist<MyMeshPartInfo1> Parts = new MyFreelist<MyMeshPartInfo1>(8192);
+            MeshInfos.Free(model.Index);
         }
 
         internal static void OnSessionEnd()
@@ -358,25 +773,28 @@ namespace VRageRender
             foreach (var id in RuntimeMeshNameIndex.Values.ToArray())
             {
                 bool fracture = id.Info.RuntimeGenerated && !id.Info.Dynamic;
-                if(!(fracture && KEEP_FRACTURES))
+                if (!(fracture && KEEP_FRACTURES))
                 {
                     RemoveMesh(id);
                 }
             }
 
-            foreach (var id in MeshNameIndex.Values.ToArray())
-            {
-                RemoveMesh(id);
-            }
-
+            // remove voxels
             foreach (var id in MeshVoxelInfo.Keys.ToArray())
             {
                 RemoveVoxelCell(id);
             }
 
+            // remove non-runtime meshes
+            foreach (var id in MeshNameIndex.Values.ToArray())
+            {
+                RemoveMesh(id);
+            }
+
             MeshVoxelInfo.Clear();
             VoxelParts.Clear();
             VoxelPartIndex.Clear();
+            RuntimeMeshNameIndex.Clear();
 
             for (int i = 0; i < Enum.GetNames(typeof(MyMeshState)).Length; i++)
             {
@@ -386,10 +804,13 @@ namespace VRageRender
 
         static LodMeshId NewLodMesh(MeshId mesh, int lod)
         {
-            var id = new LodMeshId { Index = Lods.Allocate() };
-            Lods.Data[id.Index] = new MyLodMeshInfo { };
+            var id = new LodMeshId { Index = LodMeshInfos.Allocate() };
+            LodMeshInfos.Data[id.Index] = new MyLodMeshInfo { };
 
-            LodMeshIndex[new MyLodMesh { Mesh = mesh, Lod = lod}] = id;
+            bool isVoxelMesh = IsVoxelMesh(mesh);
+            int usedLod = isVoxelMesh ? 0 : lod;
+
+            LodMeshIndex[new MyLodMesh { Mesh = mesh, Lod = usedLod }] = id;
             MyArrayHelpers.Reserve(ref LodMeshBuffers, id.Index + 1);
             LodMeshBuffers[id.Index] = MyMeshBuffers.Empty;
 
@@ -401,27 +822,46 @@ namespace VRageRender
             var id = new MeshPartId { Index = Parts.Allocate() };
             Parts.Data[id.Index] = new MyMeshPartInfo1 { };
 
-            PartIndex[new MyMeshPart { Mesh = mesh, Lod = lod, Part = part}] = id;
+            PartIndex[new MyMeshPart { Mesh = mesh, Lod = lod, Part = part }] = id;
 
             return id;
         }
 
-        static bool LoadMwm(ref MyLodMeshInfo lodMeshInfo, 
-            out MyMeshPartInfo1 [] parts)
+        static MeshSectionId NewMeshSection(MeshId mesh, int lod, string section)
+        {
+            var id = new MeshSectionId { Index = Sections.Allocate() };
+            Sections.Data[id.Index] = new MyMeshSectionInfo1 { };
+
+            SectionIndex[new MyMeshSection { Mesh = mesh, Lod = lod, Section = section }] = id;
+
+            return id;
+        }
+
+
+        #region Mwm loading
+
+        static bool LoadMwm(ref MyLodMeshInfo lodMeshInfo,
+            out MyMeshPartInfo1[] parts, out MyMeshSectionInfo1[] sections, float rescale)
         {
             MyLODDescriptor[] lodDescriptors;
-            return LoadMwm(ref lodMeshInfo, out parts, out lodDescriptors);
+            return LoadMwm(ref lodMeshInfo, out parts, out sections, out lodDescriptors, rescale);
         }
 
         // returns false when mesh couldn't be loaded
-        unsafe static bool LoadMwm(ref MyLodMeshInfo lodMeshInfo, 
-            out MyMeshPartInfo1 [] parts, out MyLODDescriptor[] lodDescriptors)
+        static bool LoadMwm(ref MyLodMeshInfo lodMeshInfo,
+            out MyMeshPartInfo1[] parts, out MyMeshSectionInfo1[] sections,
+            out MyLODDescriptor[] lodDescriptors, float rescale)
         {
             parts = null;
+            sections = null;
             lodDescriptors = null;
 
             var importer = new MyModelImporter();
             var file = lodMeshInfo.FileName;
+            if (file == null)
+            {
+                return true;
+            }
             var fsPath = Path.IsPathRooted(file) ? file : Path.Combine(MyFileSystem.ContentPath, file);
 
             if (!MyFileSystem.FileExists(fsPath))
@@ -430,410 +870,834 @@ namespace VRageRender
                 return false;
             }
 
-            string contentPath = null;
-            if (Path.IsPathRooted(file) && file.ToLower().Contains("models"))
-                contentPath = file.Substring(0, file.ToLower().IndexOf("models"));
+            //// Info extraction
+            MyMeshData meshData = new MyMeshData();
+            meshData.DoImport(importer, fsPath);
 
+            // Return lods
+            lodDescriptors = (MyLODDescriptor[])meshData.Lods.Clone();
 
-            importer.ImportData(fsPath, new string[]
+            // Alter positions
             {
-                MyImporterConstants.TAG_VERTICES,
-                MyImporterConstants.TAG_BLENDINDICES,
-                MyImporterConstants.TAG_BLENDWEIGHTS,
-                MyImporterConstants.TAG_NORMALS,
-                MyImporterConstants.TAG_TEXCOORDS0,
-                MyImporterConstants.TAG_TANGENTS,
-                MyImporterConstants.TAG_BINORMALS,
-                MyImporterConstants.TAG_BONES,
-                MyImporterConstants.TAG_MESH_PARTS,
-                MyImporterConstants.TAG_BOUNDING_BOX,
-                MyImporterConstants.TAG_BOUNDING_SPHERE,
-                MyImporterConstants.TAG_LODS,
-            });
-            Dictionary<string, object> tagData = importer.GetTagData();
+                var positions = meshData.Positions;
 
-            // LODS INFO EXTRACTING
-            if (tagData.ContainsKey(MyImporterConstants.TAG_LODS))
-            {
-                var lods = (MyLODDescriptor[])tagData[MyImporterConstants.TAG_LODS];
-                lodDescriptors = (MyLODDescriptor[])lods.Clone();
-            }
+                if (rescale != 1.0f)
+                    for (int i = 0; i < positions.Length; i++)
+                        positions[i] = VF_Packer.PackPosition(VF_Packer.UnpackPosition(positions[i]) * rescale);
 
-            var positions = (HalfVector4[])tagData[MyImporterConstants.TAG_VERTICES];
-            var verticesNum = positions.Length;
+                var verticesNum = positions.Length;
 
-            lodMeshInfo.VerticesNum = verticesNum;
+                lodMeshInfo.VerticesNum = verticesNum;
 
-            Debug.Assert(positions.Length > 0);
-            if (positions.Length == 0)
-            {
-                MyRender11.Log.WriteLine(String.Format("Mesh asset {0} has no vertices", file));
-                importer.Clear();
-                return false;
-            }
-
-            var boneIndices = (Vector4I[])tagData[MyImporterConstants.TAG_BLENDINDICES];
-            var boneWeights = (Vector4[])tagData[MyImporterConstants.TAG_BLENDWEIGHTS];
-            var normals = (Byte4[])tagData[MyImporterConstants.TAG_NORMALS];
-            var texcoords = (HalfVector2[])tagData[MyImporterConstants.TAG_TEXCOORDS0];
-            var tangents = (Byte4[])tagData[MyImporterConstants.TAG_TANGENTS];
-            var bitangents = (Byte4[])tagData[MyImporterConstants.TAG_BINORMALS];
-            var storedTangents = new Byte4[verticesNum];
-
-            bool validStreams =  
-                ((normals.Length > 0) && normals.Length == verticesNum) &&
-                ((texcoords.Length > 0) && texcoords.Length == verticesNum) &&
-                ((tangents.Length > 0) && tangents.Length == verticesNum) &&
-                ((bitangents.Length > 0) && bitangents.Length == verticesNum);
-
-            if(validStreams == false)
-            {
-                MyRender11.Log.WriteLine(String.Format("Mesh asset {0} has inconsistent vertex streams", file));
-                normals = new Byte4[0];
-                texcoords = new HalfVector2[0];
-                tangents = new Byte4[0];
-                bitangents = new Byte4[0];
-            }
-            if(tangents.Length > 0 && bitangents.Length > 0)
-            {
-                // calculate tangents used by run-time
-                for (int i = 0; i < verticesNum; i++)
+                Debug.Assert(positions.Length > 0);
+                if (positions.Length == 0)
                 {
-                    var N = VF_Packer.UnpackNormal(normals[i].PackedValue);
-                    var T = VF_Packer.UnpackNormal(tangents[i].PackedValue);
-                    var B = VF_Packer.UnpackNormal(bitangents[i].PackedValue);
-
-                    var tanW = new Vector4(T.X, T.Y, T.Z, 0);
-
-                    tanW.W = T.Cross(N).Dot(B) < 0 ? -1 : 1;
-                    storedTangents[i] = VF_Packer.PackTangentSignB4(ref tanW);
+                    MyRender11.Log.WriteLine(String.Format("Mesh asset {0} has no vertices", file));
+                    importer.Clear();
+                    return false;
                 }
             }
 
-            bool hasBonesInfo = boneIndices.Length > 0 && boneWeights.Length > 0 && boneIndices.Length == verticesNum && boneWeights.Length == verticesNum;
-            var bones = (MyModelBone[]) tagData[MyImporterConstants.TAG_BONES];
-
-            bool isAnimated = hasBonesInfo;
-            if (tagData.ContainsKey(MyImporterConstants.TAG_MESH_PARTS))
+            // Alter tangents
             {
-                var meshParts = tagData[MyImporterConstants.TAG_MESH_PARTS] as List<MyMeshPartInfo>;
-                lodMeshInfo.PartsNum = meshParts.Count;
-                parts = new MyMeshPartInfo1[lodMeshInfo.PartsNum];
+                var normals = meshData.Normals;
+                var tangents = meshData.Tangents;
+                var bitangents = meshData.Bitangents;
 
-                var partUsedBonesMap = new List<int[]>();
-                #region Animations
-                // check animations, bones, prepare remapping
-                foreach (MyMeshPartInfo meshPart in meshParts)
+                var storedTangents = new Byte4[meshData.VerticesNum];
+                meshData.StoredTangents = storedTangents;
+
+                if (tangents.Length > 0 && bitangents.Length > 0)
                 {
-                    int[] bonesRemapping = null;
-                    if (boneIndices.Length > 0 && bones.Length > MyRender11Constants.SHADER_MAX_BONES)
+                    // calculate tangents used by run-time
+                    for (int i = 0; i < meshData.VerticesNum; i++)
                     {
-                        Dictionary<int, int> vertexChanged = new Dictionary<int, int>();
+                        var N = VF_Packer.UnpackNormal(normals[i].PackedValue);
+                        var T = VF_Packer.UnpackNormal(tangents[i].PackedValue);
+                        var B = VF_Packer.UnpackNormal(bitangents[i].PackedValue);
 
-                        Dictionary<int, int> bonesUsed = new Dictionary<int, int>();
+                        var tanW = new Vector4(T.X, T.Y, T.Z, 0);
+                        tanW.W = T.Cross(N).Dot(B) < 0 ? -1 : 1;
 
-                        int trianglesNum = meshPart.m_indices.Count / 3;
-                        for (int i = 0; i < trianglesNum; i++)
-                        {
-                            for (int j = 0; j < 3; j++)
-                            {
-                                int index = meshPart.m_indices[i * 3 + j];
-                                if (boneWeights[index].X > 0)
-                                    bonesUsed[boneIndices[index].X] = 1;
-                                if (boneWeights[index].Y > 0)
-                                    bonesUsed[boneIndices[index].Y] = 1;
-                                if (boneWeights[index].Z > 0)
-                                    bonesUsed[boneIndices[index].Z] = 1;
-                                if (boneWeights[index].W > 0)
-                                    bonesUsed[boneIndices[index].W] = 1;
-                            }
-                        }
-
-                        if (bonesUsed.Count > MyRender11Constants.SHADER_MAX_BONES)
-                        {
-                            MyRender11.Log.WriteLine(String.Format("Model asset {0} has more than {1} bones in parth with {2} material", file, MyRender11Constants.SHADER_MAX_BONES, meshPart.m_MaterialDesc.MaterialName));
-                            boneIndices = new Vector4I[0];
-                            isAnimated = false;
-                        }
-                        else
-                        {
-                            var partBones = new List<int>(bonesUsed.Keys);
-                            partBones.Sort();
-                            if (partBones.Count > 0 && partBones[partBones.Count - 1] >= MyRender11Constants.SHADER_MAX_BONES)
-                            {
-                                for (int i = 0; i < partBones.Count; i++)
-                                {
-                                    bonesUsed[partBones[i]] = i;
-                                }
-
-                                Dictionary<int, int> vertexTouched = new Dictionary<int, int>();
-
-                                for (int i = 0; i < trianglesNum; i++)
-                                {
-                                    for (int j = 0; j < 3; j++)
-                                    {
-                                        int index = meshPart.m_indices[i * 3 + j];
-                                        if (!vertexTouched.ContainsKey(index))
-                                        {
-                                            if (boneWeights[index].X > 0)
-                                                boneIndices[index].X = bonesUsed[boneIndices[index].X];
-                                            if (boneWeights[index].Y > 0)
-                                                boneIndices[index].Y = bonesUsed[boneIndices[index].Y];
-                                            if (boneWeights[index].Z > 0)
-                                                boneIndices[index].Z = bonesUsed[boneIndices[index].Z];
-                                            if (boneWeights[index].W > 0)
-                                                boneIndices[index].W = bonesUsed[boneIndices[index].W];
-
-                                            vertexTouched[index] = 1;
-
-                                            int changes = 0;
-                                            vertexChanged.TryGetValue(index, out changes);
-                                            vertexChanged[index] = changes + 1;
-                                        }
-                                    }
-                                }
-
-                                bonesRemapping = partBones.ToArray();
-                            }
-                        }
-                    }
-                    partUsedBonesMap.Add(bonesRemapping);
-                }
-                #endregion
-
-                var indices = new List<uint>(positions.Length);
-                uint maxIndex = 0;
-                int partIndex = 0;
-                foreach (MyMeshPartInfo meshPart in meshParts)
-                {
-                    int startIndex = indices.Count;
-                    int indexCount = meshPart.m_indices.Count;
-
-                    uint minIndex = (uint)meshPart.m_indices[0];
-                    foreach (var i in meshPart.m_indices)
-                    {
-                        indices.Add((uint)i);
-                        minIndex = Math.Min(minIndex, (uint)i);
-                    }
-
-                    uint baseVertex = minIndex;
-
-                    for (int i = startIndex; i < startIndex + indexCount; i++)
-                    {
-                        indices[i] -= minIndex;
-                        maxIndex = Math.Max(maxIndex, indices[i]);
-                    }
-
-                    #region Material
-
-                    var materialDesc = meshPart.m_MaterialDesc;
-
-                    if(materialDesc == null)
-                    {
-                        MyRender11.Log.WriteLine(String.Format("Mesh asset {0} has no material in part {1}", file, partIndex));
-                    }
-
-                    var matId = MyMeshMaterials1.GetMaterialId(materialDesc, contentPath);
-
-                    parts[partIndex] = new MyMeshPartInfo1 
-                    {
-                        IndexCount = indexCount,
-                        StartIndex = startIndex,
-                        BaseVertex = (int)baseVertex,
-                        
-                        Material = matId,
-                        
-                        BonesMapping = partUsedBonesMap[partIndex]
-                    };
-
-                    #endregion
-
-                    partIndex++;
-                }
-
-                #region Part data
-
-                var rawData = new MyMeshRawData();
-
-                lodMeshInfo.IndicesNum = indices.Count;
-
-                // indices
-                if (maxIndex <= ushort.MaxValue)
-                {
-                    var indices16 = new ushort[indices.Count];
-                    for (int i = 0; i < indices.Count; i++)
-                    {
-                        indices16[i] = (ushort)indices[i];
-                    }
-
-                    //for (int i = 0; i < indices.Count; i+=3)
-                    //{
-                    //    indices16[i + 1] = (ushort)indices[i + 2];
-                    //    indices16[i + 2] = (ushort)indices[i + 1];
-                    //}
-
-
-                    FillIndex16Data(ref rawData, indices16);
-                }
-                else
-                {
-                    var indices32 = indices.ToArray();
-
-                    rawData.IndicesFmt = Format.R32_UInt;
-                    var byteSize = indices.Count * FormatHelper.SizeOfInBytes(rawData.IndicesFmt);
-                    rawData.Indices = new byte[byteSize];
-
-                    fixed (void* dst = rawData.Indices)
-                    {
-                        fixed (void* src = indices32)    
-                        {
-                            SharpDX.Utilities.CopyMemory(new IntPtr(dst), new IntPtr(src), byteSize);
-                        }
+                        storedTangents[i] = VF_Packer.PackTangentSignB4(ref tanW);
                     }
                 }
-
-                var vertexComponents = new List<MyVertexInputComponent>();
-
-                // stream 0
-                if (!isAnimated)
-                {
-                    var vertices = new MyVertexFormatPositionH4[verticesNum];
-                    for (int i = 0; i < verticesNum; i++)
-                    {
-                        vertices[i] = new MyVertexFormatPositionH4(positions[i]);
-                    }
-
-                    FillStream0Data(ref rawData, vertices);
-
-                    vertexComponents.Add(new MyVertexInputComponent(MyVertexInputComponentType.POSITION_PACKED));
-                }
-                else
-                {
-                    var vertices = new MyVertexFormatPositionSkinning[verticesNum];
-                    for (int i = 0; i < verticesNum; i++)
-                    {
-                        vertices[i] = new MyVertexFormatPositionSkinning(
-                            positions[i],
-                            new Byte4(boneIndices[i].X, boneIndices[i].Y, boneIndices[i].Z, boneIndices[i].W),
-                            boneWeights[i]);
-                    }
-
-                    rawData.Stride0 = sizeof(MyVertexFormatPositionSkinning);
-                    var byteSize = rawData.Stride0 * verticesNum;
-                    rawData.VertexStream0 = new byte[byteSize];
-
-                    fixed (void* dst = rawData.VertexStream0)
-                    {
-                        fixed (void* src = vertices)
-                        {
-                            SharpDX.Utilities.CopyMemory(new IntPtr(dst), new IntPtr(src), byteSize);
-                        }
-                    }
-                    
-
-                    vertexComponents.Add(new MyVertexInputComponent(MyVertexInputComponentType.POSITION_PACKED));
-                    vertexComponents.Add(new MyVertexInputComponent(MyVertexInputComponentType.BLEND_WEIGHTS));
-                    vertexComponents.Add(new MyVertexInputComponent(MyVertexInputComponentType.BLEND_INDICES));
-                }
-
-
-                // stream 1
-                if(validStreams)
-                {
-                    var vertices = new MyVertexFormatTexcoordNormalTangent[verticesNum];
-                    for (int i = 0; i < verticesNum; i++)
-                    {
-                        vertices[i] = new MyVertexFormatTexcoordNormalTangent(texcoords[i], normals[i], storedTangents[i]);
-                    }
-
-                    FillStream1Data(ref rawData, vertices);
-
-                    vertexComponents.Add(new MyVertexInputComponent(MyVertexInputComponentType.NORMAL, 1));
-                    vertexComponents.Add(new MyVertexInputComponent(MyVertexInputComponentType.TANGENT_SIGN_OF_BITANGENT, 1));
-                    vertexComponents.Add(new MyVertexInputComponent(MyVertexInputComponentType.TEXCOORD0_H, 1));
-                }
-
-                rawData.VertexLayout = MyVertexLayouts.GetLayout(vertexComponents.ToArray());
-
-                #endregion
-
-                lodMeshInfo.Data = rawData;
-                lodMeshInfo.BoundingBox = (BoundingBox)tagData[MyImporterConstants.TAG_BOUNDING_BOX];
-                lodMeshInfo.BoundingSphere = (BoundingSphere)tagData[MyImporterConstants.TAG_BOUNDING_SPHERE];
             }
+
+            // Scale texcoords
+            {
+                var patternScale = meshData.PatternScale;
+                var texcoords = meshData.Texcoords;
+
+                if (patternScale != 1f && texcoords.Length > 0)
+                    for (int i = 0; i < texcoords.Length; ++i)
+                        texcoords[i] = new HalfVector2(texcoords[i].ToVector2() / patternScale);
+            }
+
+            // Mesh part info gathering and merging of parts
+            CreatePartInfos(file, GetContentPath(file), meshData, ref lodMeshInfo, out parts, out sections);
+
+            // Fill raw mesh data
+            MyMeshRawData rawData;
+            FillMeshData(meshData, ref lodMeshInfo, out rawData);
+
+            // Set output mesh info
+            lodMeshInfo.Data = rawData;
+            lodMeshInfo.BoundingBox = meshData.BoundindBox;
+            lodMeshInfo.BoundingSphere = meshData.BoundingSphere;
+
+            var diagonal = meshData.BoundindBox.Size.Length();
+            lodMeshInfo.TriangleDensity = lodMeshInfo.TrianglesNum / (diagonal * diagonal);
 
             importer.Clear();
             return true;
         }
 
-        static LodMeshId StoreLodMeshWithParts(
-            MeshId mesh, int lodIndex,
+        static void CreatePartInfos(
+            string assetName,
+            string contentPath,
+            MyMeshData meshData,
             ref MyLodMeshInfo lodMeshInfo,
-            ref MyMeshPartInfo1[] parts)
+            out MyMeshPartInfo1[] parts,
+            out MyMeshSectionInfo1[] sections)
+        {
+            var meshParts = meshData.PartInfos;
+
+            // 1. Create a list of parts for each material
+            // The comparer will ignore name of the material and compare only valid stuff for texture arrays
+            MergableParts.Clear();
+            NonMergableParts.Clear();
+            TempParts.Clear();
+
+            for (int partIndex = 0; partIndex < meshParts.Count; partIndex++)
+            {
+                MyMeshPartInfo meshPart = meshParts[partIndex];
+                MyMaterialDescriptor materialDesc = meshPart.m_MaterialDesc;
+
+                // Allocate material IDs for later reference
+                if (materialDesc == null)
+                    MyRender11.Log.WriteLine(String.Format("Mesh asset {0} has no material in part {1}", assetName, partIndex));
+                else if (materialDesc.Facing == MyFacingEnum.Impostor)
+                {
+                    // Load a custom normalgloss texture
+                    const string ngName = "NormalGlossTexture";
+                    const string customNgName = "_normal_depth";
+
+                    if (materialDesc.Textures.ContainsKey(ngName))
+                        MyRender11.Log.WriteLine(string.Format("The impostor model {0} defines the normalGloss texture. Overwriting it with custom extension: {1}. Path to model: {2}", assetName, customNgName, contentPath));
+                    else
+                    {
+                        const string cmName = "ColorMetalTexture";
+                        Debug.Assert(materialDesc.Textures.ContainsKey(cmName));
+                        string cmTexName = materialDesc.Textures[cmName];
+                        string extension = Path.GetExtension(cmTexName);
+
+                        Debug.Assert(!string.IsNullOrEmpty(extension), "Invalid texture extension");
+
+                        materialDesc.Textures[ngName] =
+                            cmTexName.Substring(0, cmTexName.Length - extension.Length)
+                            + customNgName
+                            + extension;
+                    }
+                }
+
+                // Get material token
+                MyMeshMaterialId matId = MyMeshMaterials1.NullMaterialId;
+                bool isProcessedByGeometryTextureSystem = false;
+
+                if (MyRender11.Settings.UseGeometryArrayTextures && materialDesc != null)
+                {
+                    MyMeshMaterialInfo meshMaterialInfo = MyMeshMaterials1.ConvertImportDescToMeshMaterialInfo(materialDesc, contentPath, assetName);
+                    if (MyManagers.GeometryTextureSystem.IsMaterialAcceptableForTheSystem(meshMaterialInfo))
+                    {
+                        MyManagers.GeometryTextureSystem.ValidateMaterialTextures(meshMaterialInfo);
+                        matId = MyManagers.GeometryTextureSystem.GetOrCreateMaterialId(meshMaterialInfo);
+                        isProcessedByGeometryTextureSystem = true;
+                    }
+                }
+
+                if (!isProcessedByGeometryTextureSystem)
+                    matId = MyMeshMaterials1.GetMaterialId(materialDesc, contentPath, assetName);
+
+                if (materialDesc != null)
+                    Debug.Assert(matId.Info.Name == X.TEXT_(materialDesc.MaterialName));
+
+                // Save the part for processing -- choose to try merge this part with others or not
+                var targetDictionary = isProcessedByGeometryTextureSystem ? MergableParts : NonMergableParts;
+
+                if (!targetDictionary.ContainsKey(matId))
+                    targetDictionary[matId] = new List<int>();
+
+                targetDictionary[matId].Add(partIndex);
+            }
+
+            // Transfer groups with just one part to the non-mergable dictionary
+            // -- it uses simpler code and does not create new materials for merged parts
+            foreach (var mergablePart in MergableParts)
+                if (mergablePart.Value.Count == 1)
+                    TempParts[mergablePart.Key] = mergablePart.Value;
+
+            foreach (var tempPart in TempParts)
+            {
+                MergableParts.Remove(tempPart.Key);
+                NonMergableParts[tempPart.Key] = tempPart.Value;
+            }
+
+            //foreach (var nonMergablePart in NonMergableParts)
+            //    Debug.Assert(nonMergablePart.Value.Count == 1, "There are non-unique names for part materials.");
+
+            // 2. Alter part data and create part infos
+            // and create a mapping from material names to the indices of the original parts (matsIndices)
+            meshData.MatsIndices = new Dictionary<string, Tuple<int, int, int>>();
+            CreateMergedPartInfos(assetName, MergableParts, NonMergableParts, meshData, out parts);
+
+            // 3. Create sections
+            sections = null;
+
+            if (meshData.SectionInfos != null && meshData.SectionInfos.Count > 0)
+                CreateSections(meshData, parts, assetName, out sections);
+
+            // 4. Fill mesh info
+            Debug.Assert(meshData.NewIndices != null);
+
+            lodMeshInfo.PartsNum = parts.Length;
+
+            if (meshData.SectionInfos != null && meshData.SectionInfos.Count > 0)
+            {
+                lodMeshInfo.SectionNames = new string[meshData.SectionInfos.Count];
+                for (int i = 0; i < meshData.SectionInfos.Count; i++)
+                    lodMeshInfo.SectionNames[i] = meshData.SectionInfos[i].Name;
+            }
+            else
+                lodMeshInfo.SectionNames = new string[0];
+
+            lodMeshInfo.IndicesNum = meshData.NewIndices.Count;
+            lodMeshInfo.TrianglesNum = meshData.NewIndices.Count / 3;
+        }
+
+        static void CreateMergedPartInfos(
+            string assetName,
+            Dictionary<MyMeshMaterialId, List<int>> mergablePartGroups,
+            Dictionary<MyMeshMaterialId, List<int>> nonMergablePartGroups,
+            MyMeshData meshData,
+            out MyMeshPartInfo1[] parts)
+        {
+            // 1. Prepare merged mesh parts
+            meshData.NewIndices = new List<uint>();
+            var outputPartsInternal = new List<MyMeshPartInfo1>();
+
+            foreach (var mergableGroup in mergablePartGroups)
+            {
+                if (!AddMergableGroup(assetName, mergableGroup.Key, mergableGroup.Value, meshData, outputPartsInternal))
+                {
+                    // The group was not merged, add it to non-mergable parts
+                    Debug.Assert(!nonMergablePartGroups.ContainsKey(mergableGroup.Key));
+                    nonMergablePartGroups[mergableGroup.Key] = mergablePartGroups[mergableGroup.Key];
+                }
+            }
+
+            // 2. Prepare parts that ought not to be merged
+            foreach (var nonMergableGroup in nonMergablePartGroups)
+            {
+                if (!AddNonMergableGroup(assetName, nonMergableGroup.Key, nonMergableGroup.Value, meshData, outputPartsInternal))
+                {
+                    string error = string.Format("Could not load part '{0}' of model '{1}'.", nonMergableGroup.Key.Info.Name.ToString(), assetName);
+                    Debug.Fail(error);
+                    MyRender11.Log.WriteLine(error);
+                }
+            }
+
+            parts = outputPartsInternal.ToArray(); // Out param
+        }
+
+        static bool AddMergableGroup(
+            string assetName,
+            MyMeshMaterialId groupMaterial,
+            List<int> groupParts,
+            MyMeshData meshData,
+            List<MyMeshPartInfo1> outputParts)
+        {
+            var meshParts = meshData.PartInfos;
+
+            bool doOffset = true;
+
+            if (groupMaterial == MyMeshMaterials1.NullMaterialId)
+                doOffset = false;
+            else
+            {
+                MyFacingEnum facing = groupMaterial.Info.Facing;
+
+                if (facing != MyFacingEnum.Full && facing != MyFacingEnum.Impostor)
+                    doOffset = false;
+            }
+
+            // Merge part indices for parts that are in the same material group
+            var mergedIndices = new List<int>();
+
+            foreach (var partIndex in groupParts)
+            {
+                var part = meshParts[partIndex];
+                mergedIndices.AddRange(part.m_indices);
+            }
+
+            // Prepare animations
+            int[] bonesMapping = null;
+
+            bool animationsSucceeded = true;
+
+            if (meshData.IsAnimated)
+                animationsSucceeded = CreatePartAnimations(mergedIndices, meshData, out bonesMapping);
+
+            if (!animationsSucceeded)
+            {
+                // Too many bones for the merged part; try to load the original parts instead
+                MyRender11.Log.WriteLine(
+                    String.Format("Model asset {0} has more than {1} bones in parth with {2} material. Skipping part merging for this material.",
+                        assetName, MyRender11Constants.SHADER_MAX_BONES, groupMaterial.Info.Name));
+
+                return false;
+            }
+
+            // Prepare merged part
+            var newMergedPartInfo = AppendPartIndices(meshData, mergedIndices, doOffset);
+            newMergedPartInfo.BonesMapping = bonesMapping;
+
+            // Generate a new material for the merged part -- Copy all contents to new matInfo and replace the name
+            MyMeshMaterialInfo matInfo = groupMaterial.Info;
+            matInfo.Name = X.TEXT_("Merged::" + m_mergedPartCounter);
+            m_mergedPartCounter++;
+            newMergedPartInfo.Material = MyMeshMaterials1.GetMaterialId(ref matInfo);
+
+            // Record the original material names to know what materials are not used (debug reasons)
+            newMergedPartInfo.UnusedMaterials = new HashSet<string>();
+
+            foreach (var partIndex in groupParts)
+            {
+                string partMaterialName = meshParts[partIndex].m_MaterialDesc.MaterialName;
+                MyMeshMaterialId partMaterialId = MyMeshMaterials1.GetMaterialId(partMaterialName);
+                newMergedPartInfo.UnusedMaterials.Add(partMaterialId.Info.Name.String);
+            }
+
+            // Determine the start indices of the parts of this group; we iterate in the same order as the mergedIndices were filled
+            int currentIndexOffset = meshData.NewIndices.Count - mergedIndices.Count;
+
+            foreach (var partIndex in groupParts)
+            {
+                var part = meshParts[partIndex];
+
+                if (part.m_MaterialDesc != null)
+                    meshData.MatsIndices[part.m_MaterialDesc.MaterialName] =
+                        new Tuple<int, int, int>(
+                        // The index among the output parts
+                            outputParts.Count,
+                        // The corrected offset of the merged part after accounting for skipped parts
+                            currentIndexOffset,
+                            newMergedPartInfo.BaseVertex);
+
+                currentIndexOffset += part.m_indices.Count;
+            }
+
+            outputParts.Add(newMergedPartInfo);
+
+            return true;
+        }
+
+        static bool AddNonMergableGroup(
+            string assetName,
+            MyMeshMaterialId groupMaterial,
+            List<int> groupParts,
+            MyMeshData meshData,
+            List<MyMeshPartInfo1> outputParts)
+        {
+            var meshParts = meshData.PartInfos;
+
+            bool doOffset = true;
+
+            if (groupMaterial == MyMeshMaterials1.NullMaterialId)
+                doOffset = false;
+            else
+            {
+                MyFacingEnum facing = groupMaterial.Info.Facing;
+
+                if (facing != MyFacingEnum.Full && facing != MyFacingEnum.Impostor)
+                    doOffset = false;
+            }
+
+            foreach (var partIndex in groupParts)
+            {
+                var part = meshParts[partIndex];
+                var partIndices = part.m_indices;
+
+                // Prepare animations
+                int[] bonesMapping = null;
+
+                bool animationsSucceeded = true;
+
+                if (meshData.IsAnimated)
+                    animationsSucceeded = CreatePartAnimations(partIndices, meshData, out bonesMapping);
+
+                if (!animationsSucceeded)
+                {
+                    // This part has too many bones, disable animations for the whole model
+                    var error = String.Format("Model asset {0} has more than {1} bones in parth with {2} material. "
+                        + "Split model into more meshes or assign multiple materials to meshes."
+                        + "Disabling animations for this model.",
+                        assetName, MyRender11Constants.SHADER_MAX_BONES,
+                        groupMaterial.Info.Name);
+
+                    Debug.Fail(error);
+                    MyRender11.Log.WriteLine(error);
+
+                    meshData.BoneIndices = new Vector4I[0];
+                    meshData.IsAnimated = false;
+                }
+
+                // Prepare merged part
+                var newPartInfo = AppendPartIndices(meshData, partIndices, doOffset);
+                newPartInfo.BonesMapping = bonesMapping;
+                newPartInfo.Material = groupMaterial;
+
+                // Correct offset info and add BaseVertex info 
+                if (part.m_MaterialDesc != null)
+                    meshData.MatsIndices[part.m_MaterialDesc.MaterialName] =
+                        new Tuple<int, int, int>(
+                        // The index among the output parts
+                            outputParts.Count,
+                        // The final offset of the current part
+                            meshData.NewIndices.Count - part.m_indices.Count,
+                            newPartInfo.BaseVertex);
+
+                outputParts.Add(newPartInfo);
+            }
+
+            return true;
+        }
+
+        static bool CreatePartAnimations(
+            List<int> partIndices,
+            MyMeshData meshData,
+            out int[] bonesMapping)
+        {
+            bonesMapping = null; // Out param
+
+            MyModelBone[] bones = meshData.Bones;
+            Vector4I[] boneIndices = meshData.BoneIndices;
+            Vector4[] boneWeights = meshData.BoneWeights;
+
+            // check animations, bones, prepare remapping
+            if (boneIndices.Length <= 0 || bones.Length <= MyRender11Constants.SHADER_MAX_BONES)
+                return true;
+
+            Dictionary<int, int> bonesUsed = new Dictionary<int, int>();
+
+            int trianglesNum = partIndices.Count / 3;
+            for (int i = 0; i < trianglesNum; i++)
+            {
+                for (int j = 0; j < 3; j++)
+                {
+                    int index = partIndices[i * 3 + j];
+                    Vector4 boneWeight = boneWeights[index];
+                    Vector4I boneIndex = boneIndices[index];
+
+                    if (boneWeight.X > 0)
+                        bonesUsed[boneIndex.X] = 1;
+                    if (boneWeight.Y > 0)
+                        bonesUsed[boneIndex.Y] = 1;
+                    if (boneWeight.Z > 0)
+                        bonesUsed[boneIndex.Z] = 1;
+                    if (boneWeight.W > 0)
+                        bonesUsed[boneIndex.W] = 1;
+                }
+            }
+
+            if (bonesUsed.Count > MyRender11Constants.SHADER_MAX_BONES)
+                return false;
+
+            var partBones = new List<int>(bonesUsed.Keys);
+            partBones.Sort();
+
+            if (partBones.Count == 0 ||
+                partBones[partBones.Count - 1] < MyRender11Constants.SHADER_MAX_BONES)
+                return true;
+
+            for (int i = 0; i < partBones.Count; i++)
+                bonesUsed[partBones[i]] = i;
+
+            Dictionary<int, int> vertexTouched = new Dictionary<int, int>();
+
+            for (int i = 0; i < trianglesNum; i++)
+            {
+                for (int j = 0; j < 3; j++)
+                {
+                    int index = partIndices[i * 3 + j];
+
+                    if (vertexTouched.ContainsKey(index))
+                        continue;
+
+                    Vector4 boneWeight = boneWeights[index];
+                    Vector4I boneIndex = boneIndices[index];
+
+                    if (boneWeight.X > 0)
+                        boneIndex.X = bonesUsed[boneIndex.X];
+                    if (boneWeight.Y > 0)
+                        boneIndex.Y = bonesUsed[boneIndex.Y];
+                    if (boneWeight.Z > 0)
+                        boneIndex.Z = bonesUsed[boneIndex.Z];
+                    if (boneWeight.W > 0)
+                        boneIndex.W = bonesUsed[boneIndex.W];
+
+                    boneIndices[index] = boneIndex;
+                    vertexTouched[index] = 1;
+                }
+            }
+
+            bonesMapping = partBones.ToArray();
+            return true;
+        }
+
+        static MyMeshPartInfo1 AppendPartIndices(
+            MyMeshData meshData,
+            List<int> partIndices,
+            bool doOffset)
+        {
+            // Transforms part indices and appends them to meshData.NewIndices
+            List<uint> indices = meshData.NewIndices;
+
+            #region Minimize index span
+
+            int startIndex = indices.Count;
+            int indexCount = partIndices.Count;
+            uint minIndex = (uint)partIndices[0];
+            uint maxIndex = 0;
+
+            foreach (var i in partIndices)
+            {
+                indices.Add((uint)i);
+                minIndex = Math.Min(minIndex, (uint)i);
+            }
+
+            for (int i = startIndex; i < startIndex + indexCount; i++)
+            {
+                indices[i] -= minIndex;
+                maxIndex = Math.Max(maxIndex, indices[i]);
+            }
+
+            #endregion
+
+            #region Offset vertices to center
+
+            Vector3 centerOffset = Vector3.Zero;
+
+            if (doOffset)
+            {
+                Vector3[] unpackedPositions = new Vector3[partIndices.Count];
+
+                for (int i = 0; i < partIndices.Count; i++)
+                {
+                    HalfVector4 packedPos = meshData.Positions[partIndices[i]];
+                    Vector3 unpackedPos = PositionPacker.UnpackPosition(ref packedPos);
+                    centerOffset += unpackedPos;
+                    unpackedPositions[i] = unpackedPos;
+                }
+
+                centerOffset /= partIndices.Count;
+
+                for (int i = 0; i < partIndices.Count; i++)
+                {
+                    Vector3 unpackedPosition = unpackedPositions[i];
+                    unpackedPosition -= centerOffset;
+                    meshData.Positions[partIndices[i]] = PositionPacker.PackPosition(ref unpackedPosition);
+                }
+            }
+
+            #endregion
+
+            #region Fill part info
+
+            Debug.Assert(minIndex <= int.MaxValue);
+
+            var newPartInfo = new MyMeshPartInfo1
+            {
+                IndexCount = indexCount,
+                StartIndex = startIndex,
+                BaseVertex = (int)minIndex,
+                CenterOffset = centerOffset,
+            };
+
+            if (maxIndex > meshData.MaxIndex)
+                meshData.MaxIndex = maxIndex;
+
+            return newPartInfo;
+
+            #endregion
+        }
+
+        static void CreateSections(
+            MyMeshData meshData,
+            MyMeshPartInfo1[] parts,
+            string assetName, // debug
+            out MyMeshSectionInfo1[] sections)
+        {
+            var sectionInfos = meshData.SectionInfos;
+
+            sections = new MyMeshSectionInfo1[sectionInfos.Count];
+            var partSubmeshCounts = new int[parts.Length];
+
+            for (int sectionIndex = 0; sectionIndex < sectionInfos.Count; sectionIndex++)
+            {
+                MyMeshSectionInfo section = sectionInfos[sectionIndex];
+                MyMeshSectionPartInfo1[] sectionMeshInfos = new MyMeshSectionPartInfo1[section.Meshes.Count];
+
+                int meshesIndex = 0;
+                foreach (MyMeshSectionMeshInfo meshInfo in section.Meshes)
+                {
+                    Tuple<int, int, int> materialPartInfo; // Contains PartIndex, StartIndex and BaseVertex
+                    if(!meshData.MatsIndices.TryGetValue(meshInfo.MaterialName, out materialPartInfo))
+                    {
+                        // Material does not exist within this mesh.
+                        // Invalidate the section loading process with log msg.
+                        // Remove section infos to prevent their usage.
+                        MyRender11.Log.WriteLine(String.Format("Section references material that is not present and sections wont be loaded. Section: {0}, Material_Name:{1}", section.Name, meshInfo.MaterialName));
+                        sections = null;
+                        meshData.SectionInfos = null;
+                        return;
+                    }
+
+                    var matId = MyMeshMaterials1.GetMaterialId(meshInfo.MaterialName);
+
+                    sectionMeshInfos[meshesIndex] = new MyMeshSectionPartInfo1()
+                    {
+                        IndexCount = meshInfo.IndexCount,
+                        StartIndex = meshInfo.StartIndex + materialPartInfo.Item2,
+                        BaseVertex = materialPartInfo.Item3,
+                        PartIndex = materialPartInfo.Item1,
+                        PartSubmeshIndex = partSubmeshCounts[materialPartInfo.Item1],
+                        Material = matId,
+                    };
+
+                    partSubmeshCounts[materialPartInfo.Item1]++;
+                    meshesIndex++;
+                }
+
+                sections[sectionIndex] = new MyMeshSectionInfo1()
+                {
+                    Name = section.Name,
+                    Meshes = sectionMeshInfos
+                };
+            }
+
+            for (int idx = 0; idx < parts.Length; idx++)
+                parts[idx].SectionSubmeshCount = partSubmeshCounts[idx];
+        }
+
+        static unsafe void FillMeshData(
+            MyMeshData meshData,
+            ref MyLodMeshInfo lodMeshInfo,
+            out MyMeshRawData rawData)
+        {
+            rawData = new MyMeshRawData();
+            int verticesNum = meshData.Positions.Length;
+
+            // Create and fill index buffers
+            if (meshData.MaxIndex <= ushort.MaxValue)
+            {
+                MyArrayHelpers.InitOrReserveNoCopy(ref m_tmpShortIndices, lodMeshInfo.IndicesNum);
+                uint[] sourceData = meshData.NewIndices.GetInternalArray();
+
+                fixed (uint* sourcePointer = sourceData)
+                {
+                    fixed (void* destinationPointer = m_tmpShortIndices)
+                    {
+                        CopyIndices(sourcePointer, destinationPointer, 0, 0, sizeof(ushort), (uint)lodMeshInfo.IndicesNum);
+                    }
+                }
+
+                FillIndexData(ref rawData, m_tmpShortIndices, lodMeshInfo.IndicesNum);
+            }
+            else
+            {
+                FillIndexData(ref rawData, meshData.NewIndices.GetInternalArray(), lodMeshInfo.IndicesNum);
+            }
+
+            int numComponents = 0;
+            if (!meshData.IsAnimated) numComponents += 1; else numComponents += 3;
+            if (meshData.ValidStreams)
+            {
+                numComponents += 3;
+                if (MyRender11.Settings.UseGeometryArrayTextures)
+                    numComponents++;
+            }
+            var vertexComponents = new List<MyVertexInputComponent>(numComponents); // Capacity is used in an assert below...
+
+            // stream 0
+            if (!meshData.IsAnimated)
+            {
+                Debug.Assert(sizeof(HalfVector4) == sizeof(MyVertexFormatPositionH4));
+                FillStream0Data(ref rawData, meshData.Positions, verticesNum);
+
+                vertexComponents.Add(new MyVertexInputComponent(MyVertexInputComponentType.POSITION_PACKED));
+            }
+            else
+            {
+                var vertices = new MyVertexFormatPositionSkinning[verticesNum];
+                fixed (MyVertexFormatPositionSkinning* destinationPointer = vertices)
+                {
+                    for (int vertexIndex = 0; vertexIndex < verticesNum; ++vertexIndex)
+                    {
+                        destinationPointer[vertexIndex].Position = meshData.Positions[vertexIndex];
+                        destinationPointer[vertexIndex].BoneIndices = new Byte4(meshData.BoneIndices[vertexIndex].X, meshData.BoneIndices[vertexIndex].Y, meshData.BoneIndices[vertexIndex].Z, meshData.BoneIndices[vertexIndex].W);
+                        destinationPointer[vertexIndex].BoneWeights = new HalfVector4(meshData.BoneWeights[vertexIndex]);
+                    }
+                }
+
+                FillStream0Data(ref rawData, vertices, verticesNum);
+
+                vertexComponents.Add(new MyVertexInputComponent(MyVertexInputComponentType.POSITION_PACKED));
+                vertexComponents.Add(new MyVertexInputComponent(MyVertexInputComponentType.BLEND_WEIGHTS));
+                vertexComponents.Add(new MyVertexInputComponent(MyVertexInputComponentType.BLEND_INDICES));
+            }
+
+            // stream 1
+            if (meshData.ValidStreams)
+            {
+                var vertices = new MyVertexFormatTexcoordNormalTangentTexindices[verticesNum];
+                fixed (MyVertexFormatTexcoordNormalTangentTexindices* destinationPointer = vertices)
+                {
+                    for (int vertexIndex = 0; vertexIndex < verticesNum; ++vertexIndex)
+                    {
+                        destinationPointer[vertexIndex].Normal = meshData.Normals[vertexIndex];
+                        destinationPointer[vertexIndex].Tangent = meshData.StoredTangents[vertexIndex];
+                        destinationPointer[vertexIndex].Texcoord = meshData.Texcoords[vertexIndex];
+                        destinationPointer[vertexIndex].TexIndices = (Byte4)meshData.TexIndices[vertexIndex];
+                    }
+                }
+
+                FillStream1Data(ref rawData, vertices, vertices.Length);
+
+                vertexComponents.Add(new MyVertexInputComponent(MyVertexInputComponentType.NORMAL, 1));
+                vertexComponents.Add(new MyVertexInputComponent(MyVertexInputComponentType.TANGENT_SIGN_OF_BITANGENT, 1));
+                vertexComponents.Add(new MyVertexInputComponent(MyVertexInputComponentType.TEXCOORD0_H, 1));
+                if (MyRender11.Settings.UseGeometryArrayTextures)
+                    vertexComponents.Add(new MyVertexInputComponent(MyVertexInputComponentType.TEXINDICES, 1));
+            }
+
+            Debug.Assert(vertexComponents.Count == vertexComponents.Capacity);
+            vertexComponents.Capacity = vertexComponents.Count;
+
+            rawData.VertexLayout = MyVertexLayouts.GetLayout(vertexComponents.GetInternalArray());
+        }
+
+        #endregion Mwm loading
+
+
+        static LodMeshId StoreLodMeshWithParts(
+                MeshId mesh, int lodIndex,
+                MyLodMeshInfo lodMeshInfo,
+                MyMeshPartInfo1[] parts)
         {
             var lod = NewLodMesh(mesh, lodIndex);
 
-            Lods.Data[lod.Index] = lodMeshInfo;
+            LodMeshInfos.Data[lod.Index] = lodMeshInfo;
 
-            for(int i=0; i<parts.Length; i++)
+            if (parts != null)
             {
-                var part = NewMeshPart(mesh, lodIndex, i);
-                Parts.Data[part.Index] = parts[i];
+                for (int i = 0; i < parts.Length; i++)
+                {
+                    var part = NewMeshPart(mesh, lodIndex, i);
+                    Parts.Data[part.Index] = parts[i];
+                }
             }
 
             return lod;
         }
 
-        // 1 lod, n parts
-        internal static MeshId CreateRuntimeMesh(MyStringId name, int parts, bool dynamic)
+        static void StoreLodMeshSections(MeshId mesh, int lodIndex, ref MyMeshSectionInfo1[] sections)
         {
-            Debug.Assert(!RuntimeMeshNameIndex.ContainsKey(name));
-
-            var id = new MeshId { Index = Meshes.Allocate() };
-            RuntimeMeshNameIndex[name] = id;
-
-            Meshes.Data[id.Index] = new MyMeshInfo
+            if (sections != null)
             {
-                Name = name,
+                for (int i = 0; i < sections.Length; i++)
+                {
+                    string sectionName = sections[i].Name;
+                    var sectionId = NewMeshSection(mesh, lodIndex, sectionName);
+                    Sections.Data[sectionId.Index] = sections[i];
+                }
+            }
+        }
+
+        // 1 lod, n parts
+        internal static MeshId CreateRuntimeMesh(MyStringId nameKey, int parts, bool dynamic)
+        {
+            Debug.Assert(!RuntimeMeshNameIndex.ContainsKey(nameKey));
+
+            var id = new MeshId { Index = MeshInfos.Allocate() };
+            RuntimeMeshNameIndex[nameKey] = id;
+
+            MeshInfos.Data[id.Index] = new MyMeshInfo
+            {
+                Name = nameKey.ToString(),
+                NameKey = nameKey,
                 LodsNum = 1,
                 Dynamic = dynamic,
                 RuntimeGenerated = true
             };
 
-            MyLodMeshInfo lodInfo = new MyLodMeshInfo{ PartsNum = parts };
-            MyMeshPartInfo1 [] partsInfo = new MyMeshPartInfo1[parts];
-            StoreLodMeshWithParts(id, 0, ref lodInfo, ref partsInfo);
+            MyLodMeshInfo lodInfo = new MyLodMeshInfo { PartsNum = parts };
+            MyMeshPartInfo1[] partsInfo = new MyMeshPartInfo1[parts];
+            StoreLodMeshWithParts(id, 0, lodInfo, partsInfo);
 
             return id;
+        }
+
+        internal static void RefreshMaterialIds(MeshId mesh)
+        {
+            var sections = InterSessionData[mesh].Sections;
+            var lod = LodMeshIndex[new MyLodMesh { Mesh = mesh, Lod = 0 }];
+
+            for (int i = 0; i < sections.Length; i++)
+            {
+                var part = PartIndex[new MyMeshPart { Mesh = mesh, Lod = 0, Part = i }];
+                Parts.Data[part.Index].Material = MyMeshMaterials1.GetMaterialId(sections[i].MaterialName);
+            }
         }
 
         internal static void UpdateRuntimeMesh(
             MeshId mesh,
             ushort[] indices,
             MyVertexFormatPositionH4[] stream0,
-            MyVertexFormatTexcoordNormalTangent[] stream1,
-            MySectionInfo[] sections,
+            MyVertexFormatTexcoordNormalTangentTexindices[] stream1,
+            MyRuntimeSectionInfo[] sections,
             BoundingBox aabb)
         {
             // get mesh lod 0
 
-            var lod = LodMeshIndex[new MyLodMesh { Mesh = mesh, Lod = 0 }];
+            InterSessionData[mesh] = new MyRuntimeMeshPersistentInfo { Sections = sections };
 
-            FillIndex16Data(ref Lods.Data[lod.Index].Data, indices);
-            FillStream0Data(ref Lods.Data[lod.Index].Data, stream0);
-            FillStream1Data(ref Lods.Data[lod.Index].Data, stream1);
+            var lodMeshId = LodMeshIndex[new MyLodMesh { Mesh = mesh, Lod = 0 }];
 
-            Lods.Data[lod.Index].BoundingBox = aabb;
+            Debug.Assert(stream0.LongLength == stream1.LongLength);
+            long vertexCount = stream0.LongLength;
+            long indexCount = indices.LongLength;
 
-            var vertexComponents = new List<MyVertexInputComponent>();
+            Debug.Assert(vertexCount <= int.MaxValue && indexCount <= int.MaxValue);
+
+            FillIndexData(ref LodMeshInfos.Data[lodMeshId.Index].Data, indices, (int)indexCount);
+            FillStream0Data(ref LodMeshInfos.Data[lodMeshId.Index].Data, stream0, (int)vertexCount);
+            FillStream1Data(ref LodMeshInfos.Data[lodMeshId.Index].Data, stream1, (int)vertexCount);
+
+            LodMeshInfos.Data[lodMeshId.Index].BoundingBox = aabb;
+
+            const int vertexComponentCount = 4;
+            var vertexComponents = new List<MyVertexInputComponent>(vertexComponentCount);
             vertexComponents.Add(new MyVertexInputComponent(MyVertexInputComponentType.POSITION_PACKED));
             vertexComponents.Add(new MyVertexInputComponent(MyVertexInputComponentType.NORMAL, 1));
             vertexComponents.Add(new MyVertexInputComponent(MyVertexInputComponentType.TANGENT_SIGN_OF_BITANGENT, 1));
             vertexComponents.Add(new MyVertexInputComponent(MyVertexInputComponentType.TEXCOORD0_H, 1));
 
-            Lods.Data[lod.Index].Data.VertexLayout = MyVertexLayouts.GetLayout(vertexComponents.ToArray());
+            Debug.Assert(vertexComponents.Count == vertexComponents.Capacity);
+            vertexComponents.Capacity = vertexComponents.Count;
+            LodMeshInfos.Data[lodMeshId.Index].Data.VertexLayout = MyVertexLayouts.GetLayout(vertexComponents.GetInternalArray());
 
-            for(int i=0; i<sections.Length; i++)
+            for (int i = 0; i < sections.Length; i++)
             {
                 var part = PartIndex[new MyMeshPart { Mesh = mesh, Lod = 0, Part = i }];
                 Parts.Data[part.Index].StartIndex = sections[i].IndexStart;
@@ -841,185 +1705,64 @@ namespace VRageRender
                 Parts.Data[part.Index].Material = MyMeshMaterials1.GetMaterialId(sections[i].MaterialName);
             }
 
-            Lods.Data[lod.Index].IndicesNum = indices.Length;
-            Lods.Data[lod.Index].VerticesNum = stream0.Length;
+            LodMeshInfos.Data[lodMeshId.Index].IndicesNum = (int)indexCount;
+            LodMeshInfos.Data[lodMeshId.Index].VerticesNum = (int)vertexCount;
 
-            //if (mesh.Info.Dynamic && Lods.Data[lod.Index].VerticesNum)
+            //if (mesh.Info.Dynamic && LodMeshInfos.Data[lod.Index].VerticesNum)
             //{
             //    UpdateData(lod);
             //}
-            if (Lods.Data[lod.Index].VerticesNum > 0)
+            if (LodMeshInfos.Data[lodMeshId.Index].VerticesNum > 0)
             {
-                MoveData(lod);
+                MoveData(lodMeshId);
             }
         }
 
-        unsafe static void FillIndex16Data(ref MyMeshRawData rawData, ushort[] indices)
+        static unsafe void MoveData(LodMeshId lodMeshId)
         {
-            rawData.IndicesFmt = Format.R16_UInt;
-            var byteSize = indices.Length * FormatHelper.SizeOfInBytes(rawData.IndicesFmt);
-            if (rawData.Indices == null)
-            { 
-                rawData.Indices = new byte[byteSize];
-            }
-            else
-            {
-                MyArrayHelpers.Reserve(ref rawData.Indices, byteSize);
-            }
+            var info = LodMeshInfos.Data[lodMeshId.Index];
+            if (info.NullLodMesh)
+                return;
 
-            fixed (void* dst = rawData.Indices)
-            {
-                fixed (void* src = indices)
-                {
-                    SharpDX.Utilities.CopyMemory(new IntPtr(dst), new IntPtr(src), byteSize);
-                }
-            }
+            DisposeLodMeshBuffers(lodMeshId);
+
+            MoveData(lodMeshId.Info.VerticesNum, lodMeshId.Info.IndicesNum, ref LodMeshInfos.Data[lodMeshId.Index].Data, ref LodMeshBuffers[lodMeshId.Index]);
         }
 
-        unsafe static void FillStream0Data(ref MyMeshRawData rawData, MyVertexFormatPositionH4[] vertices)
+        static unsafe void MoveData(int vertexCount, int indexCount, ref MyMeshRawData rawData, ref MyMeshBuffers meshBuffer)
         {
-            rawData.Stride0 = sizeof(MyVertexFormatPositionH4);
-            var byteSize = rawData.Stride0 * vertices.Length;
-            rawData.VertexStream0 = new byte[byteSize];
-
-            fixed (void* dst = rawData.VertexStream0)
+            fixed (void* ptr = rawData.VertexStream0)
             {
-                fixed (void* src = vertices)
+                meshBuffer.VB0 = MyManagers.Buffers.CreateVertexBuffer(
+                    "vb 0", vertexCount, rawData.Stride0,
+                    new IntPtr(ptr), ResourceUsage.Immutable);
+            }
+            if (rawData.Stride1 > 0)
+            {
+                fixed (void* ptr = rawData.VertexStream1)
                 {
-                    SharpDX.Utilities.CopyMemory(new IntPtr(dst), new IntPtr(src), byteSize);
+                    meshBuffer.VB1 = MyManagers.Buffers.CreateVertexBuffer(
+                        "vb 1", vertexCount, rawData.Stride1,
+                        new IntPtr(ptr), ResourceUsage.Immutable);
                 }
+            }
+            fixed (void* ptr = rawData.Indices)
+            {
+                meshBuffer.IB = MyManagers.Buffers.CreateIndexBuffer(
+                    "ib", indexCount, new IntPtr(ptr),
+                    rawData.IndicesFmt, ResourceUsage.Immutable);
             }
         }
-
-        unsafe static void FillStream1Data(ref MyMeshRawData rawData, MyVertexFormatTexcoordNormalTangent[] vertices)
-        {
-            rawData.Stride1 = sizeof(MyVertexFormatTexcoordNormalTangent);
-            var byteSize = rawData.Stride1 * vertices.Length;
-            rawData.VertexStream1 = new byte[byteSize];
-
-            fixed (void* dst = rawData.VertexStream1)
-            {
-                fixed (void* src = vertices)
-                {
-                    SharpDX.Utilities.CopyMemory(new IntPtr(dst), new IntPtr(src), byteSize);
-                }
-            }
-        }
-
-        unsafe static void FillStream0Data(ref MyMeshRawData rawData, MyVertexFormatVoxel[] vertices)
-        {
-            rawData.Stride0 = sizeof(MyVertexFormatVoxel);
-            var byteSize = rawData.Stride0 * vertices.Length;
-            if (rawData.VertexStream0 == null)
-            {
-                rawData.VertexStream0 = new byte[byteSize];
-            }
-            else
-            {
-                MyArrayHelpers.Reserve(ref rawData.VertexStream0, byteSize);
-            }
-            
-
-            fixed (void* dst = rawData.VertexStream0)
-            {
-                fixed (void* src = vertices)
-                {
-                    SharpDX.Utilities.CopyMemory(new IntPtr(dst), new IntPtr(src), byteSize);
-                }
-            }
-        }
-
-        unsafe static void FillStream1Data(ref MyMeshRawData rawData, MyVertexFormatNormal[] vertices)
-        {
-            rawData.Stride1 = sizeof(MyVertexFormatNormal);
-            var byteSize = rawData.Stride1 * vertices.Length;
-            if (rawData.VertexStream1 == null)
-            {
-                rawData.VertexStream1 = new byte[byteSize];
-            }
-            else
-            {
-                MyArrayHelpers.Reserve(ref rawData.VertexStream1, byteSize);
-            }
-
-            fixed (void* dst = rawData.VertexStream1)
-            {
-                fixed (void* src = vertices)
-                {
-                    SharpDX.Utilities.CopyMemory(new IntPtr(dst), new IntPtr(src), byteSize);
-                }
-            }
-        }
-
-        unsafe static void MoveData(LodMeshId id)
-        {
-            var data = Lods.Data[id.Index].Data;
-            var verticesNum = id.Info.VerticesNum;
-
-            fixed(void* ptr = data.VertexStream0)
-            {
-                if (LodMeshBuffers[id.Index].VB0 != VertexBufferId.NULL)
-                {
-                    MyHwBuffers.Destroy(LodMeshBuffers[id.Index].VB0);
-                    LodMeshBuffers[id.Index].VB0 = VertexBufferId.NULL;
-                }
-
-                LodMeshBuffers[id.Index].VB0 = MyHwBuffers.CreateVertexBuffer(verticesNum, data.Stride0, new IntPtr(ptr), id.Info.FileName + " vb 0");
-            }
-            if (data.Stride1 > 0)
-            {
-                fixed (void* ptr = data.VertexStream1)
-                {
-                    if (LodMeshBuffers[id.Index].VB1 != VertexBufferId.NULL)
-                    {
-                        MyHwBuffers.Destroy(LodMeshBuffers[id.Index].VB1);
-                        LodMeshBuffers[id.Index].VB1 = VertexBufferId.NULL;
-                    }
-
-                    LodMeshBuffers[id.Index].VB1 = MyHwBuffers.CreateVertexBuffer(verticesNum, data.Stride1, new IntPtr(ptr), id.Info.FileName + " vb 1");
-                }
-            }
-            fixed (void* ptr = data.Indices)
-            {
-                if (LodMeshBuffers[id.Index].IB != IndexBufferId.NULL)
-                {
-                    MyHwBuffers.Destroy(LodMeshBuffers[id.Index].IB);
-                    LodMeshBuffers[id.Index].IB = IndexBufferId.NULL;
-                }
-
-                LodMeshBuffers[id.Index].IB = MyHwBuffers.CreateIndexBuffer(id.Info.IndicesNum, data.IndicesFmt, new IntPtr(ptr), id.Info.FileName + " ib");
-            }
-        }
-
-        class MyVoxelTripleComparer : IComparer<MyVoxelMaterialTriple>
-        {
-            public int Compare(MyVoxelMaterialTriple x, MyVoxelMaterialTriple y)
-            {
-                var a = x.I0.CompareTo(y.I0);
-                if (a != 0)
-                { 
-                    return a;
-                }
-                var b = x.I1.CompareTo(y.I1);
-                if( b != 0)
-                {
-                    return b;
-                }
-                var c = x.I2.CompareTo(y.I2);
-                return c;
-            }
-
-            internal static MyVoxelTripleComparer Instance = new MyVoxelTripleComparer();
-        } 
 
         internal static MeshId CreateVoxelCell(Vector3I coord, int lod)
         {
-            var id = new MeshId { Index = Meshes.Allocate() };
+            var id = new MeshId { Index = MeshInfos.Allocate() };
             MeshVoxelInfo[id] = new MyVoxelCellInfo { Coord = coord, Lod = lod };
 
-            Meshes.Data[id.Index] = new MyMeshInfo
+            MeshInfos.Data[id.Index] = new MyMeshInfo
             {
-                Name = X.TEXT(String.Format("VoxelCell {0} Lod {1}", coord, lod)),
+                Name = String.Format("VoxelCell {0} Lod {1}", coord, lod),
+                NameKey = MyStringId.NullOrEmpty,
                 LodsNum = 1,
                 Dynamic = false,
                 RuntimeGenerated = true
@@ -1029,229 +1772,580 @@ namespace VRageRender
 
             // just dummy for function, we use different parts for cells
             MyMeshPartInfo1[] partsInfo = new MyMeshPartInfo1[0];
-            var lodId = StoreLodMeshWithParts(id, 0, ref lodInfo, ref partsInfo);
+            var lodId = StoreLodMeshWithParts(id, lod, lodInfo, partsInfo);
 
-            Lods.Data[lodId.Index].Data.VertexLayout = MyVertexLayouts.GetLayout(
-                new MyVertexInputComponent(MyVertexInputComponentType.VOXEL_POSITION_MAT),
-                new MyVertexInputComponent(MyVertexInputComponentType.VOXEL_NORMAL, 1));
+            LodMeshInfos.Data[lodId.Index].Data.VertexLayout = VoxelLayout;
 
             return id;
         }
 
-        internal struct MyBufferSegment
+        internal static int BatchNumMaterials(MyClipmapCellBatch b)
         {
-            internal int vertexOffset;
-            internal int vertexCapacity;
-            internal int indexOffset;
-            internal int indexCapacity;
+            int res = 0;
 
-            internal int indexCount;
-            internal int vertexCount;
+            if (b.Material0 != -1)
+                res++;
+
+            if (b.Material1 != -1)
+                res++;
+
+            if (b.Material2 != -1)
+                res++;
+
+            return res;
         }
 
-        struct MyVoxelCellUpdate
+        internal static int CalcNumSingleMatBatches(List<MyClipmapCellBatch> batches)
         {
-            internal short[] indices;
-            internal MyVertexFormatVoxelSingleData[] vertexData;
-            internal int material0;
-            internal int material1;
-            internal int material2;
-        }
+            int res = 0;
 
-        internal static void UpdateVoxelCell(MeshId mesh, List<MyClipmapCellBatch> batches)
-        {
-            var lod = LodMeshIndex[new MyLodMesh { Mesh = mesh, Lod = 0 }];
-
-            int vertexCapacity = 0;
-            int indexCapacity = 0;
-            //var vbAllocations = new SortedDictionary<MyVoxelMaterialTriple, MyBufferSegment>(MyVoxelTripleComparer.Instance);
-
-            int batchesNum = batches.Count;
-
-            for (int i = 0; i < batchesNum; i++)
+            for (int i = 0; i < batches.Count; i++)
             {
-                indexCapacity += batches[i].Indices.Length;
-                vertexCapacity += batches[i].Vertices.Length;
+                if (BatchNumMaterials(batches[i]) == 1)
+                {
+                    res++;
+                }
             }
 
-            //for (int i = 0; i < len; i++)
-            //{
-            //    var ilen = batches[i].Indices.Length;
-            //    var vlen = batches[i].Vertices.Length;
+            return res;
+        }
 
-            //    var key = new MyVoxelMaterialTriple(batches[i].Material0, batches[i].Material1, batches[i].Material2);
+        // NOTE: batches are expected to be sorted by single/multi material property
+        static List<MyClipmapCellBatch> CollapseBatches(List<MyClipmapCellBatch> batches)
+        {
+            List<MyClipmapCellBatch> res = new List<MyClipmapCellBatch>();
 
-            //    MyBufferSegment entry = new MyBufferSegment();
+            for (int i = 0; i < batches.Count;)
+            {
+                bool startBatchIsMulti = BatchNumMaterials(batches[i]) > 1;
+                int  numInCluster = 1;
 
-            //    entry.indexCapacity = ilen;
-            //    entry.vertexCapacity = vlen;
-            //    entry.indexCount = ilen;
-            //    entry.vertexCount = vlen;
-            //    vbAllocations[key] = entry;
-            //}
+                for ( ;(i + numInCluster) < batches.Count; numInCluster++)
+                {
+                    bool currBatchIsMulti = BatchNumMaterials(batches[i + numInCluster]) > 1;
 
-            //int voffset = 0;
-            //int ioffset = 0;
+                    if (startBatchIsMulti != currBatchIsMulti)
+                    {
+                        break;
+                    }
+                }
 
-            //// allocation
-            //var keys = vbAllocations.Keys.ToList();
-            //foreach (var key in keys)
-            //{
-            //    var val = vbAllocations[key];
-            //    val.indexOffset = ioffset;
-            //    val.vertexOffset = voffset;
-            //    ioffset += val.indexCapacity;
-            //    voffset += val.vertexCapacity;
-            //    vbAllocations[key] = val;
-            //}
+                int numVerts = 0;
+                int numIndices = 0;
 
-            //vertexCapacity = voffset;
-            //indexCapacity = ioffset;
+                for (int j = 0; j < numInCluster; j++)
+                {
+                    numVerts += batches[i + j].Vertices.Length;
+                    numIndices += batches[i + j].Indices.Length;
+                }
 
-            var indices = new ushort[indexCapacity];
-            var vertices0 = new MyVertexFormatVoxel[vertexCapacity];
-            var vertices1 = new MyVertexFormatNormal[vertexCapacity];
+                MyClipmapCellBatch newBatch = new MyClipmapCellBatch();
 
-            int singleMat = 0;
-            int multiMat = 0;
+                newBatch.Vertices = new MyVertexFormatVoxelSingleData[numVerts];
+                newBatch.Indices = new uint[numIndices];
+
+                {
+                    int vertexOffs = 0;
+                    int indexOffs = 0;
+
+                    for (int j = 0; j < numInCluster; j++)
+                    {
+                        int currNumVerts = batches[i + j].Vertices.Length;
+                        int currNumIndices = batches[i + j].Indices.Length;
+
+                        Array.Copy(batches[i + j].Vertices, 0, newBatch.Vertices, vertexOffs, currNumVerts);
+
+                        var srcIndices = batches[i + j].Indices;
+
+                        for (int k = 0; k < currNumIndices; k++)
+                        {
+                            newBatch.Indices[indexOffs + k] = srcIndices[k] + (uint)vertexOffs;
+                        }
+
+                        vertexOffs += currNumVerts;
+                        indexOffs += currNumIndices;
+                    }
+                }
+
+                // When merging batches for rendering, we actually don't care about materials, because they are handled
+                // through global material lookup table accessed from GPU
+
+                newBatch.Material0 = batches[i].Material0;
+                newBatch.Material1 = batches[i].Material1;
+                newBatch.Material2 = batches[i].Material2;
+
+                res.Add(newBatch);
+
+                i += numInCluster;
+            }
+
+            return res;
+        }
+
+        internal static void UpdateVoxelCell(MeshId mesh, MyClipmapCellMeshMetadata metadata, List<MyClipmapCellBatch> batches)
+        {
+            //
+            // This block of code updates global voxel-materials related constant buffer. It is very likely
+            // that this is not the best place where to perform this action and somebody with better
+            // understanding of engine architecture should fix it.
+            //
+
+            for (int i = 0; i < batches.Count; i++)
+            {
+                if (batches[i].Material0 != -1)
+                    MyVoxelMaterials1.UpdateGlobalVoxelMaterialsCB(batches[i].Material0);
+
+                if (batches[i].Material1 != -1)
+                    MyVoxelMaterials1.UpdateGlobalVoxelMaterialsCB(batches[i].Material1);
+
+                if (batches[i].Material2 != -1)
+                    MyVoxelMaterials1.UpdateGlobalVoxelMaterialsCB(batches[i].Material2);
+            }
+
+            List<MyClipmapCellBatch>  collapsedBatches = CollapseBatches(batches);
+            MyClipmapCellMeshMetadata metadataForCollapsed = metadata;
+
+            metadataForCollapsed.BatchCount = collapsedBatches.Count;
+
+            UpdateVoxelCellInternal(mesh, metadataForCollapsed, collapsedBatches);
+        }
+
+        private static void UpdateVoxelCellInternal(MeshId mesh, MyClipmapCellMeshMetadata metadata, List<MyClipmapCellBatch> batches)
+        {
+            var lodMesh = new MyLodMesh { Mesh = mesh, Lod = 0 };
+
+            LodMeshId lodMeshId;
+            if (!LodMeshIndex.TryGetValue(lodMesh, out lodMeshId))
+            {
+                Debug.Fail("Lod mesh not found!");
+                return;
+            }
+
+            ResizeVoxelParts(mesh, lodMeshId, batches.Count);
+
+            long vertexCount, indexCount;
+            CalculateRequiredBufferCapacities(batches, out vertexCount, out indexCount);
+
+            if (vertexCount <= ushort.MaxValue)
+            {
+                CombineBatchesToParts(mesh, batches, ref m_tmpVertices0, ref m_tmpVertices1, ref m_tmpShortIndices, vertexCount, indexCount);
+                FillMeshRawData(ref LodMeshInfos.Data[lodMeshId.Index].Data, m_tmpVertices0, m_tmpVertices1, m_tmpShortIndices, (int)vertexCount, (int)indexCount);
+            }
+            else if (vertexCount <= int.MaxValue)
+            {
+                CombineBatchesToParts(mesh, batches, ref m_tmpVertices0, ref m_tmpVertices1, ref m_tmpIndices, vertexCount, indexCount);
+                FillMeshRawData(ref LodMeshInfos.Data[lodMeshId.Index].Data, m_tmpVertices0, m_tmpVertices1, m_tmpIndices, (int)vertexCount, (int)indexCount);
+            }
+            else
+                Debug.Fail("Index overflow");
+
+            LodMeshInfos.Data[lodMeshId.Index].VerticesNum = (int)vertexCount;
+            LodMeshInfos.Data[lodMeshId.Index].IndicesNum = (int)indexCount;
+            LodMeshInfos.Data[lodMeshId.Index].BatchMetadata = metadata;
+
+            for (int batchIndex = 0; batchIndex < batches.Count; ++batchIndex)
+                LodMeshInfos.Data[lodMeshId.Index].DataBatches[batchIndex] = batches[batchIndex];
+
+            MoveData(lodMeshId);
+        }
+
+        public static string GetContentPath(string file)
+        {
+            string contentPath = null;
+            if (Path.IsPathRooted(file) && file.ToLower().Contains("models"))
+                contentPath = file.Substring(0, file.ToLower().IndexOf("models"));
+
+            return contentPath;
+        }
+
+        private static void CalculateRequiredBufferCapacities(List<MyClipmapCellBatch> batches, out long vertexCapacity, out long indexCapacity)
+        {
+            vertexCapacity = 0;
+            indexCapacity = 0;
+
+            for (int batchIndex = 0; batchIndex < batches.Count; ++batchIndex)
+            {
+                vertexCapacity += batches[batchIndex].Vertices.Length;
+                indexCapacity += batches[batchIndex].Indices.Length;
+            }
+        }
+
+        private struct MyVertexCopyHelper
+        {
+            public ulong LowBits;
+            public ulong HighBits;
+
+            public static MyVertexCopyHelper operator +(MyVertexCopyHelper left, MyVertexCopyHelper right)   // Don't care about overflows as they don't happen in our use case
+            {
+                return new MyVertexCopyHelper { LowBits = left.LowBits + right.LowBits, HighBits = left.HighBits + right.HighBits };
+            }
+        }
+
+        private static unsafe void CopyVertices(MyVertexFormatVoxelSingleData* sourcePointer, MyVertexFormatVoxel* destinationPointer0, MyVertexFormatNormal* destinationPointer1, uint elementsToCopy)
+        {
+            MyVertexFormatVoxel* currentDestination0 = destinationPointer0;
+            MyVertexFormatNormal* currentDestination1 = destinationPointer1;
+
+            const ulong ValueToAdd = (((ulong)short.MaxValue) << 0) + (((ulong)short.MaxValue) << 16) + (((ulong)short.MaxValue) << 32);
+            MyVertexCopyHelper ValueToAdd128 = new MyVertexCopyHelper { LowBits = ValueToAdd, HighBits = ValueToAdd };
+            for (int batchVertexIndex = 0; batchVertexIndex < elementsToCopy; ++batchVertexIndex)
+            {
+                MyVertexFormatVoxelSingleData* batchVertex = sourcePointer + batchVertexIndex;
+
+                // NOTE: I don't like this :-)
+                *((MyVertexCopyHelper*)currentDestination0) = (*((MyVertexCopyHelper*)batchVertex) + ValueToAdd128);
+                *((ulong*)currentDestination1) = *((ulong*)batchVertex + 2);
+
+                currentDestination0->m_materialInfo = batchVertex->MaterialInfo;
+
+                //currentDestination0->Position = batchVertex->Position;
+                //currentDestination0->PositionMorph = batchVertex->PositionMorph;
+                //currentDestination0->m_positionMaterials.W = (ushort)batchVertex->PackedPositionAndAmbientMaterial.W;
+                //currentDestination0->m_positionMaterialsMorph.W = (ushort)batchVertex->PackedPositionAndAmbientMaterialMorph.W;
+
+                //currentDestination1->Normal = batchVertex->PackedNormal;
+                //currentDestination1->NormalMorph = batchVertex->PackedNormalMorph;
+
+                ++currentDestination0;
+                ++currentDestination1;
+            }
+        }
+
+        private static unsafe void CopyIndices(uint* sourcePointer, void* destinationPointer, int startIndex, int baseVertex, int destinationIndexStride, uint elementsToCopy)
+        {
+            switch (destinationIndexStride)
+            {
+                case 2:
+                    ushort* shortIndices = ((ushort*)destinationPointer) + startIndex;
+                    ushort* endIndexPointer = shortIndices + elementsToCopy;
+
+                    while (shortIndices <= endIndexPointer)
+                    {
+                        *shortIndices = (ushort)(*(sourcePointer++) + baseVertex);
+                        ++shortIndices;
+                    }
+                    break;
+
+                case 4:
+                    uint* intIndices = ((uint*)destinationPointer) + startIndex;
+                    uint* endIntIndexPointer = intIndices + elementsToCopy;
+
+                    while (intIndices <= endIntIndexPointer)
+                    {
+                        *intIndices = (uint)(*(sourcePointer++) + baseVertex);
+                        ++intIndices;
+                    }
+
+                    //SharpDX.Utilities.CopyMemory(new IntPtr(intIndices), new IntPtr(sourcePointer), (int)(elementsToCopy * destinationIndexStride));
+                    break;
+
+                default:
+                    Debug.Fail("Incorrect parameter");
+                    break;
+            }
+        }
+
+        // ushort overload
+        private static unsafe void CombineBatchesToParts(
+            MeshId mesh,
+            List<MyClipmapCellBatch> batches,
+            ref MyVertexFormatVoxel[] vertices0,
+            ref MyVertexFormatNormal[] vertices1,
+            ref ushort[] indices,
+            long vertexCount,
+            long indexCount)
+        {
+            MyArrayHelpers.InitOrReserveNoCopy(ref vertices0, (int)vertexCount);
+            MyArrayHelpers.InitOrReserveNoCopy(ref vertices1, (int)vertexCount);
+            MyArrayHelpers.InitOrReserveNoCopy(ref indices, (int)indexCount);
+
+            fixed (MyVertexFormatVoxel* vertexPointer0 = vertices0)
+            {
+                fixed (MyVertexFormatNormal* vertexPointer1 = vertices1)
+                {
+                    fixed (void* indexPointer = indices)
+                    {
+                        CombineBatchesToParts(mesh, batches, vertexPointer0, vertexPointer1, indexPointer, sizeof(ushort));
+                    }
+                }
+            }
+        }
+
+        // uint overload
+        private static unsafe void CombineBatchesToParts(
+            MeshId mesh,
+            List<MyClipmapCellBatch> batches,
+            ref MyVertexFormatVoxel[] vertices0,
+            ref MyVertexFormatNormal[] vertices1,
+            ref uint[] indices,
+            long vertexCount,
+            long indexCount)
+        {
+            MyArrayHelpers.InitOrReserveNoCopy(ref vertices0, (int)vertexCount);
+            MyArrayHelpers.InitOrReserveNoCopy(ref vertices1, (int)vertexCount);
+            MyArrayHelpers.InitOrReserveNoCopy(ref indices, (int)indexCount);
+
+            fixed (MyVertexFormatVoxel* vertexPointer0 = vertices0)
+            {
+                fixed (MyVertexFormatNormal* vertexPointer1 = vertices1)
+                {
+                    fixed (void* indexPointer = indices)
+                    {
+                        CombineBatchesToParts(mesh, batches, vertexPointer0, vertexPointer1, indexPointer, sizeof(uint));
+                    }
+                }
+            }
+        }
+
+        // Overload that does the actual work
+        private static unsafe void CombineBatchesToParts(
+            MeshId mesh,
+            List<MyClipmapCellBatch> batches,
+            MyVertexFormatVoxel* vertices0,
+            MyVertexFormatNormal* vertices1,
+            void* indices,
+            int indexStride)
+        {
+            int batchCount = batches.Count;
 
             int startIndex = 0;
             int baseVertex = 0;
-            ResizeVoxelParts(mesh, lod, batchesNum);
 
-            for (int i = 0; i < batchesNum; i++)
+            for (int batchIndex = 0; batchIndex < batchCount; ++batchIndex)
             {
-                var key = new MyVoxelMaterialTriple(batches[i].Material0, batches[i].Material1, batches[i].Material2);
-                //var entry = vbAllocations[key];
+                var batchVertices = batches[batchIndex].Vertices;
+                var batchIndices = batches[batchIndex].Indices;
+                var batchMaterial = new MyVoxelMaterialTriple(batches[batchIndex].Material0, batches[batchIndex].Material1, batches[batchIndex].Material2, false);
 
-                if (key.I1 == -1 && key.I2 == -1)
-                    singleMat++;
-                else
-                    multiMat++;
-
-                //var offset = startIndex;
-                var batchIndices = batches[i].Indices;
-                for (int j = 0; j < batchIndices.Length; j++)
+                fixed (MyVertexFormatVoxelSingleData* sourcePointer = batchVertices)
                 {
-                    indices[startIndex + j] = (ushort)(batchIndices[j] + baseVertex);
+                    MyVertexFormatVoxel* destinationPointer0 = vertices0 + baseVertex;
+                    MyVertexFormatNormal* destinationPointer1 = vertices1 + baseVertex;
+                    CopyVertices(sourcePointer, destinationPointer0, destinationPointer1, (uint)batchVertices.LongLength);
                 }
 
-                //offset = entry.vertexOffset;
-                var batchVertices = batches[i].Vertices;
-                for (int j = 0; j < batchVertices.Length; j++)
+                fixed (uint* batchIndexPointer = batchIndices)
                 {
-                    vertices0[baseVertex + j] = new MyVertexFormatVoxel();
-                    vertices0[baseVertex + j].Position = batchVertices[j].Position;
-                    vertices0[baseVertex + j].PositionMorph = batchVertices[j].PositionMorph;
-                    
-                    var mat = batchVertices[j].MaterialAlphaIndex;
-                    switch (mat)
-                    {
-                        case 0:
-                            vertices0[baseVertex + j].Weight0 = 1;
-                            break;
-                        case 1:
-                            vertices0[baseVertex + j].Weight1 = 1;
-                            break;
-                        case 2:
-                            vertices0[baseVertex + j].Weight2 = 1;
-                            break;
-                    }
-                    mat = batchVertices[j].MaterialMorph;
-                    switch (mat)
-                    {
-                        case 0:
-                            vertices0[baseVertex + j].Weight0Morph = 1;
-                            break;
-                        case 1:
-                            vertices0[baseVertex + j].Weight1Morph = 1;
-                            break;
-                        case 2:
-                            vertices0[baseVertex + j].Weight2Morph = 1;
-                            break;
-                    }
-
-                    vertices1[baseVertex + j] = new MyVertexFormatNormal(batchVertices[j].PackedNormal, batchVertices[j].PackedNormalMorph);
+                    CopyIndices(batchIndexPointer, indices, startIndex, baseVertex, indexStride, (uint)batchIndices.LongLength);
                 }
 
-                var id = VoxelPartIndex[new MyMeshPart { Mesh = mesh, Lod = 0, Part = i }];
-                VoxelParts.Data[id.Index] = new MyVoxelPartInfo1 { IndexCount = batches[i].Indices.Length, StartIndex = startIndex, BaseVertex = 0, 
-                    MaterialTriple = new MyVoxelMaterialTriple(batches[i].Material0, batches[i].Material1, batches[i].Material2) };
-
-                //Debug.WriteLine(batches[i].Indices.Length + ", " + startIndex);
+                VoxelPartId id = VoxelPartIndex[new MyMeshPart { Mesh = mesh, Lod = 0, Part = batchIndex }];
+                VoxelParts.Data[id.Index] = new MyVoxelPartInfo1
+                {
+                    IndexCount = batches[batchIndex].Indices.Length,
+                    StartIndex = startIndex,
+                    BaseVertex = 0,
+                    MaterialTriple = batchMaterial
+                };
 
                 baseVertex += batchVertices.Length;
                 startIndex += batchIndices.Length;
             }
-            
-            FillIndex16Data(ref Lods.Data[lod.Index].Data, indices);
-            FillStream0Data(ref Lods.Data[lod.Index].Data, vertices0);
-            FillStream1Data(ref Lods.Data[lod.Index].Data, vertices1);
-
-            Lods.Data[lod.Index].VerticesNum = vertices0.Length;
-            Lods.Data[lod.Index].IndicesNum = indices.Length;
-
-            MoveData(lod);
         }
 
-        internal static void ResizeVoxelParts(MeshId mesh, LodMeshId lod, int num)
+
+        public static void UnloadVoxelCell(MeshId mesh)
         {
-            int currentParts = Lods.Data[lod.Index].PartsNum;
+            var lodMesh = new MyLodMesh { Mesh = mesh, Lod = 0 };
+            var lodMeshId = LodMeshIndex[lodMesh];
+
+            var info = LodMeshInfos.Data[lodMeshId.Index];
+            if (info.NullLodMesh)
+                return;
+
+            DisposeLodMeshBuffers(lodMeshId);
+        }
+
+        public static unsafe void ReloadVoxelCell(MeshId mesh)
+        {
+            var lodMesh = new MyLodMesh { Mesh = mesh, Lod = 0 };
+            var lodMeshId = LodMeshIndex[lodMesh];
+
+            var info = LodMeshInfos.Data[lodMeshId.Index];
+            if (info.NullLodMesh)
+                return;
+
+            var data = LodMeshInfos.Data[lodMeshId.Index].Data;
+            var verticesNum = lodMeshId.Info.VerticesNum;
+
+            if (LodMeshBuffers[lodMeshId.Index].VB0 == null)
+                MoveData(verticesNum, lodMeshId.Info.IndicesNum, ref data, ref LodMeshBuffers[lodMeshId.Index]);
+        }
+
+        private static void FillMeshRawData(ref MyMeshRawData meshRawData, List<MyClipmapCellBatch> batches)
+        {
+            long vertexCount, indexCount;
+            CalculateRequiredBufferCapacities(batches, out vertexCount, out indexCount);
+
+        }
+
+        private static void FillMeshRawData(ref MyMeshRawData meshRawData, MyVertexFormatVoxel[] vertices0, MyVertexFormatNormal[] vertices1, ushort[] indices, int vertexCapacity, int indexCapacity)
+        {
+            FillStream0Data(ref meshRawData, vertices0, vertexCapacity);
+            FillStream1Data(ref meshRawData, vertices1, vertexCapacity);
+            FillIndexData(ref meshRawData, indices, indexCapacity);
+        }
+
+        private static void FillMeshRawData(ref MyMeshRawData meshRawData, MyVertexFormatVoxel[] vertices0, MyVertexFormatNormal[] vertices1, uint[] indices, int vertexCapacity, int indexCapacity)
+        {
+            FillStream0Data(ref meshRawData, vertices0, vertexCapacity);
+            FillStream1Data(ref meshRawData, vertices1, vertexCapacity);
+            FillIndexData(ref meshRawData, indices, indexCapacity);
+        }
+
+        static unsafe void FillStreamData(ref byte[] destinationData, void* sourcePointer, int elementCount, int elementStride)
+        {
+            var byteSize = elementCount * elementStride;
+            MyArrayHelpers.ResizeNoCopy(ref destinationData, byteSize);
+            fixed (void* destinationPointer = destinationData)
+            {
+                SharpDX.Utilities.CopyMemory(new IntPtr(destinationPointer), new IntPtr(sourcePointer), byteSize);
+            }
+        }
+
+        static unsafe void FillStream0Data(ref MyMeshRawData rawData, void* sourcePointer, int vertexCount, int vertexStride)
+        {
+            rawData.Stride0 = vertexStride;
+            FillStreamData(ref rawData.VertexStream0, sourcePointer, vertexCount, vertexStride);
+        }
+
+        static unsafe void FillStream0Data(ref MyMeshRawData rawData, MyVertexFormatPositionH4[] vertices, int vertexCount)
+        {
+            fixed (void* sourcePointer = vertices)
+            {
+                FillStream0Data(ref rawData, sourcePointer, vertexCount, MyVertexFormatPositionH4.STRIDE);
+            }
+        }
+
+        static unsafe void FillStream0Data(ref MyMeshRawData rawData, HalfVector4[] vertices, int vertexCount)
+        {
+            fixed (void* sourcePointer = vertices)
+            {
+                FillStream0Data(ref rawData, sourcePointer, vertexCount, sizeof(HalfVector4));
+            }
+        }
+
+        static unsafe void FillStream0Data(ref MyMeshRawData rawData, MyVertexFormatPositionSkinning[] vertices, int vertexCount)
+        {
+            fixed (void* sourcePointer = vertices)
+            {
+                FillStream0Data(ref rawData, sourcePointer, vertexCount, MyVertexFormatPositionSkinning.STRIDE);
+            }
+        }
+
+        static unsafe void FillStream0Data(ref MyMeshRawData rawData, MyVertexFormatVoxel[] vertices, int vertexCount)
+        {
+            fixed (void* sourcePointer = vertices)
+            {
+                FillStream0Data(ref rawData, sourcePointer, vertexCount, MyVertexFormatVoxel.STRIDE);
+            }
+        }
+
+        static unsafe void FillStream1Data(ref MyMeshRawData rawData, void* sourcePointer, int vertexCount, int vertexStride)
+        {
+            rawData.Stride1 = vertexStride;
+            FillStreamData(ref rawData.VertexStream1, sourcePointer, vertexCount, vertexStride);
+        }
+
+        static unsafe void FillStream1Data(ref MyMeshRawData rawData, MyVertexFormatTexcoordNormalTangentTexindices[] vertices, int vertexCount)
+        {
+            fixed (void* sourcePointer = vertices)
+            {
+                FillStream1Data(ref rawData, sourcePointer, vertexCount, MyVertexFormatTexcoordNormalTangentTexindices.STRIDE);
+            }
+        }
+
+        static unsafe void FillStream1Data(ref MyMeshRawData rawData, MyVertexFormatNormal[] vertices, int vertexCount)
+        {
+            fixed (void* sourcePointer = vertices)
+            {
+                FillStream1Data(ref rawData, sourcePointer, vertexCount, MyVertexFormatNormal.STRIDE);
+            }
+        }
+
+        static unsafe void FillIndexData(ref MyMeshRawData rawData, ushort[] indices, int indexCapacity)
+        {
+            rawData.IndicesFmt = MyIndexBufferFormat.UShort;
+            fixed (void* sourceIndices = indices)
+            {
+                FillStreamData(ref rawData.Indices, sourceIndices, indexCapacity, sizeof(ushort));
+            }
+        }
+
+        static unsafe void FillIndexData(ref MyMeshRawData rawData, uint[] indices, int indexCapacity)
+        {
+            rawData.IndicesFmt = MyIndexBufferFormat.UInt;
+            fixed (void* sourceIndices = indices)
+            {
+                FillStreamData(ref rawData.Indices, sourceIndices, indexCapacity, sizeof(uint));
+            }
+        }
+
+        private static void ResizeVoxelParts(MeshId mesh, LodMeshId lod, int num)
+        {
+            int currentParts = LodMeshInfos.Data[lod.Index].PartsNum;
 
             // extend
-            if(currentParts < num)
+            if (currentParts < num)
             {
-                for(int i = currentParts; i<num; i++)
+                for (int i = currentParts; i < num; i++)
                 {
                     var id = new VoxelPartId { Index = VoxelParts.Allocate() };
-                    VoxelPartIndex[new MyMeshPart{ Mesh = mesh, Lod = 0, Part = i}] = id;
+                    VoxelPartIndex[new MyMeshPart { Mesh = mesh, Lod = 0, Part = i }] = id;
                 }
             }
             // drop
-            else if(currentParts > num)
+            else if (currentParts > num)
             {
-                for(int i = num; i<currentParts; i++)
+                for (int i = num; i < currentParts; i++)
                 {
                     var id = VoxelPartIndex[new MyMeshPart { Mesh = mesh, Lod = 0, Part = i }];
                     VoxelParts.Free(id.Index);
                     VoxelPartIndex.Remove(new MyMeshPart { Mesh = mesh, Lod = 0, Part = i });
                 }
             }
-            
-            Lods.Data[lod.Index].PartsNum = num;
+
+            LodMeshInfos.Data[lod.Index].PartsNum = num;
+            LodMeshInfos.Data[lod.Index].DataBatches = new MyClipmapCellBatch[num];
         }
 
-        internal static void DisposeLodMeshBuffers(LodMeshId id)
+        private static void DisposeLodMeshBuffers(LodMeshId lodMeshId)
         {
-            var buffers = id.Buffers;
-            if(buffers.IB != IndexBufferId.NULL)
-            {
-                MyHwBuffers.Destroy(buffers.IB);
-            }
-            if (buffers.VB0 != VertexBufferId.NULL)
-            {
-                MyHwBuffers.Destroy(buffers.VB0);
-            }
-            if (buffers.VB1 != VertexBufferId.NULL)
-            {
-                MyHwBuffers.Destroy(buffers.VB1);
-            }
+            DisposeMeshBuffers(lodMeshId.Buffers);
+            LodMeshBuffers[lodMeshId.Index] = MyMeshBuffers.Empty;
+        }
 
-            LodMeshBuffers[id.Index] = MyMeshBuffers.Empty;
+        private static void DisposeMeshBuffers(MyMeshBuffers buffers)
+        {
+            if (buffers.IB != null)
+                MyManagers.Buffers.Dispose(buffers.IB); buffers.IB = null;
+
+            if (buffers.VB0 != null)
+                MyManagers.Buffers.Dispose(buffers.VB0); buffers.VB0 = null;
+
+            if (buffers.VB1 != null)
+                MyManagers.Buffers.Dispose(buffers.VB1); buffers.VB1 = null;
         }
 
         internal static void RemoveVoxelCell(MeshId id)
         {
-            Debug.Assert(MeshVoxelInfo.ContainsKey(id));
+            if (!MeshVoxelInfo.ContainsKey(id))
+                return;
 
-            var lod = LodMeshIndex[new MyLodMesh { Mesh = id, Lod = 0 }];
+            MyLodMesh lodMesh = new MyLodMesh { Mesh = id, Lod = 0 };
+            if (LodMeshIndex.ContainsKey(lodMesh))
+            {
+                var lodMeshId = LodMeshIndex[lodMesh];
 
-            ResizeVoxelParts(id, lod, 0);
-            DisposeLodMeshBuffers(lod);
-            Lods.Free(lod.Index);
-            Meshes.Free(id.Index);
+                ResizeVoxelParts(id, lodMeshId, 0);
+                DisposeLodMeshBuffers(lodMeshId);
+                LodMeshInfos.Data[lodMeshId.Index].Data = new MyMeshRawData();
+                LodMeshInfos.Free(lodMeshId.Index);
 
-            LodMeshIndex.Remove(new MyLodMesh { Mesh = id, Lod = 0 });
+                LodMeshIndex.Remove(lodMesh);
+            }
+            
+            MeshInfos.Free(id.Index);
             MeshVoxelInfo.Remove(id);
         }
 
@@ -1259,7 +2353,8 @@ namespace VRageRender
 
         static void LoadMesh(MeshId id)
         {
-            var assetName = Meshes.Data[id.Index].Name.ToString();
+            var assetName = MeshInfos.Data[id.Index].Name;
+            float rescale = MeshInfos.Data[id.Index].Rescale;
 
             MyLodMeshInfo meshMainLod = new MyLodMeshInfo
             {
@@ -1267,69 +2362,68 @@ namespace VRageRender
                 FileName = assetName
             };
 
-            Meshes.Data[id.Index].Loaded = true;
+            MeshInfos.Data[id.Index].Loaded = true;
 
-            
-            MyMeshPartInfo1 [] parts;
+            MyMeshPartInfo1[] parts;
+            MyMeshSectionInfo1[] sections;
             MyLODDescriptor[] lodDescriptors;
 
-            bool modelOk = LoadMwm(ref meshMainLod, out parts, out lodDescriptors);
-
-            if(!modelOk)
+            bool modelOk = LoadMwm(ref meshMainLod, out parts, out sections, out lodDescriptors, rescale);
+            if (!modelOk)
             {
                 meshMainLod.FileName = ERROR_MODEL_PATH;
 
-                if(!LoadMwm(ref meshMainLod, out parts, out lodDescriptors))
+                if (!LoadMwm(ref meshMainLod, out parts, out sections, out lodDescriptors, rescale))
                 {
                     Debug.Fail("error model missing");
                 }
             }
 
-            Meshes.Data[id.Index].FileExists = true;
+            MeshInfos.Data[id.Index].FileExists = true;
 
-            StoreLodMeshWithParts(id, 0, ref meshMainLod, ref parts);
+            StoreLodMeshWithParts(id, 0, meshMainLod, parts);
+            StoreLodMeshSections(id, 0, ref sections);
 
             int modelLods = 1;
 
-            for(int i=0; i<lodDescriptors.Length; i++)
-            {
-                var meshFile = lodDescriptors[i].Model;
-                if (!meshFile.EndsWith(".mwm"))
+            if (lodDescriptors != null)
+                for (int i = 0; i < lodDescriptors.Length; i++)
                 {
-                    meshFile += ".mwm";
+                    var meshFile = lodDescriptors[i].GetModelAbsoluteFilePath(assetName);
+                    MyLodMeshInfo lodMesh = new MyLodMeshInfo
+                    {
+                        FileName = meshFile,
+                        LodDistance = lodDescriptors[i].Distance,
+                        NullLodMesh = meshFile == null,
+                    };
+
+                    MyMeshPartInfo1[] lodParts;
+                    MyMeshSectionInfo1[] lodSections;
+                    bool lodOk = LoadMwm(ref lodMesh, out lodParts, out lodSections, rescale);
+                    if (lodOk)
+                    {
+                        //lodMesh.FileName = ERROR_MODEL_PATH;
+                        //if(!LoadMwm(ref lodMesh, out lodParts))
+                        //{
+                        //    Debug.Fail("error model missing");
+                        //}
+                        StoreLodMeshWithParts(id, modelLods, lodMesh, lodParts);
+                        StoreLodMeshSections(id, modelLods, ref lodSections);
+                        modelLods++;
+                    }
                 }
 
-                MyLodMeshInfo lodMesh = new MyLodMeshInfo
-                {
-                    FileName = meshFile,
-                    LodDistance = lodDescriptors[i].Distance
-                };
-                
-                MyMeshPartInfo1 [] lodParts;
+            MeshInfos.Data[id.Index].LodsNum = modelLods;
 
-                bool lodOk = LoadMwm(ref lodMesh, out lodParts);
-                if(lodOk)
-                {
-                    //lodMesh.FileName = ERROR_MODEL_PATH;
-                    //if(!LoadMwm(ref lodMesh, out lodParts))
-                    //{
-                    //    Debug.Fail("error model missing");
-                    //}
-                    StoreLodMeshWithParts(id, modelLods++, ref lodMesh, ref lodParts);
-                }
-            }
-
-            Meshes.Data[id.Index].LodsNum = modelLods;
-
-            for(int i=0; i<modelLods; i++)
+            for (int lodIndex = 0; lodIndex < modelLods; ++lodIndex)
             {
-                MoveData(LodMeshIndex[new MyLodMesh { Mesh = id, Lod = i }]);
+                MoveData(LodMeshIndex[new MyLodMesh { Mesh = id, Lod = lodIndex }]);
             }
         }
 
         internal static void Load()
         {
-            foreach(var id in State[(int)MyMeshState.WAITING].ToList())
+            foreach (var id in State[(int)MyMeshState.WAITING].ToList())
             {
                 LoadMesh(id);
                 MoveState(id, MyMeshState.WAITING, MyMeshState.LOADED);
@@ -1338,7 +2432,7 @@ namespace VRageRender
 
         internal static void OnDeviceReset()
         {
-            foreach(var lod in LodMeshIndex.Values)
+            foreach (var lod in LodMeshIndex.Values)
             {
                 MoveData(lod);
             }

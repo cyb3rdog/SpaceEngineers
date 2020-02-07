@@ -10,7 +10,6 @@ using VRage.Import;
 using VRage.Utils;
 using VRageMath;
 using VRageMath.PackedVector;
-using VRageRender.Resources;
 using VRageRender.Vertex;
 using Buffer = SharpDX.Direct3D11.Buffer;
 using Vector2 = VRageMath.Vector2;
@@ -18,112 +17,6 @@ using Vector3 = VRageMath.Vector3;
 
 namespace VRageRender
 {
-    //class MyDynamicMesh : MyMesh
-    //{
-    //    internal static List<MyDynamicMesh> m_list = new List<MyDynamicMesh>();
-
-    //    internal static void RemoveAll()
-    //    {
-    //        foreach(var item in m_list)
-    //        {
-    //            item.Release();
-    //        }
-    //        m_list.Clear();
-    //    }
-
-    //    internal MyDynamicMesh()
-    //    {
-    //        LODs = new MyRenderLodInfo[1];
-    //        LODs[0] = new MyRenderLodInfo();
-    //        LODs[0].m_meshInfo = new MyRenderMeshInfo();
-    //        LODs[0].LodNum = 0;
-    //        LODs[0].Distance = 0;
-
-    //        m_list.Add(this);
-    //    }
-
-    //    internal unsafe void UpdateData(
-    //        int lod, 
-    //        ushort[] indices,
-    //        MyVertexFormatPositionHalf4[] stream0, 
-    //        MyVertexFormatTexcoordNormalTangent[] stream1,
-    //        VRageMath.BoundingBox ? aabb)
-    //    {
-    //        var meshInfo = LODs[lod].m_meshInfo;
-    //        meshInfo.VertexLayout = MyVertexInputLayout.Empty().Append(MyVertexInputComponentType.POSITION_PACKED).Append(MyVertexInputComponentType.NORMAL, 1)
-    //                        .Append(MyVertexInputComponentType.TANGENT_SIGN_OF_BITANGENT, 1)
-    //                        .Append(MyVertexInputComponentType.TEXCOORD0, 1);
-
-    //        if (meshInfo.IB == IndexBufferId.NULL || meshInfo.IB.Capacity < indices.Length)
-    //        {
-    //            if (meshInfo.IB != IndexBufferId.NULL) { 
-    //                //meshInfo.IB.Dispose();
-    //                MyHwBuffers.DestroyIndexBuffer(meshInfo.IB);
-    //                meshInfo.IB = IndexBufferId.NULL;
-    //            }
-
-    //            fixed(ushort *ptr = indices)
-    //            {
-    //                meshInfo.IB = MyHwBuffers.CreateIndexBuffer(indices.Length, Format.R16_UInt, new IntPtr(ptr));
-    //            }
-    //        }
-    //        else
-    //        {
-    //            MyRender11.ImmediateContext.UpdateSubresource(indices, meshInfo.IB.Buffer);
-    //        }
-
-    //        if (meshInfo.VB == null || meshInfo.VB[0].Capacity < stream0.Length)
-    //        {
-    //            if (meshInfo.VB != null)
-    //            {
-    //                //meshInfo.VB[0].Dispose();
-    //                //meshInfo.VB[1].Dispose();
-    //                foreach(var vb in meshInfo.VB)
-    //                {
-    //                    MyHwBuffers.Destroy(vb);
-    //                }
-    //            }
-    //            else
-    //            {
-    //                meshInfo.VB = new VertexBufferId[2];
-    //            }
-
-    //            fixed (MyVertexFormatPositionHalf4* ptr = stream0)
-    //            {
-    //                meshInfo.VB[0] = MyHwBuffers.CreateVertexBuffer(stream0.Length, sizeof(MyVertexFormatPositionHalf4), new IntPtr(ptr));
-                    
-    //            }
-    //            fixed(MyVertexFormatTexcoordNormalTangent * ptr = stream1)
-    //            {
-    //                meshInfo.VB[1] = MyHwBuffers.CreateVertexBuffer(stream0.Length, sizeof(MyVertexFormatTexcoordNormalTangent), new IntPtr(ptr));
-    //            }
-    //        }
-    //        else
-    //        {
-    //            MyRender11.ImmediateContext.UpdateSubresource(stream0, meshInfo.VB[0].Buffer);
-    //            MyRender11.ImmediateContext.UpdateSubresource(stream1, meshInfo.VB[1].Buffer);
-    //        }
-
-    //        meshInfo.IndicesNum = indices.Length;
-    //        meshInfo.VerticesNum = stream0.Length;
-
-    //        var matId = MyMeshMaterials1.GetMaterialId("__ROPE_MATERIAL", "Textures/rope_cm.dds", "Textures/rope_ng.dds", "Textures/rope_add.dds", MyMesh.DEFAULT_MESH_TECHNIQUE);
-
-    //        var submeshes = meshInfo.Parts.SetDefault(MyRenderableComponent.DEFAULT_MATERIAL_TAG, new MyDrawSubmesh[1]);
-    //        submeshes[0] = new MyDrawSubmesh(indices.Length, 0, 0, MyMeshMaterials1.GetProxyId(matId));
-
-    //        meshInfo.BoundingBox = aabb;
-
-    //        m_loadingStatus = MyAssetLoadingEnum.Ready;
-    //    }
-
-    //    internal void Remove()
-    //    {
-    //        Release();
-    //        // linear but how many dynamic meshes can we have?
-    //        m_list.Remove(this);
-    //    }
-    //}
 
     class MyLineHelpers
     {
@@ -176,7 +69,7 @@ namespace VRageRender
         }
 
         internal static void GenerateVertexData(ref Vector3D worldPointA, ref Vector3D worldPointB,
-            out MyVertexFormatPositionH4[] stream0, out MyVertexFormatTexcoordNormalTangent[] stream1)
+            out MyVertexFormatPositionH4[] stream0, out MyVertexFormatTexcoordNormalTangentTexindices[] stream1)
         {
             var worldPosition = (worldPointA + worldPointB) * 0.5f;
             var pointA = (Vector3)(worldPointA - worldPosition);
@@ -194,8 +87,9 @@ namespace VRageRender
             var offsetY = binormal * 0.025f;
 
             List<MyVertexFormatPositionH4> vertexPositionList = new List<MyVertexFormatPositionH4>();
-            List<MyVertexFormatTexcoordNormalTangent> vertexList = new List<MyVertexFormatTexcoordNormalTangent>();
+            List<MyVertexFormatTexcoordNormalTangentTexindices> vertexList = new List<MyVertexFormatTexcoordNormalTangentTexindices>();
 
+            Byte4 defaultArrayTexIndex = new Byte4(0,0,0,0);
             unsafe
             {
                 Vector3* points = stackalloc Vector3[2];
@@ -208,16 +102,16 @@ namespace VRageRender
                     float texCoordX = (i - 0.5f) * length;
 
                     vertexPositionList.Add(new MyVertexFormatPositionH4(points[i] + offsetX));
-                    vertexList.Add(new MyVertexFormatTexcoordNormalTangent(new Vector2(texCoordX, 0.0f), normal, Vector3.Cross(lineTangent, normal)));
+                    vertexList.Add(new MyVertexFormatTexcoordNormalTangentTexindices(new Vector2(texCoordX, 0.0f), normal, Vector3.Cross(lineTangent, normal), defaultArrayTexIndex));
 
                     vertexPositionList.Add(new MyVertexFormatPositionH4(points[i] + offsetY));
-                    vertexList.Add(new MyVertexFormatTexcoordNormalTangent(new Vector2(texCoordX, 0.33333f), binormal, Vector3.Cross(lineTangent, binormal)));
+                    vertexList.Add(new MyVertexFormatTexcoordNormalTangentTexindices(new Vector2(texCoordX, 0.33333f), binormal, Vector3.Cross(lineTangent, binormal), defaultArrayTexIndex));
 
                     vertexPositionList.Add(new MyVertexFormatPositionH4(points[i] - offsetX));
-                    vertexList.Add(new MyVertexFormatTexcoordNormalTangent(new Vector2(texCoordX, 0.66667f), -normal, Vector3.Cross(lineTangent, -normal)));
+                    vertexList.Add(new MyVertexFormatTexcoordNormalTangentTexindices(new Vector2(texCoordX, 0.66667f), -normal, Vector3.Cross(lineTangent, -normal), defaultArrayTexIndex));
 
                     vertexPositionList.Add(new MyVertexFormatPositionH4(points[i] - offsetY));
-                    vertexList.Add(new MyVertexFormatTexcoordNormalTangent(new Vector2(texCoordX, 1.0f), -binormal, Vector3.Cross(lineTangent, -binormal)));
+                    vertexList.Add(new MyVertexFormatTexcoordNormalTangentTexindices(new Vector2(texCoordX, 1.0f), -binormal, Vector3.Cross(lineTangent, -binormal), defaultArrayTexIndex));
                 }
             }
 

@@ -5,10 +5,12 @@ using System.Linq;
 using System.Text;
 using Sandbox.Engine.Physics;
 using VRageMath;
+using VRage.Game.Entity;
+using Sandbox.Game.Multiplayer;
 
 namespace Sandbox.Game.Entities.Cube
 {
-    struct MyGridContactInfo
+    public struct MyGridContactInfo
     {
         [Flags]
         enum ContactFlags
@@ -98,6 +100,10 @@ namespace Sandbox.Game.Entities.Cube
             if ((flags & ContactFlags.Known) == 0)
             {
                 Flags |= ContactFlags.Particles | ContactFlags.Deformation | ContactFlags.Known;
+                if(Sync.IsServer== false)
+                {
+                    return;
+                }
 
                 m_currentBlock = GetContactBlock(CurrentEntity, ContactPosition, Event.ContactPoint.NormalAndDistance.W);
                 var collidingGrid = CollidingEntity as MyCubeGrid;
@@ -141,12 +147,11 @@ namespace Sandbox.Game.Entities.Cube
         {
             graceDistance = Math.Max(Math.Abs(graceDistance), grid.GridSize * 0.2f);
             graceDistance += 1f;
-            MatrixD invWorld = grid.PositionComp.GetWorldMatrixNormalizedInv();
-            Vector3D localVelocity = Vector3D.TransformNormal(grid.Physics.LinearVelocity * Sandbox.Common.MyEngineConstants.UPDATE_STEP_SIZE_IN_SECONDS, invWorld);
+            MatrixD invWorld = grid.PositionComp.WorldMatrixNormalizedInv;
+            Vector3D localVelocity = Vector3D.TransformNormal(grid.Physics.LinearVelocity * VRage.Game.MyEngineConstants.UPDATE_STEP_SIZE_IN_SECONDS, invWorld);
             Vector3D localPos;
             Vector3D.Transform(ref worldPosition, ref invWorld, out localPos);
 
-            // MW:TODO optimize
             var min1 = Vector3I.Round((localPos - graceDistance - localVelocity) / grid.GridSize);
             var max1 = Vector3I.Round((localPos + graceDistance + localVelocity) / grid.GridSize);
             var min2 = Vector3I.Round((localPos + graceDistance - localVelocity) / grid.GridSize);

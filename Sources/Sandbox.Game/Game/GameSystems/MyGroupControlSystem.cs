@@ -19,7 +19,7 @@ using VRageRender;
 
 namespace Sandbox.Game.GameSystems
 {
-    class MyGroupControlSystem
+    public class MyGroupControlSystem
     {
         private MyShipController m_currentShipController = null;
 
@@ -38,12 +38,15 @@ namespace Sandbox.Game.GameSystems
 
         public void UpdateBeforeSimulation()
         {
-            if (!m_controlDirty) return;
+            if (m_controlDirty)
+            {
+                UpdateControl();
 
-            UpdateControl();
+                m_controlDirty = false;
+                m_firstControlRecalculation = false;
+            }
 
-            m_controlDirty = false;
-            m_firstControlRecalculation = false;
+            UpdateControls();
         }
 
         private void UpdateControl()
@@ -74,7 +77,7 @@ namespace Sandbox.Game.GameSystems
                 foreach (var grid in m_cubeGrids)
                 {
                     Debug.Assert(m_firstControlRecalculation || Sync.Players.GetControllingPlayer(grid) == null);
-                    Debug.Assert(m_currentShipController.ControllerInfo.Controller != null, "Trying to extend control from uncontrolled cockpit!");
+                    Debug.Assert(m_currentShipController.ControllerInfo.Controller != null || m_currentShipController is MyRemoteControl, "Trying to extend control from uncontrolled cockpit!");
 
                     Sync.Players.TryExtendControl(m_currentShipController, grid);
                 }
@@ -102,7 +105,30 @@ namespace Sandbox.Game.GameSystems
         public void AddControllerBlock(MyShipController controllerBlock)
         {
             bool result = m_groupControllers.Add(controllerBlock);
-            Debug.Assert(result, "Controller block was already present in the control group's controller list!");
+            bool found = false;
+            if (m_currentShipController != null && m_currentShipController.CubeGrid != controllerBlock.CubeGrid)
+            {
+               
+                var group = MyCubeGridGroups.Static.Logical.GetGroup(controllerBlock.CubeGrid);
+
+                if (group != null)
+                {
+                   foreach(var node in group.Nodes)
+                   {
+                       if(node.NodeData == m_currentShipController.CubeGrid )
+                       {
+                           found = true;
+                           break;
+                       }
+                   }
+                }
+            }
+
+            if (found == false && m_currentShipController != null && m_currentShipController.CubeGrid != controllerBlock.CubeGrid)
+            {
+                RemoveControllerBlock(m_currentShipController);
+                m_currentShipController = null;
+            }
 
             bool newControllerHasPriority = m_currentShipController == null || MyShipController.HasPriorityOver(controllerBlock, m_currentShipController);
 
@@ -155,13 +181,18 @@ namespace Sandbox.Game.GameSystems
                     return false;
                 }
 
-                return controller.Player.IsLocalPlayer();
+                return controller.Player.IsLocalPlayer;
             }
         }
 
         public MyEntityController GetController()
         {
             return m_currentShipController == null ? null : m_currentShipController.ControllerInfo.Controller;
+        }
+
+        public MyShipController GetShipController()
+        {
+            return m_currentShipController;
         }
 
         public bool IsControlled
@@ -185,6 +216,14 @@ namespace Sandbox.Game.GameSystems
             foreach (var grid in m_cubeGrids)
             {
                 MyRenderProxy.DebugDrawText2D(new Vector2(0.0f, startYCoord), "  " + grid.ToString(), Color.LightYellow, 0.5f); startYCoord += 13.0f;
+            }
+        }
+
+        public void UpdateControls()
+        {
+            foreach (var controller in m_groupControllers)
+            {
+                controller.UpdateControls();
             }
         }
     }

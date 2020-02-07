@@ -1,37 +1,40 @@
-﻿
-using Sandbox.Common;
-using Sandbox.Common.ObjectBuilders;
+﻿using Sandbox.Common.ObjectBuilders;
 using Sandbox.Definitions;
 using Sandbox.Game.Components;
 using Sandbox.Game.Entities.Character;
 using Sandbox.Game.Entities.Cube;
-using Sandbox.Game.GameSystems.Electricity;
 using Sandbox.Game.Gui;
 using Sandbox.Game.Localization;
 using Sandbox.Game.Multiplayer;
 using Sandbox.Game.World;
 using Sandbox.Graphics.GUI;
-using Sandbox.ModAPI.Ingame;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Linq;
 using System.Text;
-
+using Sandbox.Game.EntityComponents;
 using VRage;
-using Sandbox.Engine.Utils;
+using VRage.Game;
 using VRageMath;
 using VRage.Utils;
+using VRage.Game.Entity.UseObject;
+using VRage.ModAPI;
+using VRage.Game.GUI.TextPanel;
+using VRage.Network;
+using Sandbox.Engine.Multiplayer;
+using VRage.Game.ModAPI;
+using VRage.Sync;
+using VRage.ObjectBuilders;
 
 namespace Sandbox.Game.Entities.Blocks
 {
     [MyCubeBlockType(typeof(MyObjectBuilder_TextPanel))]
-    partial class MyTextPanel : MyFunctionalBlock, IMyPowerConsumer
+    public partial class MyTextPanel : MyFunctionalBlock
     {
-        private const int NUM_DECIMALS = 1;
-        public const double MAX_DRAW_DISTANCE = 100.0;
+        private const int NUM_DECIMALS = 3;
+        public const double MAX_DRAW_DISTANCE = 200.0;
         private const int DEFAULT_RESOLUTION = 512;
-        private const int MAX_NUMBER_CHARACTERS = 4200;
+        private const int MAX_NUMBER_CHARACTERS = 100000;
         private const string DEFAULT_OFFLINE_TEXTURE = "Offline";
         private const string DEFAULT_ONLINE_TEXTURE = "Online";
 
@@ -40,8 +43,6 @@ namespace Sandbox.Game.Entities.Blocks
         private StringBuilder m_privateDescription;
         private StringBuilder m_privateTitle;
         private MyGuiScreenTextPanel m_textBox;
-        private TextPanelAccessFlag m_accessFlag;
-        private ShowTextOnScreenFlag m_showFlag;
         private bool m_isOpen;
         private ulong m_userId;
 
@@ -62,41 +63,56 @@ namespace Sandbox.Game.Entities.Blocks
             }
         }
 
-        List<Sandbox.Definitions.MyLCDTextureDefinition> m_selectedTexturesToDraw = new List<Sandbox.Definitions.MyLCDTextureDefinition>();
-        static List<Sandbox.Definitions.MyLCDTextureDefinition> m_definitions = new List<Sandbox.Definitions.MyLCDTextureDefinition>();
-        List<MyGuiControlListbox.Item> m_selectedTextures = null;
-        List<MyGuiControlListbox.Item> m_selectedTexturesToRemove = null;
+        List<MyLCDTextureDefinition> m_selectedTexturesToDraw = new List<MyLCDTextureDefinition>();
+        List<MyLCDTextureDefinition> m_definitions = new List<MyLCDTextureDefinition>();
+        List<MyGuiControlListbox.Item> m_selectedTextures = new List<MyGuiControlListbox.Item>();
+        List<MyGuiControlListbox.Item> m_selectedTexturesToRemove = new List<MyGuiControlListbox.Item>();
 
-        Color m_backgroundColor = Color.Black;
+        Sync<Color> m_backgroundColor;
         bool m_backgroundColorChanged = true;
         public Color BackgroundColor
         {
             get { return m_backgroundColor; }
-            set
-            {
-                if (m_backgroundColor != value)
-                {
-                    m_backgroundColorChanged = true;
-                    m_backgroundColor = value;
-                    RaisePropertiesChanged();
-                }
-            }
+            set { m_backgroundColor.Value = value; }
         }
 
-        Color m_fontColor = Color.White;
+        void m_backgroundColor_ValueChanged(SyncBase obj)
+        {
+            m_backgroundColorChanged = true;
+            RaisePropertiesChanged();
+        }
+
+        Sync<Color> m_fontColor;
         bool m_fontColorChanged = true;
         public Color FontColor
         {
             get { return m_fontColor; }
-            set
+            set { m_fontColor.Value = value; }
+        }
+
+        Sync<string> m_font;
+        bool m_fontChanged = true;
+        public MyDefinitionId Font
+        {
+            get { return new MyDefinitionId(typeof(MyObjectBuilder_FontDefinition), m_font); }
+            set 
             {
-                if (m_fontColor != value)
-                {
-                    m_fontColorChanged = true;
-                    m_fontColor = value;
-                    RaisePropertiesChanged();
-                }
-            }
+                System.Diagnostics.Debug.Assert(!string.IsNullOrEmpty(value.SubtypeName), "Font must always have value. Use Debug font as default.");
+                m_font.Value = value.SubtypeName; 
+        }
+        }
+
+
+        void m_fontColor_ValueChanged(SyncBase obj)
+        {
+            m_fontColorChanged = true;
+            RaisePropertiesChanged();
+        }
+
+        void m_font_ValueChanged(SyncBase obj)
+        {
+            m_fontChanged = true;
+            RaisePropertiesChanged();
         }
 
         bool m_descriptionChanged = true;
@@ -135,7 +151,7 @@ namespace Sandbox.Game.Entities.Blocks
             {
                 m_privateTitle.CompareUpdate(value);
 
-                if (m_privateTitle != value)
+                if (m_privateTitleHelper != value)
                 {
                     m_privateTitleHelper.Clear().Append(value);
                 }
@@ -149,7 +165,7 @@ namespace Sandbox.Game.Entities.Blocks
             {
                 m_descriptionChanged = m_privateDescription.CompareUpdate(value);
 
-                if (m_privateDescription != value)
+                if (m_privateDescriptionHelper != value)
                 {
                     m_privateDescriptionHelper.Clear().Append(value);
                 }
@@ -175,74 +191,25 @@ namespace Sandbox.Game.Entities.Blocks
             }
         }
 
-        public TextPanelAccessFlag AccessFlag
-        {
-            get { return m_accessFlag; }
-            set
-            {
-                if (m_accessFlag != value)
-                {
-                    m_accessFlag = value;
-                }
-            }
-        }
-
+        private Sync<ShowTextOnScreenFlag> m_showFlag;
         public ShowTextOnScreenFlag ShowTextFlag
         {
             get { return m_showFlag; }
-            set
+            set { m_showFlag.Value = value; }
+        }
+
+        void m_showFlag_ValueChanged(SyncBase obj)
+        {
+            if (m_showFlag != ShowTextOnScreenFlag.NONE)
             {
-                if (m_showFlag != value)
-                {
-                    m_showFlag = value;
-
-                    if (m_showFlag != ShowTextOnScreenFlag.NONE)
-                    {
-                        m_forceUpdateText = true;
-                    }
-                    else
-                    {
-                        ReleaseRenderTexture();
-                        m_forceUpdateText = false;
-                        m_previousTextureID = null;
-                    }
-                }
+                m_forceUpdateText = true;
             }
-        }
-
-        public bool IsAccessibleForOnlyOwner
-        {
-            get { return (m_accessFlag == TextPanelAccessFlag.NONE); }
-        }
-
-        public bool IsAccessibleForFaction
-        {
-            get { return (m_accessFlag & TextPanelAccessFlag.READ_AND_WRITE_FACTION) != TextPanelAccessFlag.NONE; }
-        }
-
-        public bool IsAccessibleForAll
-        {
-            get { return (m_accessFlag & TextPanelAccessFlag.READ_AND_WRITE_ALL) == TextPanelAccessFlag.READ_AND_WRITE_ALL; }
-        }
-
-        public bool IsReadableForFaction
-        {
-            get { return (m_accessFlag & TextPanelAccessFlag.READ_FACTION) == TextPanelAccessFlag.READ_FACTION; }
-        }
-
-        public bool IsReadableForAll
-        {
-            get { return (m_accessFlag & TextPanelAccessFlag.READ_ALL) == TextPanelAccessFlag.READ_ALL; }
-        }
-
-        public bool IsWritableForFaction
-        {
-            get { return (m_accessFlag & TextPanelAccessFlag.WRITE_FACTION) == TextPanelAccessFlag.WRITE_FACTION; }
-        }
-
-        public bool IsWritableForAll
-        {
-            get { return (m_accessFlag & TextPanelAccessFlag.WRITE_ALL) == TextPanelAccessFlag.WRITE_ALL; }
+            else
+            {
+                ReleaseRenderTexture();
+                m_forceUpdateText = false;
+                m_previousTextureID = null;
+            }
         }
 
         public bool IsOpen
@@ -264,50 +231,35 @@ namespace Sandbox.Game.Entities.Blocks
             set { m_userId = value; }
         }
 
-        public new MySyncTextPanel SyncObject
-        {
-            get { return (MySyncTextPanel)base.SyncObject; }
-        }
-
-        float m_changeInterval = 0.0f;
+        private readonly Sync<float> m_changeInterval;
         public float ChangeInterval
         {
             get { return m_changeInterval; }
-            set
-            {
-                if (m_changeInterval != value)
-                {
-                    m_changeInterval = (float)Math.Round(value, NUM_DECIMALS);
-                    RaisePropertiesChanged();
-                }
-            }
+            set { m_changeInterval.Value = (float)Math.Round(value, NUM_DECIMALS); }
+        }
+
+        void m_changeInterval_ValueChanged(SyncBase obj)
+        {
+            RaisePropertiesChanged();
         }
 
         bool m_fontSizeChanged = true;
-        float m_fontSize = 1.0f;
+        private readonly Sync<float> m_fontSize;
         public float FontSize
         {
             get { return m_fontSize; }
-            set
-            {
-                if (m_fontSize != value)
-                {
-                    m_fontSizeChanged = true;
-                    m_fontSize = (float)Math.Round(value, NUM_DECIMALS);
-                    RaisePropertiesChanged();
-                }
-            }
+            set { m_fontSize.Value = (float)Math.Round(value, NUM_DECIMALS); }
         }
 
-        public MyPowerReceiver PowerReceiver
+        void m_fontSize_ValueChanged(SyncBase obj)
         {
-            get;
-            protected set;
+            m_fontSizeChanged = true;
+            RaisePropertiesChanged();
         }
 
         internal new MyRenderComponentTextPanel Render
         {
-            get { return (MyRenderComponentTextPanel)base.Render; }
+            get { return base.Render as MyRenderComponentTextPanel; }
             set { base.Render = value; }
         }
 
@@ -338,12 +290,20 @@ namespace Sandbox.Game.Entities.Blocks
 
         public void SelectImage(List<MyGuiControlListbox.Item> imageId)
         {
-            m_selectedTexturesToRemove = imageId;
+            m_selectedTexturesToRemove.Clear();
+            for (int i = 0; i < imageId.Count; i++)
+            {
+                m_selectedTexturesToRemove.Add(imageId[i]);
+            }
         }
 
         public void SelectImageToDraw(List<MyGuiControlListbox.Item> imageIds)
         {
-            m_selectedTextures = imageIds;
+            m_selectedTextures.Clear();
+            for (int i = 0; i < imageIds.Count; i++)
+            {
+                m_selectedTextures.Add(imageIds[i]);
+            }
         }
 
         public override void UpdateAfterSimulation()
@@ -352,26 +312,32 @@ namespace Sandbox.Game.Entities.Blocks
             if (IsBeingHacked)
             {
                 PrivateDescription.Clear();
-                SyncObject.SendChangeDescriptionMessage(PrivateDescription, false);
+                SendChangeDescriptionMessage(PrivateDescription, false);
             }
-            PowerReceiver.Update();
+            ResourceSink.Update();
             if (IsFunctional && IsWorking)
             {
                 if (ShowTextOnScreen && IsInRange() == false)
                 {
-                    m_isOutofRange = true;
-                    ReleaseRenderTexture();
+                    if (!m_isOutofRange)
+                    {
+                        m_isOutofRange = true;
+                        ReleaseRenderTexture();
+                    }
                     return;
                 }
 
-                if (ShowTextOnScreen&&(NeedsToDrawText() || m_isOutofRange || m_forceUpdateText))
+                if (ShowTextOnScreen && (NeedsToDrawText() || m_isOutofRange || m_forceUpdateText))
                 {
                     m_descriptionChanged = false;
                     m_forceUpdateText = false;
                     m_fontColorChanged = false;
                     m_fontSizeChanged = false;
                     m_backgroundColorChanged = false;
-                    Render.RenderTextToTexture(EntityId, ShowTextFlag == ShowTextOnScreenFlag.PUBLIC ? m_publicDescription.ToString() : m_privateDescription.ToString(), FontSize * BlockDefinition.TextureResolution / DEFAULT_RESOLUTION, FontColor, BackgroundColor, BlockDefinition.TextureResolution, BlockDefinition.TextureAspectRadio);
+                    m_fontChanged = false;
+                    Render.RenderTextToTexture(ShowTextFlag == ShowTextOnScreenFlag.PUBLIC ? m_publicDescription.ToString() : m_privateDescription.ToString(),
+                        FontSize * BlockDefinition.TextureResolution / DEFAULT_RESOLUTION, FontColor, BackgroundColor,
+                        BlockDefinition.TextureResolution, BlockDefinition.TextureAspectRadio);
                     FailedToRenderTexture = false;
                 }
 
@@ -381,6 +347,16 @@ namespace Sandbox.Game.Entities.Blocks
                 {
                     UpdateTexture();
                 }
+            }
+            else if (IsOpen)
+            {
+                SendChangeOpenMessage(false);
+                if (m_textBox != null)
+                {
+                    m_textBox.CloseScreen();
+                    //m_textBox = null;
+                }
+                MyScreenManager.CloseScreen(typeof(MyGuiScreenTerminal));
             }
         }
 
@@ -412,7 +388,7 @@ namespace Sandbox.Game.Entities.Blocks
 
         bool NeedsToDrawText()
         {
-            return ShowTextOnScreen && (m_descriptionChanged || m_fontSizeChanged || m_fontColorChanged || m_backgroundColorChanged);
+            return ShowTextOnScreen && (m_descriptionChanged || m_fontSizeChanged || m_fontColorChanged || m_fontChanged || m_backgroundColorChanged);
         }
 
         public void AddImagesToSelection()
@@ -438,7 +414,7 @@ namespace Sandbox.Game.Entities.Blocks
                     }
                 }
             }
-            SyncObject.SendAddImagesToSelectionRequest(selection);
+            SendAddImagesToSelectionRequest(selection);
         }
 
         public void RemoveImagesFromSelection()
@@ -465,13 +441,17 @@ namespace Sandbox.Game.Entities.Blocks
                     }
                 }
             }
-            SyncObject.SendRemoveSelectedImageRequest(selection);
+            SendRemoveSelectedImageRequest(selection);
         }
 
         public void SelectItems(int[] selection)
         {
             for (int j = 0; j < selection.Length; ++j)
             {
+                if (selection[j] >= m_definitions.Count)
+                {
+                    continue;
+                }
                 m_selectedTexturesToDraw.Add(m_definitions[selection[j]]);
             }
             m_currentPos = 0;
@@ -482,9 +462,31 @@ namespace Sandbox.Game.Entities.Blocks
         {
             for (int j = 0; j < selection.Length; ++j)
             {
+                if (selection[j] >= m_definitions.Count)
+                {
+                    continue;
+                }
                 m_selectedTexturesToDraw.Remove(m_definitions[selection[j]]);
             }
             m_currentPos = 0;
+
+            if (m_selectedTexturesToDraw.Count == 0)
+            {
+                if (CheckIsWorking() == false)
+                {
+                    Render.ChangeTexture(GetPathForID(DEFAULT_OFFLINE_TEXTURE));
+                }
+                else
+                {
+                    if (ShowTextOnScreen == false)
+                    {
+                        Render.ChangeTexture(GetPathForID(DEFAULT_ONLINE_TEXTURE));
+                    }
+                    m_previousTextureID = null;
+                    m_forceUpdateText = ShowTextOnScreen;
+                }
+            }
+
             RaisePropertiesChanged();
         }
 
@@ -492,12 +494,13 @@ namespace Sandbox.Game.Entities.Blocks
         {
             UpdateText();
             UpdateIsWorking();
+            if (Render == null)
+            {
+                Debug.Fail("Closed entity!");
+                return;
+            }
             if (CheckIsWorking() == false)
             {
-                if (ShowTextOnScreen)
-                {
-                    Render.ReleaseRenderTexture();
-                }
                 Render.ChangeTexture(GetPathForID(DEFAULT_OFFLINE_TEXTURE));
             }
             else
@@ -513,12 +516,12 @@ namespace Sandbox.Game.Entities.Blocks
 
         protected override bool CheckIsWorking()
         {
-            return PowerReceiver.IsPowered && base.CheckIsWorking();
+            return base.CheckIsWorking() && ResourceSink.IsPoweredByType(MyResourceDistributorComponent.ElectricityId);
         }
 
         private void ComponentStack_IsFunctionalChanged()
         {
-            PowerReceiver.Update();
+            ResourceSink.Update();
             if (IsFunctional)
             {
                 if (ShowTextOnScreen == false)
@@ -530,74 +533,108 @@ namespace Sandbox.Game.Entities.Blocks
             }
             else
             {
-                if (ShowTextOnScreen)
-                {
-                    Render.ReleaseRenderTexture();
-                }
                 Render.ChangeTexture(GetPathForID(DEFAULT_OFFLINE_TEXTURE));
             }
         }
 
-        static MyTextPanel()
+        public override void OnAddedToScene(object source)
         {
-            var publicTitleField = new MyTerminalControlTextbox<MyTextPanel>("PublicTitle", MySpaceTexts.BlockPropertyTitle_TextPanelPublicTitle, MySpaceTexts.Blank);
+            base.OnAddedToScene(source);
+            ComponentStack_IsFunctionalChanged();//after merging grids...
+            if (!IsWorking && ShowTextOnScreen)
+                Render.ChangeTexture(GetPathForID(DEFAULT_OFFLINE_TEXTURE));
+        }
+
+        public MyTextPanel()
+        {
+#if XB1 // XB1_SYNC_NOREFLECTION
+            m_backgroundColor = SyncType.CreateAndAddProp<Color>();
+            m_fontColor = SyncType.CreateAndAddProp<Color>();
+            m_accessFlag = SyncType.CreateAndAddProp<TextPanelAccessFlag>();
+            m_showFlag = SyncType.CreateAndAddProp<ShowTextOnScreenFlag>();
+            m_changeInterval = SyncType.CreateAndAddProp<float>();
+            m_fontSize = SyncType.CreateAndAddProp<float>();
+#endif // XB1
+            CreateTerminalControls();
+
+            m_publicDescription = new StringBuilder();
+            m_textBox = null;
+            m_publicTitle = new StringBuilder();
+            m_isOpen = false;
+
+            m_privateDescription = new StringBuilder();
+            m_privateTitle = new StringBuilder();
+
+            Render = new MyRenderComponentTextPanel(this);
+            m_definitions.Clear();
+            foreach (var textureDefinition in MyDefinitionManager.Static.GetLCDTexturesDefinitions())
+            {
+                m_definitions.Add(textureDefinition);
+            }
+
+            m_backgroundColor.Value = Color.Black;
+            m_fontColor.Value = Color.White;
+            m_changeInterval.Value = 0;
+            m_fontSize.Value = 1.0f;
+            m_font.Value = "Debug";
+
+            m_backgroundColor.ValueChanged += m_backgroundColor_ValueChanged;
+            m_font.ValueChanged += m_font_ValueChanged;
+            m_fontColor.ValueChanged += m_fontColor_ValueChanged;
+            m_showFlag.ValueChanged += m_showFlag_ValueChanged;
+            m_changeInterval.ValueChanged += m_changeInterval_ValueChanged;
+            m_fontSize.ValueChanged += m_fontSize_ValueChanged;
+        }
+
+        protected override void CreateTerminalControls()
+        {
+            if (MyTerminalControlFactory.AreControlsCreated<MyTextPanel>())
+                return;
+            base.CreateTerminalControls();
+            var publicTitleField = new MyTerminalControlTextbox<MyTextPanel>("Title", MySpaceTexts.BlockPropertyTitle_TextPanelPublicTitle, MySpaceTexts.Blank);
             publicTitleField.Getter = (x) => x.PublicTitle;
-            publicTitleField.Setter = (x, v) => x.SyncObject.SendChangeTitleMessage(v, true);
+            publicTitleField.Setter = (x, v) => x.SendChangeTitleMessage(v, true);
             publicTitleField.SupportsMultipleBlocks = false;
             MyTerminalControlFactory.AddControl(publicTitleField);
 
-            var showPublicButton = new MyTerminalControlButton<MyTextPanel>("ShowPublicTextPanel", MySpaceTexts.BlockPropertyTitle_TextPanelShowPublicTextPanel, MySpaceTexts.Blank, (x) => x.OpenWindow(true, true, true));
+            var showPublicButton = new MyTerminalControlButton<MyTextPanel>("ShowTextPanel", MySpaceTexts.BlockPropertyTitle_TextPanelShowPublicTextPanel, MySpaceTexts.Blank, (x) => x.OpenWindow(true, true, true));
             showPublicButton.Enabled = (x) => !x.IsOpen;
             showPublicButton.SupportsMultipleBlocks = false;
             MyTerminalControlFactory.AddControl(showPublicButton);
 
             MyTerminalControlFactory.AddControl(new MyTerminalControlSeparator<MyTextPanel>());
 
-            var titleField = new MyTerminalControlTextbox<MyTextPanel>("Title", MySpaceTexts.BlockPropertyTitle_TextPanelTitle, MySpaceTexts.Blank);
-            titleField.Getter = (x) => x.PrivateTitle;
-            titleField.Setter = (x, v) => x.SyncObject.SendChangeTitleMessage(v, false);
-            titleField.SupportsMultipleBlocks = false;
-
-            MyTerminalControlFactory.AddControl(titleField);
-
-            var showButton = new MyTerminalControlButton<MyTextPanel>("ShowTextPanel", MySpaceTexts.BlockPropertyTitle_TextPanelShowTextPanel, MySpaceTexts.Blank, (x) => x.OpenWindow(true, true, false));
-            showButton.Enabled = (x) => !x.IsOpen;
-            showButton.SupportsMultipleBlocks = false;
-            MyTerminalControlFactory.AddControl(showButton);
-
-            var comboAccess = new MyTerminalControlCombobox<MyTextPanel>("Access", MySpaceTexts.BlockPropertyTitle_TextPanelAccessType, MySpaceTexts.Blank);
-            comboAccess.ComboBoxContent = (x) => FillComboBoxContent(x);
-            comboAccess.Getter = (x) => (long)x.AccessFlag;
-            comboAccess.Setter = (x, y) => x.SyncObject.SendChangeAccessFlagMessage((byte)y);
-            comboAccess.Enabled = (x) => x.OwnerId != 0;
-            MyTerminalControlFactory.AddControl(comboAccess);
-            MyTerminalControlFactory.AddControl(new MyTerminalControlSeparator<MyTextPanel>());
-
-            var showTextOnScreen = new MyTerminalControlCombobox<MyTextPanel>("ShowTextOnScreen", MySpaceTexts.BlockPropertyTitle_ShowTextOnScreen, MySpaceTexts.Blank);
-            showTextOnScreen.ComboBoxContent = (x) => FillShowOnScreenComboBoxContent(x);
-            showTextOnScreen.Getter = (x) => (long)x.ShowTextFlag;
-            showTextOnScreen.Setter = (x, y) => x.SyncObject.SendShowOnScreenChangeRequest((byte)y);
-            showTextOnScreen.Enabled = (x) => x.OwnerId != 0;
+            var showTextOnScreen = new MyTerminalControlOnOffSwitch<MyTextPanel>("ShowTextOnScreen", MySpaceTexts.BlockPropertyTitle_ShowTextOnScreen, MySpaceTexts.Blank);
+            showTextOnScreen.Getter = (x) => x.ShowTextFlag != ShowTextOnScreenFlag.NONE;
+            showTextOnScreen.Setter = (x, y) => x.ShowTextFlag = y ? ShowTextOnScreenFlag.PUBLIC : ShowTextOnScreenFlag.NONE;
 
             MyTerminalControlFactory.AddControl(showTextOnScreen);
+
+
+            var comboFont = new MyTerminalControlCombobox<MyTextPanel>("Font", MySpaceTexts.BlockPropertyTitle_Font, MySpaceTexts.Blank);
+            comboFont.ComboBoxContent = (x) => FillFontComboBoxContent(x);
+            comboFont.Getter = (x) => (long)x.Font.SubtypeId;
+            comboFont.Setter = (x, y) => x.Font = new MyDefinitionId(typeof(MyObjectBuilder_FontDefinition), MyStringHash.TryGet((int)y));
+            MyTerminalControlFactory.AddControl(comboFont);
+            MyTerminalControlFactory.AddControl(new MyTerminalControlSeparator<MyTextPanel>());
 
             var changeFontSlider = new MyTerminalControlSlider<MyTextPanel>("FontSize", MySpaceTexts.BlockPropertyTitle_LCDScreenTextSize, MySpaceTexts.Blank);
             changeFontSlider.SetLimits(0.1f, 10.0f);
             changeFontSlider.DefaultValue = 1.0f;
             changeFontSlider.Getter = (x) => x.FontSize;
-            changeFontSlider.Setter = (x, v) => x.SyncObject.SendFontSizeChangeRequest(v);
-            changeFontSlider.Writer = (x, result) => result.Append(MyValueFormatter.GetFormatedFloat(x.FontSize, 1));
+            changeFontSlider.Setter = (x, v) => x.FontSize = v;
+            changeFontSlider.Writer = (x, result) => result.Append(MyValueFormatter.GetFormatedFloat(x.FontSize, NUM_DECIMALS));
             changeFontSlider.EnableActions();
             MyTerminalControlFactory.AddControl(changeFontSlider);
 
             var fontColor = new MyTerminalControlColor<MyTextPanel>("FontColor", MySpaceTexts.BlockPropertyTitle_FontColor);
             fontColor.Getter = (x) => x.FontColor;
-            fontColor.Setter = (x, v) => x.SyncObject.SendChangeFontColorRequest(v);
+            fontColor.Setter = (x, v) => x.FontColor = v;
             MyTerminalControlFactory.AddControl(fontColor);
 
             var backgroundColor = new MyTerminalControlColor<MyTextPanel>("BackgroundColor", MySpaceTexts.BlockPropertyTitle_BackgroundColor);
             backgroundColor.Getter = (x) => x.BackgroundColor;
-            backgroundColor.Setter = (x, v) => x.SyncObject.SendChangeBackgroundColorRequest(v);
+            backgroundColor.Setter = (x, v) => x.BackgroundColor = v;
             MyTerminalControlFactory.AddControl(backgroundColor);
 
             MyTerminalControlFactory.AddControl(new MyTerminalControlSeparator<MyTextPanel>());
@@ -614,7 +651,7 @@ namespace Sandbox.Game.Entities.Blocks
             changeIntervalSlider.SetLimits(0, 30.0f);
             changeIntervalSlider.DefaultValue = 0;
             changeIntervalSlider.Getter = (x) => x.ChangeInterval;
-            changeIntervalSlider.Setter = (x, v) => x.SyncObject.SendIntervalChangeRequest(v);
+            changeIntervalSlider.Setter = (x, v) => x.ChangeInterval = v;
             changeIntervalSlider.Writer = (x, result) => result.Append(MyValueFormatter.GetFormatedFloat(x.ChangeInterval, NUM_DECIMALS)).Append(" s");
             changeIntervalSlider.EnableActions();
             MyTerminalControlFactory.AddControl(changeIntervalSlider);
@@ -629,27 +666,16 @@ namespace Sandbox.Game.Entities.Blocks
 
         }
 
-        public MyTextPanel()
-        {
-            m_publicDescription = new StringBuilder();
-            m_textBox = null;
-            m_publicTitle = new StringBuilder();
-            m_isOpen = false;
-
-            m_privateDescription = new StringBuilder();
-            m_privateTitle = new StringBuilder();
-
-            Render = new MyRenderComponentTextPanel();
-            m_definitions.Clear();
-            foreach (var textureDefinition in MyDefinitionManager.Static.GetLCDTexturesDefinitions())
-            {
-                m_definitions.Add(textureDefinition);
-            }
-        }
-
         public override void Init(MyObjectBuilder_CubeBlock objectBuilder, MyCubeGrid cubeGrid)
         {
             SyncFlag = true;
+
+            var sinkComp = new MyResourceSinkComponent();
+            sinkComp.Init(
+             BlockDefinition.ResourceSinkGroup,
+             BlockDefinition.RequiredPowerInput,
+             () => (Enabled && IsFunctional) ? ResourceSink.MaxRequiredInputByType(MyResourceDistributorComponent.ElectricityId) : 0f);
+            ResourceSink = sinkComp;
 
             base.Init(objectBuilder, cubeGrid);
 
@@ -661,7 +687,6 @@ namespace Sandbox.Game.Entities.Blocks
             PublicTitle.Append(ob.PublicTitle);
 
             m_currentPos = ob.CurrentShownTexture;
-            m_accessFlag = ob.AccessFlag;
 
             if (Sync.IsServer && Sync.Clients != null)
             {
@@ -670,9 +695,13 @@ namespace Sandbox.Game.Entities.Blocks
 
             FontColor = ob.FontColor;
             BackgroundColor = ob.BackgroundColor;
-            NeedsUpdate = MyEntityUpdateEnum.EACH_FRAME;
+            NeedsUpdate |= MyEntityUpdateEnum.EACH_FRAME;
             Render.NeedsDrawFromParent = true;
-            this.ChangeInterval = ob.ChangeInterval;
+            ChangeInterval = ob.ChangeInterval;
+            if (!ob.Font.IsNull())
+            {
+                Font = ob.Font;
+            }
             FontSize = ob.FontSize;
             ShowTextFlag = ob.ShowText;
             if (ob.SelectedImages != null)
@@ -692,14 +721,9 @@ namespace Sandbox.Game.Entities.Blocks
                 RaisePropertiesChanged();
             }
 
-            PowerReceiver = new MyPowerReceiver(
-             MyConsumerGroupEnum.Utility,
-             false,
-             BlockDefinition.RequiredPowerInput,
-             () => (Enabled && IsFunctional) ? PowerReceiver.MaxRequiredInput : 0f);
 
-            PowerReceiver.Update();
-            PowerReceiver.IsPoweredChanged += PowerReceiver_IsPoweredChanged;
+            ResourceSink.Update();
+            ResourceSink.IsPoweredChanged += PowerReceiver_IsPoweredChanged;
             SlimBlock.ComponentStack.IsFunctionalChanged += ComponentStack_IsFunctionalChanged;
         }
 
@@ -712,8 +736,8 @@ namespace Sandbox.Game.Entities.Blocks
             ob.PublicDescription = m_publicDescription.ToString();
             ob.PublicTitle = m_publicTitle.ToString();
 
-            ob.AccessFlag = m_accessFlag;
             ob.ChangeInterval = ChangeInterval;
+            ob.Font = Font;
             ob.FontSize = FontSize;
             ob.ShowText = ShowTextFlag;
             ob.FontColor = FontColor;
@@ -732,14 +756,6 @@ namespace Sandbox.Game.Entities.Blocks
             return ob;
         }
 
-        protected override void OnOwnershipChanged()
-        {
-            m_accessFlag = TextPanelAccessFlag.READ_AND_WRITE_ALL;
-            base.OnOwnershipChanged();
-
-            //RaisePropertiesChanged();
-        }
-
         private void CreateTextBox(bool isEditable, StringBuilder description, bool isPublic)
         {
             m_textBox = new MyGuiScreenTextPanel(missionTitle: isPublic ? m_publicTitle.ToString() : m_privateTitle.ToString(),
@@ -754,7 +770,7 @@ namespace Sandbox.Game.Entities.Blocks
         {
             if (sync)
             {
-                SyncObject.SendChangeOpenMessage(true, isEditable, Sync.MyId, isPublic);
+                SendChangeOpenMessage(true, isEditable, Sync.MyId, isPublic);
                 return;
             }
             m_isEditingPublic = isPublic;
@@ -763,15 +779,17 @@ namespace Sandbox.Game.Entities.Blocks
             MyScreenManager.AddScreen(MyGuiScreenGamePlay.ActiveGameplayScreen = m_textBox);
         }
 
-        public void OnClosedTextBox(ModAPI.ResultEnum result)
+        public void OnClosedTextBox(ResultEnum result)
         {
+            if (m_textBox == null)
+                return;
             if (m_textBox.Description.Text.Length > MAX_NUMBER_CHARACTERS)
             {
                 MyGuiSandbox.AddScreen(MyGuiSandbox.CreateMessageBox(
                                      styleEnum: MyMessageBoxStyleEnum.Info,
                                      callback: OnClosedMessageBox,
                                      buttonType: MyMessageBoxButtonsType.YES_NO,
-                                     messageText: MyTexts.Get(MySpaceTexts.MessageBoxTextTooLongText)));
+                                     messageText: MyTexts.Get(MyCommonTexts.MessageBoxTextTooLongText)));
             }
             else
             {
@@ -798,20 +816,24 @@ namespace Sandbox.Game.Entities.Blocks
             MyGuiScreenGamePlay.ActiveGameplayScreen = MyGuiScreenGamePlay.TmpGameplayScreenHolder;
             MyGuiScreenGamePlay.TmpGameplayScreenHolder = null;
             MySession.Static.Gpss.ScanText(m_textBox.Description.Text.ToString(), PublicTitle);
-            SyncObject.SendChangeDescriptionMessage(m_textBox.Description.Text, isPublic);
-            SyncObject.SendChangeOpenMessage(false);
+
+            foreach (var block in CubeGrid.CubeBlocks)
+            {
+                if (block.FatBlock != null && block.FatBlock.EntityId == EntityId)
+                {
+                    SendChangeDescriptionMessage(m_textBox.Description.Text, isPublic);
+                    SendChangeOpenMessage(false);
+                    return;
+                }
+            }
         }
 
-        protected override MySyncEntity OnCreateSync()
-        {
-            return new MySyncTextPanel(this);
-        }
-
-        public void Use(UseActionEnum actionEnum, MyCharacter user)
+        public void Use(UseActionEnum actionEnum, IMyEntity entity)
         {
             if (m_isOpen)
                 return;
 
+            var user = entity as MyCharacter;
             var relation = GetUserRelationToOwner(user.ControllerInfo.Controller.Player.Identity.IdentityId);
 
             if (OwnerId == 0)
@@ -822,17 +844,22 @@ namespace Sandbox.Game.Entities.Blocks
             {
                 switch (relation)
                 {
-                    case Common.MyRelationsBetweenPlayerAndBlock.Enemies:
-                    case Common.MyRelationsBetweenPlayerAndBlock.Neutral:
-                        OnEnemyUse(actionEnum, user);
+                    case MyRelationsBetweenPlayerAndBlock.Enemies:
+                    case MyRelationsBetweenPlayerAndBlock.Neutral:	// HACK: relation is neutral if sharing is set to none and we would like to access a faction text panel text field
+                        if (MySession.Static.Factions.TryGetPlayerFaction(user.ControllerInfo.Controller.Player.Identity.IdentityId) == MySession.Static.Factions.TryGetPlayerFaction(IDModule.Owner) &&
+                            actionEnum == UseActionEnum.Manipulate)
+                            OnFactionUse(actionEnum, user);
+                        else
+                            OnEnemyUse(actionEnum, user);
                         break;
-                    case Common.MyRelationsBetweenPlayerAndBlock.FactionShare:
-                        if (OwnerId == 0 && IsAccessibleForOnlyOwner)
+                    case MyRelationsBetweenPlayerAndBlock.NoOwnership:
+                    case MyRelationsBetweenPlayerAndBlock.FactionShare:
+                        if (OwnerId == 0)
                             OnOwnerUse(actionEnum, user);
                         else
                             OnFactionUse(actionEnum, user);
                         break;
-                    case Common.MyRelationsBetweenPlayerAndBlock.Owner:
+                    case MyRelationsBetweenPlayerAndBlock.Owner:
                         OnOwnerUse(actionEnum, user);
                         break;
                 }
@@ -841,63 +868,46 @@ namespace Sandbox.Game.Entities.Blocks
 
         private void OnEnemyUse(UseActionEnum actionEnum, MyCharacter user)
         {
-            if (IsAccessibleForAll)
+            if (actionEnum == UseActionEnum.Manipulate)
             {
-                if (actionEnum == UseActionEnum.Manipulate)
-                {
-                    if (IsWritableForAll)
-                        OpenWindow(true, true, false);
-                    else if (IsReadableForAll)
-                        OpenWindow(false, true, false);
-                    else
-                        Debug.Fail("Unknown state of text panel");
-                }
+                OpenWindow(false, true, true);
             }
-            else
+            else if (actionEnum == UseActionEnum.OpenTerminal)
             {
-                if (user.ControllerInfo.Controller.Player == MySession.LocalHumanPlayer)
-                {
-                    MyHud.Notifications.Add(MyNotificationSingletons.AccessDenied);
-                }
+                MyHud.Notifications.Add(MyNotificationSingletons.AccessDenied);
             }
         }
 
         private void OnFactionUse(UseActionEnum actionEnum, MyCharacter user)
         {
-            bool isAccessible = IsAccessibleForFaction;
             bool readOnlyNotification = false;
 
-            if (IsAccessibleForFaction)
+            if (actionEnum == UseActionEnum.Manipulate)
             {
-                if (actionEnum == UseActionEnum.Manipulate)
+                var relation = GetUserRelationToOwner(user.GetPlayerIdentityId());
+
+                if (relation == MyRelationsBetweenPlayerAndBlock.FactionShare)
+                    OpenWindow(true, true, true);
+                else
+                    OpenWindow(false, true, true);
+            }
+            else if (actionEnum == UseActionEnum.OpenTerminal)
+            {
+                var relation = GetUserRelationToOwner(user.GetPlayerIdentityId());
+
+                if (relation == MyRelationsBetweenPlayerAndBlock.FactionShare)
                 {
-                    if (IsWritableForFaction)
-                        OpenWindow(true, true, false);
-                    else if (IsReadableForFaction)
-                        OpenWindow(false, true, false);
-                    else
-                        Debug.Fail("Unknown state of text panel");
+                    MyGuiScreenTerminal.Show(MyTerminalPageEnum.ControlPanel, user, this);
                 }
-                else if (actionEnum == UseActionEnum.OpenTerminal)
+                else
                 {
-                    if (IsWritableForFaction)
-                    {
-                        MyGuiScreenTerminal.Show(MyTerminalPageEnum.ControlPanel, user, this);
-                    }
-                    else
-                    {
-                        readOnlyNotification = true;
-                    }
+                    readOnlyNotification = true;
                 }
             }
 
-            if (user.ControllerInfo.Controller.Player == MySession.LocalHumanPlayer)
-            {
-                if (!isAccessible)
-                {
-                    MyHud.Notifications.Add(MyNotificationSingletons.AccessDenied);
-                }
-                else if (readOnlyNotification)
+            if (user.ControllerInfo.Controller.Player == MySession.Static.LocalHumanPlayer)
+            {   
+                if (readOnlyNotification)
                 {
                     MyHud.Notifications.Add(MyNotificationSingletons.TextPanelReadOnly);
                 }
@@ -908,7 +918,7 @@ namespace Sandbox.Game.Entities.Blocks
         {
             if (actionEnum == UseActionEnum.Manipulate)
             {
-                OpenWindow(true, true, false);
+                OpenWindow(true, true, true);
             }
             else if (actionEnum == UseActionEnum.OpenTerminal)
             {
@@ -927,48 +937,55 @@ namespace Sandbox.Game.Entities.Blocks
             ReleaseRenderTexture();
         }
 
-        public static void FillComboBoxContent(List<TerminalComboBoxItem> items)
+        public static void FillComboBoxContent(List<MyTerminalControlComboBoxItem> items)
         {
-            items.Add(new TerminalComboBoxItem() { Key = (long)TextPanelAccessFlag.NONE, Value = MySpaceTexts.BlockComboBoxValue_TextPanelAccessOnlyOwner });
-            items.Add(new TerminalComboBoxItem() { Key = (long)TextPanelAccessFlag.READ_FACTION, Value = MySpaceTexts.BlockComboBoxValue_TextPanelAccessReadFaction });
-            items.Add(new TerminalComboBoxItem() { Key = (long)TextPanelAccessFlag.READ_AND_WRITE_FACTION, Value = MySpaceTexts.BlockComboBoxValue_TextPanelAccessReadWriteFaction });
-            items.Add(new TerminalComboBoxItem() { Key = (long)TextPanelAccessFlag.READ_ALL, Value = MySpaceTexts.BlockComboBoxValue_TextPanelAccessReadAll });
-            items.Add(new TerminalComboBoxItem() { Key = (long)TextPanelAccessFlag.READ_AND_WRITE_ALL, Value = MySpaceTexts.BlockComboBoxValue_TextPanelAccessReadWriteAll });
+            items.Add(new MyTerminalControlComboBoxItem() { Key = (long)TextPanelAccessFlag.NONE, Value = MySpaceTexts.BlockComboBoxValue_TextPanelAccessOnlyOwner });
+            items.Add(new MyTerminalControlComboBoxItem() { Key = (long)TextPanelAccessFlag.READ_FACTION, Value = MySpaceTexts.BlockComboBoxValue_TextPanelAccessReadFaction });
+            items.Add(new MyTerminalControlComboBoxItem() { Key = (long)TextPanelAccessFlag.READ_AND_WRITE_FACTION, Value = MySpaceTexts.BlockComboBoxValue_TextPanelAccessReadWriteFaction });
+            items.Add(new MyTerminalControlComboBoxItem() { Key = (long)TextPanelAccessFlag.READ_ALL, Value = MySpaceTexts.BlockComboBoxValue_TextPanelAccessReadAll });
+            items.Add(new MyTerminalControlComboBoxItem() { Key = (long)TextPanelAccessFlag.READ_AND_WRITE_ALL, Value = MySpaceTexts.BlockComboBoxValue_TextPanelAccessReadWriteAll });
         }
 
-        public static void FillShowOnScreenComboBoxContent(List<TerminalComboBoxItem> items)
+        public static void FillShowOnScreenComboBoxContent(List<MyTerminalControlComboBoxItem> items)
         {
-            items.Add(new TerminalComboBoxItem() { Key = (long)ShowTextOnScreenFlag.NONE, Value = MySpaceTexts.BlockComboBoxValue_TextPanelShowTextNone });
-            items.Add(new TerminalComboBoxItem() { Key = (long)ShowTextOnScreenFlag.PUBLIC, Value = MySpaceTexts.BlockComboBoxValue_TextPanelShowTextPublic });
-            items.Add(new TerminalComboBoxItem() { Key = (long)ShowTextOnScreenFlag.PRIVATE, Value = MySpaceTexts.BlockComboBoxValue_TextPanelShowTextPrivate });
+            items.Add(new MyTerminalControlComboBoxItem() { Key = (long)ShowTextOnScreenFlag.NONE, Value = MySpaceTexts.BlockComboBoxValue_TextPanelShowTextNone });
+            items.Add(new MyTerminalControlComboBoxItem() { Key = (long)ShowTextOnScreenFlag.PUBLIC, Value = MySpaceTexts.BlockComboBoxValue_TextPanelShowTextPublic });
+            items.Add(new MyTerminalControlComboBoxItem() { Key = (long)ShowTextOnScreenFlag.PRIVATE, Value = MySpaceTexts.BlockComboBoxValue_TextPanelShowTextPrivate });
+        }
 
+        public static void FillFontComboBoxContent(List<MyTerminalControlComboBoxItem> items)
+        {
+            foreach (var font in MyDefinitionManager.Static.GetFontDefinitions())
+            {
+                items.Add(new MyTerminalControlComboBoxItem() { Key = (long)(font.Id.SubtypeId), Value = MyStringId.GetOrCompute(font.Id.SubtypeName) });
+            }
         }
 
         private void TextPanel_ClientRemoved(ulong playerId)
         {
             if (playerId == m_userId)
             {
-                SyncObject.SendChangeOpenMessage(false);
+                SendChangeOpenMessage(false);
             }
         }
 
         void UpdateText()
         {
             DetailedInfo.Clear();
-            DetailedInfo.AppendStringBuilder(MyTexts.Get(MySpaceTexts.BlockPropertiesText_Type));
+            DetailedInfo.AppendStringBuilder(MyTexts.Get(MyCommonTexts.BlockPropertiesText_Type));
             DetailedInfo.Append(BlockDefinition.DisplayNameText);
             DetailedInfo.Append("\n");
             DetailedInfo.AppendStringBuilder(MyTexts.Get(MySpaceTexts.BlockPropertiesText_MaxRequiredInput));
-            MyValueFormatter.AppendWorkInBestUnit(PowerReceiver.MaxRequiredInput, DetailedInfo);
+            MyValueFormatter.AppendWorkInBestUnit(ResourceSink.MaxRequiredInputByType(MyResourceDistributorComponent.ElectricityId), DetailedInfo);
             DetailedInfo.Append("\n");
             DetailedInfo.AppendStringBuilder(MyTexts.Get(MySpaceTexts.BlockPropertyProperties_CurrentInput));
-            MyValueFormatter.AppendWorkInBestUnit(PowerReceiver.IsPowered ? PowerReceiver.RequiredInput : 0, DetailedInfo);
+            MyValueFormatter.AppendWorkInBestUnit(ResourceSink.IsPoweredByType(MyResourceDistributorComponent.ElectricityId) ? ResourceSink.RequiredInputByType(MyResourceDistributorComponent.ElectricityId) : 0, DetailedInfo);
             RaisePropertiesChanged();
         }
 
         public bool IsInRange()
         {
-            MyCharacter player = MySession.LocalCharacter;
+            MyCharacter player = MySession.Static.LocalCharacter;
             if (player == null)
             {
                 return false;
@@ -980,7 +997,7 @@ namespace Sandbox.Game.Entities.Blocks
                 return false;
             }
 
-            MatrixD localOffset = MatrixD.CreateTranslation( this.PositionComp.LocalVolume.Center);
+            MatrixD localOffset = MatrixD.CreateTranslation( PositionComp.LocalVolume.Center);
             MatrixD matrix = localOffset * WorldMatrix;
 
             Vector3D position = matrix.Translation;
@@ -998,7 +1015,8 @@ namespace Sandbox.Game.Entities.Blocks
             string currentDescription = m_publicDescription.ToString();
             if (BlockDefinition.TextureResolution * BlockDefinition.TextureResolution * BlockDefinition.TextureAspectRadio <= freeResources && currentDescription.Length > 0)
             {
-                Render.RenderTextToTexture(EntityId, currentDescription, FontSize * BlockDefinition.TextureResolution / DEFAULT_RESOLUTION, FontColor, BackgroundColor, BlockDefinition.TextureResolution, BlockDefinition.TextureAspectRadio);
+                Render.RenderTextToTexture(currentDescription, FontSize * BlockDefinition.TextureResolution / DEFAULT_RESOLUTION,
+                    FontColor, BackgroundColor, BlockDefinition.TextureResolution, BlockDefinition.TextureAspectRadio);
                 FailedToRenderTexture = false;
             }
         }
@@ -1006,7 +1024,6 @@ namespace Sandbox.Game.Entities.Blocks
         public void ReleaseRenderTexture()
         {
             m_descriptionChanged = true;
-            Render.ReleaseRenderTexture();
             Render.ChangeTexture(GetPathForID(DEFAULT_OFFLINE_TEXTURE));
         }
 
@@ -1034,5 +1051,177 @@ namespace Sandbox.Game.Entities.Blocks
                 m_previousTextureID = null;
             }
         }
+        public override void OnModelChange()
+        {
+            base.OnModelChange();
+            if (ResourceSink != null)
+                if (CheckIsWorking() == false)
+                {
+                    Render.ChangeTexture(GetPathForID(DEFAULT_OFFLINE_TEXTURE));
+                }
+                else
+                {
+                    if (ShowTextOnScreen == false)
+                    {
+                        Render.ChangeTexture(GetPathForID(DEFAULT_ONLINE_TEXTURE));
+                    }
+                    m_previousTextureID = null;
+                    m_forceUpdateText = ShowTextOnScreen;
+                }
+        }
+
+        #region Sync
+
+        private void SendRemoveSelectedImageRequest(int[] selection)
+        {
+            MyMultiplayer.RaiseEvent(this, x => x.OnRemoveSelectedImageRequest, selection);
+        }
+
+        [Event, Reliable, Server, Broadcast]
+        void OnRemoveSelectedImageRequest(int[] selection)
+        {
+            RemoveItems(selection);
+        }
+
+        private void SendAddImagesToSelectionRequest(int[] selection)
+        {
+            MyMultiplayer.RaiseEvent(this, x => x.OnSelectImageRequest, selection);
+        }
+
+        [Event, Reliable, Server, Broadcast]
+        void OnSelectImageRequest(int[] selection)
+        {
+            SelectItems(selection);
+        }
+
+        [Event, Reliable, Server, Broadcast]
+        void OnChangeDescription(string description, bool isPublic)
+        {
+            m_helperSB.Clear().Append(description);
+            if (isPublic)
+            {
+                PublicDescription = m_helperSB;
+            }
+            else
+            {
+                PrivateDescription = m_helperSB;
+            }
+        }
+
+        [Event, Reliable, Server, Broadcast]
+        void OnChangeTitle(string title, bool isPublic)
+        {
+            m_helperSB.Clear().Append(title);
+            if (isPublic)
+            {
+                PublicTitle = m_helperSB;
+            }
+            else
+            {
+                PrivateTitle = m_helperSB;
+            }
+        }
+
+        private void SendChangeOpenMessage(bool isOpen, bool editable = false, ulong user = 0, bool isPublic = false)
+        {
+            MyMultiplayer.RaiseEvent(this, x => x.OnChangeOpenRequest, isOpen, editable, user, isPublic);
+        }
+
+        [Event, Reliable, Server]
+        void OnChangeOpenRequest(bool isOpen, bool editable, ulong user, bool isPublic)
+        {
+            if (Sync.IsServer && IsOpen && isOpen)
+                return;
+
+            OnChangeOpen(isOpen, editable, user, isPublic);
+
+            MyMultiplayer.RaiseEvent(this, x => x.OnChangeOpenSuccess, isOpen, editable, user, isPublic);
+        }
+
+        [Event, Reliable, Broadcast]
+        void OnChangeOpenSuccess(bool isOpen, bool editable, ulong user, bool isPublic)
+        {
+            OnChangeOpen(isOpen, editable, user, isPublic);
+        }
+
+        void OnChangeOpen(bool isOpen, bool editable, ulong user, bool isPublic)
+        {
+            IsOpen = isOpen;
+            UserId = user;
+
+            if (!Engine.Platform.Game.IsDedicated && user == Sync.MyId && isOpen)
+            {
+                OpenWindow(editable, false, isPublic);
+            }
+        }
+
+        private void SendChangeDescriptionMessage(StringBuilder description, bool isPublic)
+        {
+            if (CubeGrid.IsPreview || !CubeGrid.SyncFlag)
+            {
+                if (isPublic)
+                {
+                    PublicDescription = description;
+                }
+                else
+                {
+                    PrivateDescription = description;
+                }
+            }
+            else
+            {
+
+                if (description.CompareTo(PublicDescription) == 0 && isPublic)
+                {
+                    return;
+                }
+
+                if (description.CompareTo(PrivateDescription) == 0 && isPublic == false)
+                {
+                    return;
+                }
+                MyMultiplayer.RaiseEvent(this, x => x.OnChangeDescription, description.ToString(), isPublic);
+            }
+        }
+
+        private void SendChangeTitleMessage(StringBuilder title, bool isPublic)
+        {
+            if (CubeGrid.IsPreview || !CubeGrid.SyncFlag)
+            {
+                if (isPublic)
+                {
+                    PublicTitle = title;
+                }
+                else
+                {
+                    PrivateTitle = title;
+                }
+            }
+            else
+            {
+                if (title.CompareTo(PublicTitle) == 0 && isPublic)
+                {
+                    return;
+                }
+
+                if (title.CompareTo(PrivateTitle) == 0 && isPublic == false)
+                {
+                    return;
+                }
+
+                if (isPublic)
+                {
+                    PublicTitle = title;
+                }
+                else
+                {
+                    PrivateTitle = title;
+                }
+
+                MyMultiplayer.RaiseEvent(this, x => x.OnChangeTitle, title.ToString(), isPublic);
+            }
+        }
+
+        #endregion
     }
 }

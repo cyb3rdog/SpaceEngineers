@@ -35,7 +35,7 @@ namespace Sandbox.Game.Gui
             m_searchChangedFunc += RefreshFriendsGameList;
 
             m_friendsPage = m_selectedPage;
-            m_friendsPage.SetToolTip(MyTexts.GetString(MySpaceTexts.JoinGame_TabTooltip_Friends));
+            m_friendsPage.SetToolTip(MyTexts.GetString(MyCommonTexts.JoinGame_TabTooltip_Friends));
 
 
             RefreshFriendsGameList();
@@ -77,7 +77,7 @@ namespace Sandbox.Game.Gui
             m_gameTypeText.Clear();
             m_gameTypeToolTip.Clear();
             m_servers.Clear();
-            m_friendsPage.Text = new StringBuilder().Append(MyTexts.Get(MySpaceTexts.JoinGame_TabTitle_Friends));
+            m_friendsPage.Text = new StringBuilder().Append(MyTexts.Get(MyCommonTexts.JoinGame_TabTitle_Friends));
 
             MySandboxGame.Log.WriteLine("Requesting dedicated servers");
 
@@ -100,14 +100,22 @@ namespace Sandbox.Game.Gui
 
         void OnFriendsServerListResponded(int server)
         {
+            VRage.Profiler.ProfilerShort.Begin("OnFriendsServerListResponded");
             GameServerItem serverItem = SteamAPI.Instance.GetFriendsServerDetails(server);
-            AddServerItem(serverItem, false);
-            m_friendsPage.Text = new StringBuilder().Append(MyTexts.Get(MySpaceTexts.JoinGame_TabTitle_Friends).ToString()).Append(" (").Append(m_gamesTable.RowsCount).Append(")");
+            AddServerItem(serverItem, 
+                delegate() 
+                {
+                    m_friendsPage.Text = new StringBuilder().Append(MyTexts.Get(MyCommonTexts.JoinGame_TabTitle_Friends).ToString()).Append(" (").Append(m_gamesTable.RowsCount).Append(")");
+                },
+                isFiltered: false);
+            VRage.Profiler.ProfilerShort.End();
         }
 
         void OnFriendsServersCompleteResponse(MatchMakingServerResponseEnum response)
         {
+            VRage.Profiler.ProfilerShort.Begin("OnFriendsServersCompleteResponse");
             CloseFriendsRequest();
+            VRage.Profiler.ProfilerShort.End();
         }
 
         void CloseFriendsRequest()

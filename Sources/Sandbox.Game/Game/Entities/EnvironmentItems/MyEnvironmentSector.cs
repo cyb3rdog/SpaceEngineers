@@ -19,6 +19,9 @@ using VRage.Utils;
 using VRageMath;
 using VRageRender;
 using Sandbox.Game.GUI;
+using Sandbox.Game.World;
+using VRageRender.Import;
+using VRageRender.Messages;
 
 #endregion
 
@@ -27,45 +30,215 @@ namespace Sandbox.Game.Entities.EnvironmentItems
     using ModelId = System.Int32;
     using VRage.Utils;
     using VRage.Library.Utils;
+    using VRage.Game.Models;
 
     /// <summary>
     /// Area of environment items where data is instanced.
     /// </summary>
     public class MyEnvironmentSector
     {
+        private struct MySectorInstanceData
+        {
+            public int LocalId;
+            public MyInstanceData InstanceData;
+        }
+
         private class MyModelInstanceData
         {
-            public readonly MyStringId SubtypeId;
+            // Sector containing this instance data.
+            public MyEnvironmentSector Parent;
+
+            public ModelId Model;
+
+            public readonly MyStringHash SubtypeId;
             public readonly MyInstanceFlagsEnum Flags = MyInstanceFlagsEnum.ShowLod1 | MyInstanceFlagsEnum.CastShadows | MyInstanceFlagsEnum.EnableColorMask;
             public readonly float MaxViewDistance = float.MaxValue;
-            public readonly List<MyInstanceData> InstanceData = new List<MyInstanceData>();
 
-            public MyModelInstanceData(MyStringId subtypeId, MyInstanceFlagsEnum flags, float maxViewDistance)
+            // Instance data.
+            public readonly Dictionary<int, MyInstanceData> InstanceData = new Dictionary<int, MyInstanceData>(); 
+            public readonly Dictionary<int, int> InstanceIds = new Dictionary<int, int>(); // MyInstanceData ID to Instance Id
+            private int m_keyIndex;
+
+            public readonly BoundingBox ModelBox;
+
+            public uint InstanceBuffer = MyRenderProxy.RENDER_ID_UNASSIGNED;
+            public uint RenderObjectId = MyRenderProxy.RENDER_ID_UNASSIGNED;
+
+            public FastResourceLock InstanceBufferLock = new FastResourceLock();
+
+            private bool m_changed = false;
+
+            public int InstanceCount { get { return InstanceData.Count; } }
+
+            public MyModelInstanceData(MyEnvironmentSector parent, MyStringHash subtypeId, ModelId model, MyInstanceFlagsEnum flags, float maxViewDistance, BoundingBox modelBox)
             {
+                Parent = parent;
                 SubtypeId = subtypeId;
                 Flags = flags;
                 MaxViewDistance = maxViewDistance;
+                ModelBox = modelBox;
+                Model = model;
             }
 
-            public int AddInstanceData(ref MyInstanceData instanceData)
+            public int AddInstanceData(ref MySectorInstanceData instanceData)
             {
-                InstanceData.Add(instanceData);
-                return InstanceData.Count - 1;
+                using (InstanceBufferLock.AcquireExclusiveUsing())
+                {
+                    while (InstanceData.ContainsKey(m_keyIndex) && InstanceData.Count < int.MaxValue)
+                    {
+                        m_keyIndex++;
+                    }
+
+                    if (!InstanceData.ContainsKey(m_keyIndex))
+                    {
+                        InstanceData.Add(m_keyIndex, instanceData.InstanceData);
+                        InstanceIds.Add(m_keyIndex, instanceData.LocalId);
+                        return m_keyIndex;
+                    }
+                    else
+                    {
+                        throw new Exception("No available keys to add new instance data to sector!");
+                    }
+                }
+            }
+
+            public void UnloadRenderObjects()
+            {
+                if (InstanceBuffer != MyRenderProxy.RENDER_ID_UNASSIGNED)
+                {
+                    MyRenderProxy.RemoveRenderObject(InstanceBuffer);
+                    InstanceBuffer = MyRenderProxy.RENDER_ID_UNASSIGNED;
+                }
+                if (RenderObjectId != MyRenderProxy.RENDER_ID_UNASSIGNED)
+                {
+                    MyRenderProxy.RemoveRenderObject(RenderObjectId);
+                    RenderObjectId = MyRenderProxy.RENDER_ID_UNASSIGNED;
+                }
+            }
+
+            public void UpdateRenderInstanceData()
+            {
+                if (InstanceData.Count == 0) return;
+
+                if (InstanceBuffer == MyRenderProxy.RENDER_ID_UNASSIGNED)
+                {
+                    InstanceBuffer = MyRenderProxy.CreateRenderInstanceBuffer(string.Format("EnvironmentSector{0} - {1}", Parent.SectorId, SubtypeId),
+                        MyRenderInstanceBufferType.Generic);
+                }
+
+                MyRenderProxy.UpdateRenderInstanceBufferRange(InstanceBuffer, InstanceData.Values.ToArray());
+            }
+
+            public bool DisableInstance(int sectorInstanceId)
+            {
+                using (InstanceBufferLock.AcquireExclusiveUsing())
+                {
+                    //Debug.Assert(InstanceData.Count > sectorInstanceId, "Disabling invalid instance in environment item sector!");
+                    if (!InstanceData.ContainsKey(sectorInstanceId))
+                    {
+                        if (MyFakes.ENABLE_FLORA_COMPONENT_DEBUG)
+                        {
+                            System.Diagnostics.Debug.Fail("Instance with the passed id wasn't found in the sector!");
+                        }
+                        return false;
+                    }
+                                        
+                    InstanceData.Remove(sectorInstanceId);
+                    InstanceIds.Remove(sectorInstanceId);
+                }
+                return true;
+            }
+
+            internal void UpdateRenderEntitiesData(ref MatrixD worldMatrixD, bool useTransparency, float transparency)
+            {
+                ModelId modelId = Model;
+
+                bool hasInstances = (InstanceCount > 0);
+                bool hasEntity = RenderObjectId != MyRenderProxy.RENDER_ID_UNASSIGNED;
+
+                // nothin' 
+                if (!hasInstances)
+                {
+                    if (!hasEntity)
+                        return;
+                    else
+                    {
+                        UnloadRenderObjects();
+                    }
+                }
+                else
+                {
+                    RenderFlags flags = RenderFlags.Visible | RenderFlags.CastShadows;
+
+                    if (!hasEntity)
+                    {
+                        var model = MyModel.GetById(modelId);
+
+                        RenderObjectId = VRageRender.MyRenderProxy.CreateRenderEntity(
+                            "Instance parts, part: " + modelId,
+                            model,
+                            Parent.SectorMatrix,
+                            MyMeshDrawTechnique.MESH,
+                            flags,
+                            CullingOptions.Default,
+                            Vector3.One,
+                            Vector3.Zero,
+                            useTransparency ? transparency : 0,
+                            MaxViewDistance
+                        );
+                    }
+
+                    MyRenderProxy.SetInstanceBuffer(RenderObjectId, InstanceBuffer, 0, InstanceData.Count, Parent.SectorBox);
+                    MyRenderProxy.UpdateRenderEntity(RenderObjectId, Vector3.One, Vector3.Zero, useTransparency ? transparency : 0);
+                    var matrix = Parent.SectorMatrix;
+                    MyRenderProxy.UpdateRenderObject(RenderObjectId, ref matrix, false);
+                }
             }
         }
 
-        private readonly Vector3I m_id;
+        public Vector3I SectorId
+        {
+            get { return m_id; }
+        }
 
-        private Dictionary<MyStringId, MyModelInstanceData> m_instanceParts = new Dictionary<MyStringId, MyModelInstanceData>();
-        private uint m_instanceBufferId = MyRenderProxy.RENDER_ID_UNASSIGNED;
+        private readonly Vector3I m_id;
+        private MatrixD m_sectorMatrix;
+        private MatrixD m_sectorInvMatrix;
+
+        FastResourceLock m_instancePartsLock = new FastResourceLock();
+        private Dictionary<ModelId, MyModelInstanceData> m_instanceParts = new Dictionary<ModelId, MyModelInstanceData>();
+
         private List<MyInstanceData> m_tmpInstanceData = new List<MyInstanceData>();
-        private Dictionary<MyStringId, MyRenderInstanceInfo> m_instanceInfo = new Dictionary<MyStringId, MyRenderInstanceInfo>();
-        private Dictionary<MyStringId, uint> m_instanceGroupRenderObjects = new Dictionary<MyStringId, uint>();
         private BoundingBox m_AABB = BoundingBox.CreateInvalid();
+        private bool m_invalidateAABB = false;
+
+        public MatrixD SectorMatrix { get { return m_sectorMatrix; } }
+
+        public bool IsValid
+        {
+            get { return m_sectorItemCount > 0; }
+        }
 
         public BoundingBox SectorBox
         {
-            get { return m_AABB; }
+            get
+            {
+                if (m_invalidateAABB)
+                {
+                    m_invalidateAABB = false;
+                    m_AABB = GetSectorBoundingBox();
+                }
+                return m_AABB;
+            }
+        }
+
+        public BoundingBoxD SectorWorldBox
+        {
+            get
+            {
+                var worldAABB = SectorBox.Transform(m_sectorMatrix);
+                return worldAABB;
+            }
         }
 
         private int m_sectorItemCount;
@@ -74,23 +247,21 @@ namespace Sandbox.Game.Entities.EnvironmentItems
             get { return m_sectorItemCount; }
         }
 
-        public MyEnvironmentSector(Vector3I id)
+        public MyEnvironmentSector(Vector3I id, Vector3D sectorOffset)
         {
             m_id = id;
+            m_sectorMatrix = MatrixD.CreateTranslation(sectorOffset);
+            m_sectorInvMatrix = MatrixD.Invert(m_sectorMatrix);
         }
 
         public void UnloadRenderObjects()
         {
-            foreach (var renderObject in m_instanceGroupRenderObjects)
+            using (m_instancePartsLock.AcquireExclusiveUsing())
             {
-                VRageRender.MyRenderProxy.RemoveRenderObject(renderObject.Value);
-            }
-            m_instanceGroupRenderObjects.Clear();
-
-            if (m_instanceBufferId != MyRenderProxy.RENDER_ID_UNASSIGNED)
-            {
-                VRageRender.MyRenderProxy.RemoveRenderObject(m_instanceBufferId);
-                m_instanceBufferId = MyRenderProxy.RENDER_ID_UNASSIGNED;
+                foreach (var instance in m_instanceParts)
+                {
+                    instance.Value.UnloadRenderObjects();
+                }
             }
         }
 
@@ -100,11 +271,15 @@ namespace Sandbox.Game.Entities.EnvironmentItems
             m_AABB = BoundingBox.CreateInvalid();
             m_sectorItemCount = 0;
 
-            foreach (var item in m_instanceParts)
+            using (m_instancePartsLock.AcquireExclusiveUsing())
             {
-                item.Value.InstanceData.Clear();
+                foreach (var item in m_instanceParts)
+                {
+                    item.Value.InstanceData.Clear();
+                }
             }
         }
+
 
         /// <summary>
         /// Adds instance of the given model. Local matrix specified might be changed internally for renderer (must be used for removing instances).
@@ -112,125 +287,100 @@ namespace Sandbox.Game.Entities.EnvironmentItems
         /// <param name="subtypeId"></param>
         /// <param name="localMatrix">Local transformation matrix. Changed to internal matrix.</param>
         /// <param name="colorMaskHsv"></param>
-        public int AddInstance(MyStringId subtypeId, ref Matrix localMatrix, BoundingBox localAabb, MyInstanceFlagsEnum instanceFlags, float maxViewDistance,
-            Vector4 colorMaskHsv = default(Vector4))
+        public int AddInstance(
+            MyStringHash subtypeId,
+            ModelId modelId,
+            int localId,
+            ref Matrix localMatrix,
+            BoundingBox localAabb,
+            MyInstanceFlagsEnum instanceFlags,
+            float maxViewDistance,
+            Vector3 colorMaskHsv = default(Vector3))
         {
             MyModelInstanceData builderInstanceData;
-            if (!m_instanceParts.TryGetValue(subtypeId, out builderInstanceData))
+
+            using (m_instancePartsLock.AcquireExclusiveUsing())
             {
-                builderInstanceData = new MyModelInstanceData(subtypeId, instanceFlags, maxViewDistance);
-                m_instanceParts.Add(subtypeId, builderInstanceData);
+                if (!m_instanceParts.TryGetValue(modelId, out builderInstanceData))
+                {
+                    builderInstanceData = new MyModelInstanceData(this, subtypeId, modelId, instanceFlags, maxViewDistance, localAabb);
+                    m_instanceParts.Add(modelId, builderInstanceData);
+                }
             }
 
-            MyInstanceData newInstance = new MyInstanceData()
+
+            MySectorInstanceData newInstance = new MySectorInstanceData()
             {
-                ColorMaskHSV = new VRageMath.PackedVector.HalfVector4(colorMaskHsv),
-                LocalMatrix = localMatrix
+                LocalId = localId,
+                InstanceData = new MyInstanceData()
+                {
+                    ColorMaskHSV = new VRageMath.PackedVector.HalfVector4(colorMaskHsv.X, colorMaskHsv.Y, colorMaskHsv.Z, 0),
+                    LocalMatrix = localMatrix,
+                }
             };
             int sectorInstanceId = builderInstanceData.AddInstanceData(ref newInstance);
 
             // Matrix has been changed due to packing.
-            localMatrix = builderInstanceData.InstanceData[builderInstanceData.InstanceData.Count - 1].LocalMatrix;
-            Debug.Assert(builderInstanceData.InstanceData[builderInstanceData.InstanceData.Count - 1].LocalMatrix == localMatrix, "Bad matrix");
+            localMatrix = builderInstanceData.InstanceData[sectorInstanceId].LocalMatrix;
+            Debug.Assert(builderInstanceData.InstanceData[sectorInstanceId].LocalMatrix == localMatrix, "Bad matrix");
 
             m_AABB = m_AABB.Include(localAabb.Transform(localMatrix));
             m_sectorItemCount++;
+            m_invalidateAABB = true;
 
             return sectorInstanceId;
         }
 
-        public bool DisableInstance(int sectorInstanceId, MyStringId subtypeId)
+        public bool DisableInstance(int sectorInstanceId, ModelId modelId)
         {
             MyModelInstanceData instanceData = null;
-            m_instanceParts.TryGetValue(subtypeId, out instanceData);
-            Debug.Assert(instanceData != null, "Could not find instance data in a sector for subtype " + subtypeId.ToString());
-            if (instanceData == null) return false;
+            m_instanceParts.TryGetValue(modelId, out instanceData);
+            Debug.Assert(instanceData != null, "Could not find instance data in a sector for model " + modelId.ToString());
+            if (instanceData == null)
+            {
+                return false;
+            }
 
-            Debug.Assert(instanceData.InstanceData.Count > sectorInstanceId, "Disabling invalid instance in environment item sector!");
-            if (instanceData.InstanceData.Count <= sectorInstanceId) return false;
+            if (instanceData.DisableInstance(sectorInstanceId))
+            {
+                m_sectorItemCount--;
+                m_invalidateAABB = true;
 
-            var data = instanceData.InstanceData[sectorInstanceId];
-            data.LocalMatrix = Matrix.Zero;
-            instanceData.InstanceData[sectorInstanceId] = data;
-
-            return true;
+                return true;
+            }
+            return false;
         }
 
         public void UpdateRenderInstanceData()
         {
-            if (m_instanceBufferId == MyRenderProxy.RENDER_ID_UNASSIGNED)
+            using (m_instancePartsLock.AcquireSharedUsing())
             {
-                m_instanceBufferId = MyRenderProxy.CreateRenderInstanceBuffer("Environment items sector " + string.Format("{0} {1} {2}", m_id.X, m_id.Y, m_id.Z),
-                    MyRenderInstanceBufferType.Generic);
+                foreach (var part in m_instanceParts)
+                {
+                    part.Value.UpdateRenderInstanceData();
+                }
             }
-
-            // Merge data into one buffer
-            Debug.Assert(m_tmpInstanceData.Count == 0, "Instance data is not cleared");
-            m_instanceInfo.Clear();
-            foreach (var part in m_instanceParts)
-            {
-                m_instanceInfo.Add(part.Key, new MyRenderInstanceInfo(m_instanceBufferId, m_tmpInstanceData.Count, part.Value.InstanceData.Count, part.Value.MaxViewDistance, part.Value.Flags));
-
-                m_tmpInstanceData.AddList(part.Value.InstanceData);
-            }
-
-            if (m_tmpInstanceData.Count > 0)
-            {
-                MyRenderProxy.UpdateRenderInstanceBuffer(m_instanceBufferId, m_tmpInstanceData, (int)(m_tmpInstanceData.Count * 1.2f));
-            }
-            m_tmpInstanceData.Clear();
         }
 
-        public void UpdateRenderEntitiesData(MatrixD worldMatrixD, Dictionary<MyStringId, ModelId> modelMappings, bool useTransparency = false, float transparency = 0.0f)
+        public void UpdateRenderInstanceData(ModelId modelId)
+        {
+            using (m_instancePartsLock.AcquireSharedUsing())
+            {
+                MyModelInstanceData instanceData = null;
+                m_instanceParts.TryGetValue(modelId, out instanceData);
+                Debug.Assert(instanceData != null, "Could not find instance data in a sector for model " + modelId.ToString());
+                if (instanceData == null) return;
+
+                instanceData.UpdateRenderInstanceData();
+            }
+        }
+
+        public void UpdateRenderEntitiesData(MatrixD worldMatrixD, bool useTransparency = false, float transparency = 0.0f)
         {
             // Create/Remove/Update render objects
-            foreach (var item in m_instanceInfo)
+            foreach (var item in m_instanceParts.Values)
             {
-                uint renderObjectId;
-                ModelId modelId;
-                bool exists = m_instanceGroupRenderObjects.TryGetValue(item.Key, out renderObjectId);
-                bool hasAnyInstances = item.Value.InstanceCount > 0;
-                bool hasModel = modelMappings.TryGetValue(item.Key, out modelId);
-
-                RenderFlags flags = item.Value.CastShadows ? RenderFlags.CastShadows : (RenderFlags)0;
-                flags |= RenderFlags.Visible;
-
-                if (!exists && hasAnyInstances && hasModel)
-                {
-                    var model = MyModel.GetById(modelId);
-
-                    renderObjectId = VRageRender.MyRenderProxy.CreateRenderEntity(
-                        "Instance parts, part: " + modelId,
-                        model,
-                        MatrixD.Identity,
-                        MyMeshDrawTechnique.MESH,
-                        flags,
-                        CullingOptions.Default,
-                        Vector3.One,
-                        Vector3.Zero,
-                        useTransparency ? transparency : 0,
-                        item.Value.MaxViewDistance
-                    );
-
-                    m_instanceGroupRenderObjects[item.Key] = renderObjectId;
-                }
-                else if (exists && !hasAnyInstances)
-                {
-                    uint objectId = m_instanceGroupRenderObjects[item.Key];
-                    VRageRender.MyRenderProxy.RemoveRenderObject(objectId);
-                    m_instanceGroupRenderObjects.Remove(item.Key);
-                    renderObjectId = MyRenderProxy.RENDER_ID_UNASSIGNED;
-                    continue;
-                }
-
-                if (hasAnyInstances)
-                {
-                    MyRenderProxy.UpdateRenderEntity(renderObjectId, Vector3.One, Vector3.Zero, useTransparency ? transparency : 0);
-                    MyRenderProxy.UpdateRenderObject(renderObjectId, ref worldMatrixD, false);
-                    MyRenderProxy.SetInstanceBuffer(renderObjectId, item.Value.InstanceBufferId, item.Value.InstanceStart, item.Value.InstanceCount, m_AABB);
-
-                    //MyMedievalDebugDrawHelper.Static.AddAabb(m_AABB);
-                }
+                item.UpdateRenderEntitiesData(ref worldMatrixD, useTransparency, transparency);
             }
 
         }
@@ -242,34 +392,165 @@ namespace Sandbox.Game.Entities.EnvironmentItems
 
         internal void DebugDraw(Vector3I sectorPos, float sectorSize)
         {
-            foreach (var part in m_instanceParts.Values)
+            using (m_instancePartsLock.AcquireSharedUsing())
             {
-                foreach (var data in part.InstanceData)
+                foreach (var idata in m_instanceParts.Values)
                 {
-                    var dist = (data.LocalMatrix.Translation - Sandbox.Game.World.MySector.MainCamera.Position).Length();
-                    if (dist < 30)
-                        MyRenderProxy.DebugDrawText3D(data.LocalMatrix.Translation, part.SubtypeId.ToString(), Color.Red, (float)(7.0 / dist), true);
+                    using (idata.InstanceBufferLock.AcquireSharedUsing())
+                    {
+                        foreach (var entry in idata.InstanceData)
+                        {
+                            var ii = entry.Value;
+                            var itemWorldPosition = Vector3D.Transform(ii.LocalMatrix.Translation, m_sectorMatrix);
+
+
+
+                            //var dist = (itemWorldPosition - Sandbox.Game.World.MySector.MainCamera.Position).Length();
+                            //if (dist < 30)
+
+                            //BoundingBoxD bb = idata.ModelBox.Transform(ii.LocalMatrix);
+                            MyRenderProxy.DebugDrawOBB(Matrix.Rescale(ii.LocalMatrix * m_sectorMatrix, idata.ModelBox.HalfExtents * 2), Color.OrangeRed, .5f, true, true);
+
+                            var dist = Vector3D.Distance(MySector.MainCamera.Position, itemWorldPosition);
+                            if (dist < 250)
+                                MyRenderProxy.DebugDrawText3D(itemWorldPosition, idata.SubtypeId.ToString(), Color.White, 0.7f, true);
+                        }
+                    }
                 }
             }
 
-            BoundingBoxD bb = new BoundingBoxD(sectorPos * sectorSize, (sectorPos + Vector3I.One) * sectorSize);
-            BoundingBoxD bb2 = new BoundingBoxD(m_AABB.Min, m_AABB.Max);
-            bb2.Min = Vector3D.Max(bb2.Min, bb.Min);
-            bb2.Max = Vector3D.Min(bb2.Max, bb.Max);
-            MyRenderProxy.DebugDrawAABB(bb, Color.Orange, 1.0f, 1.0f, true);
-            MyRenderProxy.DebugDrawAABB(bb2, Color.OrangeRed, 1.0f, 1.0f, true);
+            //BoundingBoxD bb = new BoundingBoxD(sectorPos * sectorSize, (sectorPos + Vector3I.One) * sectorSize);
+            //BoundingBoxD bb2 = new BoundingBoxD(m_AABB.Min, m_AABB.Max);
+            //bb2.Min = Vector3D.Max(bb2.Min, bb.Min);
+            //bb2.Max = Vector3D.Min(bb2.Max, bb.Max);
+            //MyRenderProxy.DebugDrawAABB(bb, Color.Orange, 1.0f, 1.0f, true);
+            //MyRenderProxy.DebugDrawAABB(bb2, Color.OrangeRed, 1.0f, 1.0f, true);
+
+            MyRenderProxy.DebugDrawAABB(SectorWorldBox, Color.OrangeRed, 1.0f, 1.0f, true);
+
         }
 
-        internal void GetItems(MatrixD worldMatrix, List<Vector3D> output)
+        internal void GetItems(List<Vector3D> output)
         {
             foreach (var part in m_instanceParts)
             {
-                var list = part.Value.InstanceData;
-                foreach (var item in list)
+                var idata = part.Value;
+                using (idata.InstanceBufferLock.AcquireSharedUsing())
                 {
-                    output.Add(Vector3D.Transform(item.LocalMatrix.Translation, worldMatrix));
+                    foreach (var entry in idata.InstanceData)
+                    {
+                        var ii = entry.Value;
+
+                        var mat = ii.LocalMatrix;
+                        if (!mat.EqualsFast(ref Matrix.Zero))
+                        {
+                            output.Add(Vector3D.Transform(ii.LocalMatrix.Translation, m_sectorMatrix));
+                        }
+                    }
                 }
             }
         }
+
+        internal void GetItemsInRadius(Vector3D position, float radius, List<Vector3D> output)
+        {
+            var local = Vector3D.Transform(position, m_sectorInvMatrix);
+            foreach (var part in m_instanceParts)
+            {
+                using (part.Value.InstanceBufferLock.AcquireSharedUsing())
+                {
+                    var list = part.Value.InstanceData;
+                    foreach (var item in list)
+                    {
+                        if (Vector3D.DistanceSquared(item.Value.LocalMatrix.Translation, local) < radius * radius)
+                            output.Add(Vector3D.Transform(item.Value.LocalMatrix.Translation, m_sectorMatrix));
+                    }
+                }
+            }
+        }
+
+        internal void GetItemsInRadius(Vector3 position, float radius, List<MyEnvironmentItems.ItemInfo> output)
+        {
+            double sqRadius = radius * radius;
+            foreach (var part in m_instanceParts)
+            {
+                var idata = part.Value;
+                using (idata.InstanceBufferLock.AcquireSharedUsing())
+                {
+                    foreach (var entry in idata.InstanceData)
+                    {
+                        var ii = entry.Value;
+
+                        if (ii.LocalMatrix.EqualsFast(ref Matrix.Zero)) continue;
+
+                        var itemWorldPosition = Vector3.Transform(ii.LocalMatrix.Translation, m_sectorMatrix);
+                        if ((itemWorldPosition - position).LengthSquared() < sqRadius)
+                        {
+                            output.Add(new MyEnvironmentItems.ItemInfo()
+                            {
+                                LocalId = idata.InstanceIds[entry.Key],
+                                SubtypeId = part.Value.SubtypeId,
+                                Transform = new MyTransformD(itemWorldPosition)
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        internal void GetItems(List<MyEnvironmentItems.ItemInfo> output)
+        {
+            foreach (var part in m_instanceParts)
+            {
+                var idata = part.Value;
+                using (idata.InstanceBufferLock.AcquireSharedUsing())
+                {
+                    foreach (var entry in idata.InstanceData)
+                    {
+                        var ii = entry.Value;
+
+                        var mat = ii.LocalMatrix;
+                        if (!mat.EqualsFast(ref Matrix.Zero))
+                        {
+                            var itemWorldPosition = Vector3.Transform(mat.Translation, m_sectorMatrix);
+                            output.Add(new MyEnvironmentItems.ItemInfo()
+                            {
+                                LocalId = idata.InstanceIds[entry.Key],
+                                SubtypeId = part.Value.SubtypeId,
+                                Transform = new MyTransformD(itemWorldPosition)
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        private BoundingBox GetSectorBoundingBox()
+        {
+            if (!IsValid)
+                return new BoundingBox(Vector3.Zero, Vector3.Zero);
+
+            BoundingBox output = BoundingBox.CreateInvalid();
+            using (m_instancePartsLock.AcquireSharedUsing())
+            {
+                foreach (var part in m_instanceParts)
+                {
+                    var idata = part.Value;
+                    using (idata.InstanceBufferLock.AcquireSharedUsing())
+                    {
+                        var modelBox = idata.ModelBox;
+                        foreach (var entry in idata.InstanceData)
+                        {
+                            var ii = entry.Value;
+                            var mat = ii.LocalMatrix;
+                            if (!mat.EqualsFast(ref Matrix.Zero))
+                                output.Include(modelBox.Transform(ii.LocalMatrix));
+                        }
+                    }
+                }
+            }
+
+            return output;
+        }
+
     }
 }
